@@ -38,14 +38,14 @@ pub(crate) fn terminal_name_for_link_rendering() -> TerminalName {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct TerminalHyperlink {
     pub(crate) columns: Range<usize>,
     pub(crate) destination: String,
     destination_kind: DestinationKind,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum DestinationKind {
     Web,
     TrustedFile,
@@ -91,6 +91,49 @@ impl TerminalHyperlink {
             DestinationKind::TrustedFile => trusted_file_destination(&self.destination),
         }
     }
+}
+
+#[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
+pub(crate) struct TerminalHyperlinkRow {
+    hyperlinks: Vec<TerminalHyperlink>,
+}
+
+impl TerminalHyperlinkRow {
+    pub(crate) fn destination_at(&self, column: u16) -> Option<String> {
+        let column = usize::from(column);
+        self.hyperlinks
+            .iter()
+            .find(|link| link.columns.contains(&column))
+            .and_then(TerminalHyperlink::terminal_destination)
+    }
+}
+
+/// Convert logical scrollback lines into the physical terminal rows that receive mouse clicks.
+pub(crate) fn terminal_wrapped_hyperlink_rows(
+    lines: &[HyperlinkLine],
+    wrap_width: usize,
+) -> Vec<TerminalHyperlinkRow> {
+    let wrap_width = wrap_width.max(1);
+    let mut rows = Vec::new();
+    for line in lines {
+        let row_count = line.width().max(1).div_ceil(wrap_width);
+        for row in 0..row_count {
+            let row_start = row * wrap_width;
+            let row_end = row_start + wrap_width;
+            let hyperlinks = line
+                .hyperlinks
+                .iter()
+                .filter_map(|link| {
+                    let start = link.columns.start.max(row_start);
+                    let end = link.columns.end.min(row_end);
+                    (start < end && link.terminal_destination().is_some())
+                        .then(|| link.with_columns(start - row_start..end - row_start))
+                })
+                .collect();
+            rows.push(TerminalHyperlinkRow { hyperlinks });
+        }
+    }
+    rows
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

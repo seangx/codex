@@ -864,6 +864,7 @@ impl Tui {
         let position = Position::new(event.column, event.row);
         let Some(destination) =
             hyperlink_destination_at(self.terminal.displayed_buffer(), position)
+                .or_else(|| self.terminal.history_hyperlink_destination_at(position))
         else {
             return Ok(false);
         };

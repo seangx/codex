@@ -21,6 +21,7 @@
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
+use std::collections::VecDeque;
 use std::io;
 use std::io::Write;
 
@@ -45,6 +46,10 @@ use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::widgets::WidgetRef;
 use unicode_width::UnicodeWidthStr;
+
+use crate::terminal_hyperlinks::TerminalHyperlinkRow;
+
+const MAX_TRACKED_HISTORY_ROWS: usize = 4096;
 
 /// Returns the display width of a cell symbol, ignoring OSC escape sequences.
 ///
@@ -165,6 +170,8 @@ where
     pub last_known_cursor_pos: Position,
     /// Count of visible history rows rendered above the viewport in inline mode.
     visible_history_rows: u16,
+    /// Link hit targets for recently inserted terminal scrollback rows.
+    visible_history_hyperlinks: VecDeque<TerminalHyperlinkRow>,
     #[cfg(test)]
     screen_size_override: Option<Size>,
 }
@@ -244,6 +251,7 @@ where
             last_known_screen_size: screen_size,
             last_known_cursor_pos: cursor_pos,
             visible_history_rows: 0,
+            visible_history_hyperlinks: VecDeque::new(),
             #[cfg(test)]
             screen_size_override: None,
         }
@@ -524,6 +532,7 @@ where
         self.set_cursor_position(home)?;
         std::io::Write::flush(&mut self.backend)?;
         self.visible_history_rows = 0;
+        self.visible_history_hyperlinks.clear();
         self.previous_buffer_mut().reset();
         Ok(())
     }
@@ -543,15 +552,39 @@ where
         std::io::Write::flush(&mut self.backend)?;
         self.last_known_cursor_pos = Position { x: 0, y: 0 };
         self.visible_history_rows = 0;
+        self.visible_history_hyperlinks.clear();
         self.previous_buffer_mut().reset();
         Ok(())
     }
 
-    pub(crate) fn note_history_rows_inserted(&mut self, inserted_rows: u16) {
+    pub(crate) fn note_history_rows_inserted(&mut self, hyperlink_rows: Vec<TerminalHyperlinkRow>) {
+        let inserted_rows = u16::try_from(hyperlink_rows.len()).unwrap_or(u16::MAX);
+        self.visible_history_hyperlinks.extend(hyperlink_rows);
+        while self.visible_history_hyperlinks.len() > MAX_TRACKED_HISTORY_ROWS {
+            self.visible_history_hyperlinks.pop_front();
+        }
         self.visible_history_rows = self
             .visible_history_rows
             .saturating_add(inserted_rows)
             .min(self.viewport_area.top());
+    }
+
+    pub(crate) fn history_hyperlink_destination_at(&self, position: Position) -> Option<String> {
+        let visible_rows =
+            usize::from(self.visible_history_rows).min(self.visible_history_hyperlinks.len());
+        let visible_rows = u16::try_from(visible_rows).ok()?;
+        let first_y = self.viewport_area.top().saturating_sub(visible_rows);
+        if position.y < first_y || position.y >= self.viewport_area.top() {
+            return None;
+        }
+        let stored_first = self
+            .visible_history_hyperlinks
+            .len()
+            .saturating_sub(usize::from(visible_rows));
+        let row = stored_first + usize::from(position.y - first_y);
+        self.visible_history_hyperlinks
+            .get(row)
+            .and_then(|row| row.destination_at(position.x))
     }
 
     /// Clears the inactive buffer and swaps it with the current buffer

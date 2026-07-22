@@ -12,6 +12,7 @@ use crate::terminal_hyperlinks::HyperlinkLine;
 use crate::terminal_hyperlinks::decorate_spans;
 use crate::terminal_hyperlinks::plain_hyperlink_lines;
 use crate::terminal_hyperlinks::remap_wrapped_line;
+use crate::terminal_hyperlinks::terminal_wrapped_hyperlink_rows;
 use crate::wrapping::RtOptions;
 use crate::wrapping::adaptive_wrap_line;
 use crate::wrapping::line_contains_url_like;
@@ -249,7 +250,9 @@ where
         terminal.set_viewport_area(area);
     }
     if wrapped_lines > 0 {
-        terminal.note_history_rows_inserted(wrapped_lines);
+        let hyperlink_rows = terminal_wrapped_hyperlink_rows(&wrapped, wrap_width);
+        debug_assert_eq!(hyperlink_rows.len(), wrapped_rows);
+        terminal.note_history_rows_inserted(hyperlink_rows);
     }
 
     Ok(())
@@ -523,6 +526,38 @@ mod tests {
         let output = String::from_utf8(actual).expect("UTF-8 terminal output");
         assert!(output.contains("\x1b]8;;https://example.com/long/path\x07"));
         assert_eq!(line.line.spans[0].content, destination);
+    }
+
+    #[test]
+    fn committed_scrollback_link_remains_a_native_click_target() {
+        let width: u16 = 20;
+        let height: u16 = 6;
+        let backend = VT100Backend::new(width, height);
+        let mut term = crate::custom_terminal::Terminal::with_options(backend).expect("terminal");
+        term.set_viewport_area(Rect::new(0, height - 1, width, 1));
+        let destination = "https://example.com/long/path";
+        let line = crate::terminal_hyperlinks::annotate_web_urls_in_line(Line::from(destination));
+
+        insert_history_hyperlink_lines_with_mode_and_wrap_policy(
+            &mut term,
+            &[line],
+            InsertHistoryMode::Standard,
+            HistoryLineWrapPolicy::PreWrap,
+        )
+        .expect("insert linked history line");
+
+        assert_eq!(
+            term.history_hyperlink_destination_at(ratatui::layout::Position::new(0, 3)),
+            Some(destination.to_string())
+        );
+        assert_eq!(
+            term.history_hyperlink_destination_at(ratatui::layout::Position::new(0, 4)),
+            Some(destination.to_string())
+        );
+        assert_eq!(
+            term.history_hyperlink_destination_at(ratatui::layout::Position::new(10, 4)),
+            None
+        );
     }
 
     #[test]
