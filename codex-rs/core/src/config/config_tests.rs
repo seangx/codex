@@ -5610,6 +5610,21 @@ async fn feedback_enabled_defaults_to_true() -> std::io::Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn startup_update_check_defaults_to_disabled() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert!(!config.check_for_update_on_startup);
+
+    Ok(())
+}
+
 #[test]
 fn web_search_mode_defaults_to_none_if_unset() {
     let cfg = ConfigToml::default();

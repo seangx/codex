@@ -46,9 +46,18 @@ impl TerminalHyperlink {
         }
     }
 
+    pub(crate) fn trusted_file(columns: Range<usize>, destination: &Url) -> Self {
+        debug_assert_eq!(destination.scheme(), "file");
+        Self {
+            columns,
+            destination: destination.to_string(),
+            destination_kind: DestinationKind::TrustedFile,
+        }
+    }
+
     pub(crate) fn retarget_to_trusted_file(&mut self, destination: &Url) {
-        // Keep file URLs out of the general Markdown link path. Only generated visualization links
-        // are promoted to this destination kind.
+        // Keep file URLs out of unvalidated Markdown link paths. Only destinations validated by
+        // their caller are promoted to this destination kind.
         debug_assert_eq!(destination.scheme(), "file");
         self.destination = destination.to_string();
         self.destination_kind = DestinationKind::TrustedFile;
@@ -97,6 +106,16 @@ impl HyperlinkLine {
         {
             self.hyperlinks
                 .push(TerminalHyperlink::web(start..end, destination));
+        }
+    }
+
+    pub(crate) fn push_trusted_file_span(&mut self, span: Span<'static>, destination: &Url) {
+        let start = self.width();
+        let end = start + span.content.width();
+        self.line.push_span(span);
+        if end > start {
+            self.hyperlinks
+                .push(TerminalHyperlink::trusted_file(start..end, destination));
         }
     }
 

@@ -468,8 +468,7 @@ pub struct ConfigToml {
     pub project_root_markers: Option<Vec<String>>,
 
     /// When `true`, checks for Codex updates on startup and surfaces update prompts.
-    /// Set to `false` only if your Codex updates are centrally managed.
-    /// Defaults to `true`.
+    /// Defaults to `false`; use the manual `codex update` command or opt in explicitly.
     pub check_for_update_on_startup: Option<bool>,
 
     /// When true, disables burst-paste detection for typed input entirely.

@@ -367,6 +367,19 @@ fn should_render_link_destination(dest_url: &str) -> bool {
     !is_local_path_like_link(dest_url)
 }
 
+fn local_directory_destination(dest_url: &str, cwd: Option<&Path>) -> Option<Url> {
+    let (path_text, _) = parse_local_link_target(dest_url)?;
+    let path = PathBuf::from(path_text);
+    let path = if path.is_absolute() {
+        path
+    } else {
+        cwd?.join(path)
+    };
+    path.is_dir()
+        .then(|| Url::from_directory_path(path).ok())
+        .flatten()
+}
+
 static COLON_LOCATION_SUFFIX_RE: LazyLock<Regex> =
     LazyLock::new(
         || match Regex::new(r":\d+(?::\d+)?(?:[-–]\d+(?::\d+)?)?$") {
@@ -1842,20 +1855,35 @@ where
             } else if let Some(local_target_display) = link.local_target_display {
                 // Local file links are rendered as code-like path text so the transcript shows the
                 // resolved target instead of arbitrary caller-provided label text.
-                let style = self
+                let directory_destination =
+                    local_directory_destination(&link.destination, self.cwd.as_deref());
+                let mut style = self
                     .inline_styles
                     .last()
                     .copied()
                     .unwrap_or_default()
                     .patch(self.styles.code);
+                if directory_destination.is_some() {
+                    style = style.underlined();
+                }
                 let span = Span::styled(local_target_display, style);
+                let mut rendered = HyperlinkLine::new(Line::default());
+                if let Some(destination) = directory_destination.as_ref() {
+                    rendered.push_trusted_file_span(span, destination);
+                } else {
+                    rendered.line.push_span(span);
+                }
                 if self.in_table_cell() {
-                    self.push_span_to_table_cell(span);
+                    if let Some(table_state) = self.table_state.as_mut()
+                        && let Some(cell) = table_state.current_cell.as_mut()
+                    {
+                        cell.push_annotated(rendered);
+                    }
                 } else {
                     if self.pending_marker_line {
                         self.push_line(Line::default());
                     }
-                    self.push_span(span);
+                    self.push_annotated(rendered);
                     self.line_ends_with_local_link_target = true;
                 }
             }

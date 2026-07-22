@@ -4,6 +4,7 @@ use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::text::Text;
+use std::fs;
 use std::path::Path;
 
 use crate::markdown_render::COLON_LOCATION_SUFFIX_RE;
@@ -12,8 +13,10 @@ use crate::markdown_render::render_markdown_lines_with_width_and_cwd;
 use crate::markdown_render::render_markdown_text;
 use crate::markdown_render::render_markdown_text_with_width;
 use crate::markdown_render::render_markdown_text_with_width_and_cwd;
+use crate::terminal_hyperlinks::decorate_spans;
 use insta::assert_debug_snapshot;
 use insta::assert_snapshot;
+use tempfile::TempDir;
 
 fn render_markdown_text_for_cwd(input: &str, cwd: &Path) -> Text<'static> {
     render_markdown_text_with_width_and_cwd(input, /*width*/ None, Some(cwd))
@@ -29,6 +32,44 @@ fn plain_lines(text: &Text<'_>) -> Vec<String> {
                 .collect::<String>()
         })
         .collect()
+}
+
+#[test]
+fn existing_local_directory_link_opens_as_file_url() {
+    let cwd = TempDir::new().expect("create temporary cwd");
+    let directory = cwd.path().join("Example Folder");
+    fs::create_dir(&directory).expect("create linked directory");
+    let lines = render_markdown_lines_with_width_and_cwd(
+        "[workspace](./Example%20Folder)",
+        /*width*/ Some(80),
+        Some(cwd.path()),
+    );
+
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].hyperlinks.len(), 1);
+    let destination = url::Url::from_directory_path(&directory)
+        .expect("temporary directory should convert to a file URL")
+        .to_string();
+    assert_eq!(lines[0].hyperlinks[0].destination, destination);
+    let decorated = decorate_spans(&lines[0])
+        .into_iter()
+        .map(|span| span.content.into_owned())
+        .collect::<String>();
+    assert!(decorated.contains(&format!("\x1b]8;;{destination}\x07")));
+}
+
+#[test]
+fn local_file_link_does_not_open_as_directory() {
+    let cwd = TempDir::new().expect("create temporary cwd");
+    fs::write(cwd.path().join("README.md"), "content").expect("create linked file");
+    let lines = render_markdown_lines_with_width_and_cwd(
+        "[README](./README.md)",
+        /*width*/ Some(80),
+        Some(cwd.path()),
+    );
+
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].hyperlinks.is_empty());
 }
 
 #[test]
