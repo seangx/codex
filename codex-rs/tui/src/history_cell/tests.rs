@@ -474,6 +474,9 @@ fn image_generation_call_renders_saved_path() {
         "  └ Saved to: {}",
         Url::from_file_path(saved_path.as_path()).expect("test path should convert to file URL")
     );
+    let expected_directory = Url::from_directory_path(saved_path.parent().expect("parent path"))
+        .expect("test directory should convert to a file URL")
+        .to_string();
     let cell = new_image_generation_call(
         "call-image-generation".to_string(),
         "completed",
@@ -487,7 +490,18 @@ fn image_generation_call_renders_saved_path() {
             "• Generated Image:".to_string(),
             "  └ A tiny blue square".to_string(),
             expected_saved_path,
+            "  └ Open containing folder".to_string(),
         ],
+    );
+
+    let hyperlink_lines = cell.display_hyperlink_lines(/*width*/ 80);
+    let open_folder_line = hyperlink_lines
+        .last()
+        .expect("open-folder line should be present");
+    assert_eq!(open_folder_line.hyperlinks.len(), 1);
+    assert_eq!(
+        open_folder_line.hyperlinks[0].destination,
+        expected_directory
     );
 }
 
