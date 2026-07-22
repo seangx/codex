@@ -7,6 +7,8 @@ use std::io::Write;
 use std::io::stdin;
 use std::io::stdout;
 use std::panic;
+use std::path::Path;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -39,6 +41,7 @@ use ratatui::layout::Rect;
 use ratatui::text::Line;
 use tokio::sync::broadcast;
 use tokio_stream::Stream;
+use url::Url;
 
 pub use self::frame_requester::FrameRequester;
 use crate::custom_terminal;
@@ -78,6 +81,73 @@ fn hyperlink_destination_at(buffer: &Buffer, position: Position) -> Option<Strin
         .and_then(|cell| osc8_destination_from_symbol(cell.symbol()))
 }
 
+#[derive(Debug, Eq, PartialEq)]
+enum HyperlinkOpenTarget {
+    Browser(String),
+    Directory(PathBuf),
+}
+
+fn hyperlink_open_target(destination: &str) -> std::result::Result<HyperlinkOpenTarget, String> {
+    let parsed = Url::parse(destination)
+        .map_err(|error| format!("Invalid hyperlink destination {destination}: {error}"))?;
+    if parsed.scheme() == "file" {
+        let path = parsed
+            .to_file_path()
+            .map_err(|()| format!("Invalid local path destination: {destination}"))?;
+        if path.is_dir() {
+            return Ok(HyperlinkOpenTarget::Directory(path));
+        }
+    }
+    Ok(HyperlinkOpenTarget::Browser(destination.to_string()))
+}
+
+fn open_hyperlink_destination(destination: &str) -> std::result::Result<(), String> {
+    match hyperlink_open_target(destination)? {
+        HyperlinkOpenTarget::Browser(destination) => webbrowser::open(&destination)
+            .map_err(|error| format!("Failed to open {destination}: {error}")),
+        HyperlinkOpenTarget::Directory(path) => open_directory(&path),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn open_directory(path: &Path) -> std::result::Result<(), String> {
+    open_directory_with_command("open", path)
+}
+
+#[cfg(target_os = "windows")]
+fn open_directory(path: &Path) -> std::result::Result<(), String> {
+    open_directory_with_command("explorer.exe", path)
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn open_directory(path: &Path) -> std::result::Result<(), String> {
+    open_directory_with_command("xdg-open", path)
+}
+
+#[cfg(not(any(unix, target_os = "windows")))]
+fn open_directory(path: &Path) -> std::result::Result<(), String> {
+    let destination = Url::from_directory_path(path)
+        .map_err(|()| format!("Invalid directory path: {}", path.display()))?;
+    webbrowser::open(destination.as_str())
+        .map_err(|error| format!("Failed to open {}: {error}", path.display()))
+}
+
+#[cfg(any(unix, target_os = "windows"))]
+fn open_directory_with_command(command: &str, path: &Path) -> std::result::Result<(), String> {
+    let status = std::process::Command::new(command)
+        .arg(path)
+        .status()
+        .map_err(|error| format!("Failed to run {command} for {}: {error}", path.display()))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{command} failed to open {} with {status}",
+            path.display()
+        ))
+    }
+}
+
 /// A type alias for the terminal type used in this application
 pub type Terminal = CustomTerminal<CrosstermBackend<Stdout>>;
 
@@ -112,8 +182,10 @@ mod tests {
 
     use super::DisableMouseClickCapture;
     use super::EnableMouseClickCapture;
+    use super::HyperlinkOpenTarget;
     use super::clear_for_viewport_change;
     use super::hyperlink_destination_at;
+    use super::hyperlink_open_target;
     use super::should_emit_notification;
     use crate::custom_terminal::Terminal as CustomTerminal;
     use crate::test_backend::VT100Backend;
@@ -123,6 +195,7 @@ mod tests {
     use ratatui::layout::Position;
     use ratatui::layout::Rect;
     use ratatui::text::Line;
+    use url::Url;
 
     #[test]
     fn mouse_click_capture_does_not_enable_pointer_motion_reporting() {
@@ -152,6 +225,32 @@ mod tests {
             Some("file:///Users/example/generated/".to_string())
         );
         assert_eq!(hyperlink_destination_at(&buffer, Position::new(1, 1)), None);
+    }
+
+    #[test]
+    fn hyperlink_open_target_routes_directories_away_from_the_browser() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let directory_url = Url::from_directory_path(directory.path()).expect("directory URL");
+        assert_eq!(
+            hyperlink_open_target(directory_url.as_str()),
+            Ok(HyperlinkOpenTarget::Directory(
+                directory.path().to_path_buf()
+            ))
+        );
+
+        let html_path = directory.path().join("viewer.html");
+        std::fs::write(&html_path, "<html></html>").expect("write HTML viewer");
+        let html_url = Url::from_file_path(&html_path).expect("HTML file URL");
+        assert_eq!(
+            hyperlink_open_target(html_url.as_str()),
+            Ok(HyperlinkOpenTarget::Browser(html_url.to_string()))
+        );
+        assert_eq!(
+            hyperlink_open_target("https://example.com"),
+            Ok(HyperlinkOpenTarget::Browser(
+                "https://example.com".to_string()
+            ))
+        );
     }
 
     #[test]
@@ -868,9 +967,7 @@ impl Tui {
         else {
             return Ok(false);
         };
-        webbrowser::open(&destination)
-            .map(|_| true)
-            .map_err(|error| format!("Failed to open {destination}: {error}"))
+        open_hyperlink_destination(&destination).map(|()| true)
     }
 
     /// Enter alternate screen and expand the viewport to full terminal size, saving the current
