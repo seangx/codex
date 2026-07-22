@@ -5,6 +5,9 @@
 
 use std::ops::Range;
 
+use codex_terminal_detection::TerminalName;
+#[cfg(not(test))]
+use codex_terminal_detection::terminal_info;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
@@ -23,6 +26,17 @@ use crate::render::line_utils::line_to_borrowed;
 use crate::render::line_utils::line_to_static;
 use crate::wrapping::RtOptions;
 use crate::wrapping::adaptive_wrap_line;
+
+pub(crate) fn terminal_name_for_link_rendering() -> TerminalName {
+    #[cfg(test)]
+    {
+        TerminalName::Unknown
+    }
+    #[cfg(not(test))]
+    {
+        terminal_info().name
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TerminalHyperlink {

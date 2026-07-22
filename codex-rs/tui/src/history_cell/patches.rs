@@ -1,6 +1,8 @@
 //! Patch summaries and image-tool transcript helpers.
 
 use super::*;
+use crate::terminal_hyperlinks::terminal_name_for_link_rendering;
+use codex_terminal_detection::TerminalName;
 use codex_utils_path_uri::LegacyAppPathString;
 
 #[derive(Debug)]
@@ -122,12 +124,26 @@ pub(crate) fn new_image_generation_call(
         if let Some(parent) = saved_path.parent()
             && let Ok(parent_url) = Url::from_directory_path(parent)
         {
-            let mut open_folder = HyperlinkLine::new(Line::from("  └ ".dim()));
-            open_folder
-                .push_trusted_file_span("Open containing folder".cyan().underlined(), &parent_url);
-            lines.push(open_folder);
+            lines.push(open_folder_link_line(
+                &parent_url,
+                terminal_name_for_link_rendering(),
+            ));
         }
     }
 
     ImageGenerationHistoryCell { lines }
+}
+
+pub(crate) fn open_folder_link_line(
+    parent_url: &Url,
+    terminal_name: TerminalName,
+) -> HyperlinkLine {
+    let mut line = HyperlinkLine::new(Line::from("  └ ".dim()));
+    line.push_trusted_file_span("Open containing folder".cyan().underlined(), parent_url);
+    if terminal_name == TerminalName::AppleTerminal {
+        line.line.push_span(" (⌘-click: ".dim());
+        line.push_trusted_file_span(parent_url.to_string().cyan().underlined(), parent_url);
+        line.line.push_span(")".dim());
+    }
+    line
 }

@@ -9,11 +9,13 @@ use std::path::Path;
 
 use crate::markdown_render::COLON_LOCATION_SUFFIX_RE;
 use crate::markdown_render::HASH_LOCATION_SUFFIX_RE;
+use crate::markdown_render::render_markdown_lines_for_terminal;
 use crate::markdown_render::render_markdown_lines_with_width_and_cwd;
 use crate::markdown_render::render_markdown_text;
 use crate::markdown_render::render_markdown_text_with_width;
 use crate::markdown_render::render_markdown_text_with_width_and_cwd;
 use crate::terminal_hyperlinks::decorate_spans;
+use codex_terminal_detection::TerminalName;
 use insta::assert_debug_snapshot;
 use insta::assert_snapshot;
 use tempfile::TempDir;
@@ -56,6 +58,52 @@ fn existing_local_directory_link_opens_as_file_url() {
         .map(|span| span.content.into_owned())
         .collect::<String>();
     assert!(decorated.contains(&format!("\x1b]8;;{destination}\x07")));
+}
+
+#[test]
+fn apple_terminal_local_link_shows_command_click_file_url() {
+    let cwd = TempDir::new().expect("create temporary cwd");
+    let file = cwd.path().join("generated image.png");
+    fs::write(&file, b"image").expect("create linked file");
+    let lines = render_markdown_lines_for_terminal(
+        "[generated image](./generated%20image.png)",
+        /*width*/ Some(120),
+        Some(cwd.path()),
+        &|_| false,
+        TerminalName::AppleTerminal,
+    );
+
+    let visible = plain_lines(&Text::from(
+        lines.into_iter().map(|line| line.line).collect::<Vec<_>>(),
+    ));
+    let parent_url = url::Url::from_directory_path(cwd.path())
+        .expect("temporary directory should convert to a file URL")
+        .to_string();
+    assert_eq!(
+        visible,
+        vec![format!(
+            "./generated image.png (⌘-click: {parent_url})"
+        )]
+    );
+}
+
+#[test]
+fn apple_terminal_hidden_web_link_shows_command_click_url() {
+    let lines = render_markdown_lines_for_terminal(
+        "[OpenAI](https://openai.com/)",
+        /*width*/ Some(120),
+        /*cwd*/ None,
+        &|_| true,
+        TerminalName::AppleTerminal,
+    );
+
+    let visible = plain_lines(&Text::from(
+        lines.into_iter().map(|line| line.line).collect::<Vec<_>>(),
+    ));
+    assert_eq!(
+        visible,
+        vec!["OpenAI (⌘-click: https://openai.com/)".to_string()]
+    );
 }
 
 #[test]

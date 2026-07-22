@@ -47,11 +47,13 @@ use crate::style::table_separator_style;
 use crate::terminal_hyperlinks::HyperlinkLine;
 use crate::terminal_hyperlinks::annotate_web_urls_in_line;
 use crate::terminal_hyperlinks::remap_wrapped_line;
+use crate::terminal_hyperlinks::terminal_name_for_link_rendering;
 use crate::terminal_hyperlinks::visible_lines;
 use crate::terminal_hyperlinks::web_destination;
 use crate::wrapping::RtOptions;
 use crate::wrapping::adaptive_wrap_line;
 use crate::wrapping::word_wrap_line;
+use codex_terminal_detection::TerminalName;
 use codex_utils_string::normalize_markdown_hash_location_suffix;
 use dirs::home_dir;
 use pulldown_cmark::Alignment;
@@ -342,11 +344,34 @@ pub(crate) fn render_markdown_lines_with_width_cwd_and_hidden_link_destinations(
     cwd: Option<&Path>,
     is_hidden_link_destination: &dyn Fn(&str) -> bool,
 ) -> Vec<HyperlinkLine> {
+    render_markdown_lines_for_terminal(
+        input,
+        width,
+        cwd,
+        is_hidden_link_destination,
+        terminal_name_for_link_rendering(),
+    )
+}
+
+pub(crate) fn render_markdown_lines_for_terminal(
+    input: &str,
+    width: Option<usize>,
+    cwd: Option<&Path>,
+    is_hidden_link_destination: &dyn Fn(&str) -> bool,
+    terminal_name: TerminalName,
+) -> Vec<HyperlinkLine> {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TABLES);
     let parser = DecodedTextMerge::new(Parser::new_ext(input, options).into_offset_iter());
-    let mut w = Writer::new(input, parser, width, cwd, is_hidden_link_destination);
+    let mut w = Writer::new(
+        input,
+        parser,
+        width,
+        cwd,
+        is_hidden_link_destination,
+        terminal_name,
+    );
     w.run();
     w.text
 }
@@ -365,6 +390,14 @@ struct LinkState {
 
 fn should_render_link_destination(dest_url: &str) -> bool {
     !is_local_path_like_link(dest_url)
+}
+
+fn link_destination_prefix(terminal_name: TerminalName) -> &'static str {
+    if terminal_name == TerminalName::AppleTerminal {
+        " (⌘-click: "
+    } else {
+        " ("
+    }
 }
 
 /// Resolve an existing local path to the directory a platform file browser should open.
@@ -434,6 +467,7 @@ where
     wrap_width: Option<usize>,
     cwd: Option<PathBuf>,
     is_hidden_link_destination: &'policy dyn Fn(&str) -> bool,
+    terminal_name: TerminalName,
     line_ends_with_local_link_target: bool,
     pending_local_link_soft_break: bool,
     current_line_content: Option<HyperlinkLine>,
@@ -454,6 +488,7 @@ where
         wrap_width: Option<usize>,
         cwd: Option<&Path>,
         is_hidden_link_destination: &'policy dyn Fn(&str) -> bool,
+        terminal_name: TerminalName,
     ) -> Self {
         Self {
             input,
@@ -475,6 +510,7 @@ where
             wrap_width,
             cwd: cwd.map(Path::to_path_buf),
             is_hidden_link_destination,
+            terminal_name,
             line_ends_with_local_link_target: false,
             pending_local_link_soft_break: false,
             current_line_content: None,
@@ -1817,7 +1853,8 @@ where
         if style_label {
             self.push_inline_style(self.styles.link);
         }
-        let show_destination = !style_label && should_render_link_destination(&dest_url);
+        let show_destination = (!style_label || self.terminal_name == TerminalName::AppleTerminal)
+            && should_render_link_destination(&dest_url);
         self.link = Some(LinkState {
             show_destination,
             style_label,
@@ -1840,7 +1877,9 @@ where
                 // append the suffix into the active cell buffer rather than the outer paragraph
                 // line to avoid detached url lines.
                 if self.in_table_cell() {
-                    self.push_span_to_table_cell(" (".into());
+                    self.push_span_to_table_cell(
+                        link_destination_prefix(self.terminal_name).into(),
+                    );
                     let mut destination = HyperlinkLine::new(Line::default());
                     destination.push_span(
                         Span::styled(link.destination.clone(), self.styles.link),
@@ -1853,7 +1892,7 @@ where
                     }
                     self.push_span_to_table_cell(")".into());
                 } else {
-                    self.push_span(" (".into());
+                    self.push_span(link_destination_prefix(self.terminal_name).into());
                     let mut destination = HyperlinkLine::new(Line::default());
                     destination.push_span(
                         Span::styled(link.destination.clone(), self.styles.link),
@@ -1880,6 +1919,16 @@ where
                 let mut rendered = HyperlinkLine::new(Line::default());
                 if let Some(destination) = file_browser_destination.as_ref() {
                     rendered.push_trusted_file_span(span, destination);
+                    if self.terminal_name == TerminalName::AppleTerminal {
+                        rendered
+                            .line
+                            .push_span(link_destination_prefix(self.terminal_name).dim());
+                        rendered.push_trusted_file_span(
+                            destination.to_string().cyan().underlined(),
+                            destination,
+                        );
+                        rendered.line.push_span(")".dim());
+                    }
                 } else {
                     rendered.line.push_span(span);
                 }
@@ -2512,6 +2561,7 @@ mod tests {
             /*wrap_width*/ Some(80),
             /*cwd*/ None,
             &never_hide_link_destination,
+            TerminalName::Unknown,
         );
         let wrapped = writer.wrap_cell(&cell, /*width*/ 40);
         let rendered = wrapped

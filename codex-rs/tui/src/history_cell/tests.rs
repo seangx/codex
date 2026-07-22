@@ -505,6 +505,33 @@ fn image_generation_call_renders_saved_path() {
     );
 }
 
+#[test]
+fn image_generation_folder_action_exposes_file_url_in_apple_terminal() {
+    let parent_url = Url::parse("file:///Users/example/generated_images/")
+        .expect("valid generated image directory URL");
+    let line = open_folder_link_line(
+        &parent_url,
+        codex_terminal_detection::TerminalName::AppleTerminal,
+    );
+
+    assert_eq!(
+        render_lines(std::slice::from_ref(&line.line)),
+        vec![
+            concat!(
+                "  └ Open containing folder (⌘-click: ",
+                "file:///Users/example/generated_images/)"
+            )
+            .to_string()
+        ]
+    );
+    assert_eq!(line.hyperlinks.len(), 2);
+    assert!(
+        line.hyperlinks
+            .iter()
+            .all(|link| link.destination == parent_url.as_str())
+    );
+}
+
 fn session_configured_event(model: &str) -> ThreadSessionState {
     ThreadSessionState {
         thread_id: ThreadId::new(),
