@@ -1708,7 +1708,7 @@ async fn user_turn_includes_personality_from_config() {
 }
 
 #[tokio::test]
-async fn plan_update_renders_pinned_panel_without_history_cell() {
+async fn pinned_plan_stays_visible_until_the_next_task_starts() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.on_task_started();
     let update = UpdatePlanArgs {
@@ -1728,7 +1728,7 @@ async fn plan_update_renders_pinned_panel_without_history_cell() {
             },
         ],
     };
-    chat.on_plan_update(update);
+    chat.on_plan_update(update.clone());
 
     let cells = drain_insert_history(&mut rx);
     assert!(cells.is_empty(), "pinned plan must not enter scrollback");
@@ -1747,5 +1747,15 @@ async fn plan_update_renders_pinned_panel_without_history_cell() {
     chat.on_task_complete(
         /*last_agent_message*/ None, /*duration_ms*/ None, /*from_replay*/ false,
     );
+    assert!(chat.transcript.pinned_plan.is_some());
+
+    chat.on_task_started();
+    assert!(chat.transcript.pinned_plan.is_none());
+
+    chat.on_plan_update(update);
+    chat.on_interrupted_turn(TurnAbortReason::Interrupted);
+    assert!(chat.transcript.pinned_plan.is_some());
+
+    chat.on_task_started();
     assert!(chat.transcript.pinned_plan.is_none());
 }
