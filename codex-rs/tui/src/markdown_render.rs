@@ -367,7 +367,12 @@ fn should_render_link_destination(dest_url: &str) -> bool {
     !is_local_path_like_link(dest_url)
 }
 
-fn local_directory_destination(dest_url: &str, cwd: Option<&Path>) -> Option<Url> {
+/// Resolve an existing local path to the directory a platform file browser should open.
+///
+/// Directory links open themselves; file links open their parent. The terminal receives a
+/// standard `file://` URL, leaving Finder, Explorer, or the Linux desktop's configured file
+/// manager to the host terminal and operating system.
+fn local_file_browser_destination(dest_url: &str, cwd: Option<&Path>) -> Option<Url> {
     let (path_text, _) = parse_local_link_target(dest_url)?;
     let path = PathBuf::from(path_text);
     let path = if path.is_absolute() {
@@ -375,9 +380,14 @@ fn local_directory_destination(dest_url: &str, cwd: Option<&Path>) -> Option<Url
     } else {
         cwd?.join(path)
     };
-    path.is_dir()
-        .then(|| Url::from_directory_path(path).ok())
-        .flatten()
+    let directory = if path.is_dir() {
+        path
+    } else if path.is_file() {
+        path.parent()?.to_path_buf()
+    } else {
+        return None;
+    };
+    Url::from_directory_path(directory).ok()
 }
 
 static COLON_LOCATION_SUFFIX_RE: LazyLock<Regex> =
@@ -1855,20 +1865,20 @@ where
             } else if let Some(local_target_display) = link.local_target_display {
                 // Local file links are rendered as code-like path text so the transcript shows the
                 // resolved target instead of arbitrary caller-provided label text.
-                let directory_destination =
-                    local_directory_destination(&link.destination, self.cwd.as_deref());
+                let file_browser_destination =
+                    local_file_browser_destination(&link.destination, self.cwd.as_deref());
                 let mut style = self
                     .inline_styles
                     .last()
                     .copied()
                     .unwrap_or_default()
                     .patch(self.styles.code);
-                if directory_destination.is_some() {
+                if file_browser_destination.is_some() {
                     style = style.underlined();
                 }
                 let span = Span::styled(local_target_display, style);
                 let mut rendered = HyperlinkLine::new(Line::default());
-                if let Some(destination) = directory_destination.as_ref() {
+                if let Some(destination) = file_browser_destination.as_ref() {
                     rendered.push_trusted_file_span(span, destination);
                 } else {
                     rendered.line.push_span(span);

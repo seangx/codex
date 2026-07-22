@@ -59,7 +59,7 @@ fn existing_local_directory_link_opens_as_file_url() {
 }
 
 #[test]
-fn local_file_link_does_not_open_as_directory() {
+fn existing_local_file_link_opens_parent_directory() {
     let cwd = TempDir::new().expect("create temporary cwd");
     fs::write(cwd.path().join("README.md"), "content").expect("create linked file");
     let lines = render_markdown_lines_with_width_and_cwd(
@@ -69,7 +69,11 @@ fn local_file_link_does_not_open_as_directory() {
     );
 
     assert_eq!(lines.len(), 1);
-    assert!(lines[0].hyperlinks.is_empty());
+    assert_eq!(lines[0].hyperlinks.len(), 1);
+    let expected_directory = url::Url::from_directory_path(cwd.path())
+        .expect("temporary directory should convert to a file URL")
+        .to_string();
+    assert_eq!(lines[0].hyperlinks[0].destination, expected_directory);
 }
 
 #[test]
