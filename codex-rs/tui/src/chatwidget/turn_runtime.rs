@@ -189,6 +189,7 @@ impl ChatWidget {
         self.clear_active_hook_cell();
         self.clear_guardian_review_status();
         self.turn_lifecycle.finish();
+        self.transcript.pinned_plan = None;
         self.clear_safety_buffering();
         self.update_task_running_state();
         self.running_commands.clear();
@@ -335,6 +336,7 @@ impl ChatWidget {
         self.input_queue.user_turn_pending_start = false;
         self.clear_guardian_review_status();
         self.turn_lifecycle.finish();
+        self.transcript.pinned_plan = None;
         self.update_task_running_state();
         self.running_commands.clear();
         self.suppressed_exec_calls.clear();
@@ -517,7 +519,8 @@ impl ChatWidget {
             .count();
         self.transcript.last_plan_progress = (total > 0).then_some((completed, total));
         self.refresh_status_surfaces();
-        self.add_to_history(history_cell::new_plan_update(update));
+        self.transcript.pinned_plan = Some(history_cell::new_plan_update(update));
+        self.request_redraw();
     }
 
     pub(super) fn interrupted_turn_message(&self, reason: TurnAbortReason) -> String {

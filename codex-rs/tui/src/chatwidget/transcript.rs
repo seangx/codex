@@ -1,6 +1,7 @@
 //! Transcript and active-cell bookkeeping for `ChatWidget`.
 
 use super::HistoryCell;
+use crate::history_cell::PlanUpdateCell;
 
 #[derive(Default)]
 pub(super) struct TranscriptState {
@@ -19,6 +20,8 @@ pub(super) struct TranscriptState {
     pub(super) had_work_activity: bool,
     /// Whether the current turn emitted a plan update.
     pub(super) saw_plan_update_this_turn: bool,
+    /// Latest `update_plan` checklist rendered as a pinned status panel above the bottom pane.
+    pub(super) pinned_plan: Option<PlanUpdateCell>,
     /// Whether the current turn emitted a proposed plan item that has not been superseded by a
     /// later steer.
     pub(super) saw_plan_item_this_turn: bool,
@@ -57,6 +60,7 @@ impl TranscriptState {
     pub(super) fn reset_turn_flags(&mut self) {
         self.saw_copy_source_this_turn = false;
         self.saw_plan_update_this_turn = false;
+        self.pinned_plan = None;
         self.saw_plan_item_this_turn = false;
         self.had_work_activity = false;
         self.latest_proposed_plan_markdown = None;

@@ -46,6 +46,16 @@ impl ChatWidget {
                 })),
             );
         }
+        if let Some(cell) = &self.transcript.pinned_plan {
+            flex.push(
+                /*flex*/ 0,
+                RenderableItem::Owned(Box::new(TranscriptAreaRenderable {
+                    child: cell,
+                    top: 1,
+                    right: active_cell_right_reserve,
+                })),
+            );
+        }
         flex.push(
             /*flex*/ 0,
             self.bottom_pane

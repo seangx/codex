@@ -1,5 +1,6 @@
 use super::*;
 use pretty_assertions::assert_eq;
+use ratatui::backend::TestBackend;
 
 fn set_composer_text(chat: &mut ChatWidget, text: &str) {
     chat.bottom_pane
@@ -1707,8 +1708,9 @@ async fn user_turn_includes_personality_from_config() {
 }
 
 #[tokio::test]
-async fn plan_update_renders_history_cell() {
+async fn plan_update_renders_pinned_panel_without_history_cell() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.on_task_started();
     let update = UpdatePlanArgs {
         explanation: Some("Adapting plan".to_string()),
         plan: vec![
@@ -1727,14 +1729,23 @@ async fn plan_update_renders_history_cell() {
         ],
     };
     chat.on_plan_update(update);
+
     let cells = drain_insert_history(&mut rx);
-    assert!(!cells.is_empty(), "expected plan update cell to be sent");
-    let blob = lines_to_single_string(cells.last().unwrap());
-    assert!(
-        blob.contains("Updated Plan"),
-        "missing plan header: {blob:?}"
+    assert!(cells.is_empty(), "pinned plan must not enter scrollback");
+
+    let width = 60;
+    let height = chat.desired_height(width);
+    let mut terminal = ratatui::Terminal::new(TestBackend::new(width, height)).expect("terminal");
+    terminal
+        .draw(|frame| chat.render(frame.area(), frame.buffer_mut()))
+        .expect("render pinned plan");
+    assert_chatwidget_snapshot!(
+        "pinned_plan_panel",
+        normalized_backend_snapshot(terminal.backend())
     );
-    assert!(blob.contains("Explore codebase"));
-    assert!(blob.contains("Implement feature"));
-    assert!(blob.contains("Write tests"));
+
+    chat.on_task_complete(
+        /*last_agent_message*/ None, /*duration_ms*/ None, /*from_replay*/ false,
+    );
+    assert!(chat.transcript.pinned_plan.is_none());
 }
