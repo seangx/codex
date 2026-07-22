@@ -282,6 +282,9 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
                         mouse_event.modifiers,
                     )))
                 }
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                    Some(TuiEvent::MouseScrollHandoff)
+                }
                 _ => None,
             },
             Event::FocusGained => {
@@ -479,7 +482,7 @@ mod tests {
     }
 
     #[test]
-    fn mouse_wheel_does_not_navigate_inline_chat() {
+    fn mouse_wheel_hands_inline_scrolling_back_to_the_terminal() {
         let (broker, _handle, _draw_tx, draw_rx, terminal_focused) = setup();
         let mut stream = make_stream(broker, draw_rx, terminal_focused);
         let event = Event::Mouse(crossterm::event::MouseEvent {
@@ -489,7 +492,10 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         });
 
-        assert!(stream.map_crossterm_event(event).is_none());
+        assert!(matches!(
+            stream.map_crossterm_event(event),
+            Some(TuiEvent::MouseScrollHandoff)
+        ));
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -1291,6 +1291,12 @@ See the Codex keymap documentation for supported actions and examples."
             }
             return Ok(AppRunControl::Continue);
         }
+        if matches!(event, TuiEvent::MouseScrollHandoff) {
+            if let Err(error) = tui.hand_off_mouse_scroll_to_terminal() {
+                self.chat_widget.add_error_message(error);
+            }
+            return Ok(AppRunControl::Continue);
+        }
 
         if matches!(event, TuiEvent::Draw | TuiEvent::Resize) {
             self.handle_draw_pre_render(tui)?;
@@ -1312,6 +1318,7 @@ See the Codex keymap documentation for supported actions and examples."
                     self.chat_widget.handle_paste(pasted);
                 }
                 TuiEvent::Mouse(_) => {}
+                TuiEvent::MouseScrollHandoff => {}
                 TuiEvent::Draw | TuiEvent::Resize => {
                     if self.backtrack_render_pending {
                         self.rebuild_transcript_after_backtrack(tui)?;

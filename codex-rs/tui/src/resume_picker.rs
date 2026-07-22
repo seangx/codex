@@ -478,7 +478,7 @@ async fn run_session_picker_with_loader(
                     TuiEvent::Paste(pasted) => {
                         state.handle_paste(pasted);
                     }
-                    TuiEvent::Mouse(_) => {}
+                    TuiEvent::Mouse(_) | TuiEvent::MouseScrollHandoff => {}
                     TuiEvent::Draw | TuiEvent::Resize => {
                         if let Ok(size) = alt.tui.terminal.size() {
                             let list_height =
