@@ -404,6 +404,14 @@ fn trusted_file_destination(destination: &str) -> Option<String> {
     (parsed.scheme() == "file" && parsed.to_file_path().is_ok()).then_some(safe_destination)
 }
 
+/// Extract a safe destination from the OSC 8 annotation stored in a rendered cell symbol.
+pub(crate) fn osc8_destination_from_symbol(symbol: &str) -> Option<String> {
+    let payload = symbol.strip_prefix("\x1b]8;;")?;
+    let end = payload.find('\x07').or_else(|| payload.find("\x1b\\"))?;
+    let destination = &payload[..end];
+    web_destination(destination).or_else(|| trusted_file_destination(destination))
+}
+
 fn sanitized_destination(destination: &str) -> String {
     destination.chars().filter(|ch| !ch.is_control()).collect()
 }
@@ -786,5 +794,22 @@ mod tests {
             ))]
         );
         assert_eq!(osc8_hyperlink(file_url.as_str(), "view"), "view");
+    }
+
+    #[test]
+    fn extracts_only_safe_destinations_from_rendered_cell_symbols() {
+        assert_eq!(
+            osc8_destination_from_symbol("\x1b]8;;https://example.com/path\x07x\x1b]8;;\x07"),
+            Some("https://example.com/path".to_string())
+        );
+        assert_eq!(
+            osc8_destination_from_symbol("\x1b]8;;file:///tmp/generated/\x07x\x1b]8;;\x07"),
+            Some("file:///tmp/generated/".to_string())
+        );
+        assert_eq!(
+            osc8_destination_from_symbol("\x1b]8;;javascript:alert(1)\x07x\x1b]8;;\x07"),
+            None
+        );
+        assert_eq!(osc8_destination_from_symbol("plain text"), None);
     }
 }

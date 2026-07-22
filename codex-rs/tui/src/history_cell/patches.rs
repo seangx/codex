@@ -117,13 +117,18 @@ pub(crate) fn new_image_generation_call(
         let saved_path_url = Url::from_file_path(saved_path.as_path())
             .map(|url| url.to_string())
             .unwrap_or_else(|_| saved_path.display().to_string());
-        lines.push(HyperlinkLine::new(
-            vec!["  └ ".dim(), "Saved to: ".dim(), saved_path_url.into()].into(),
-        ));
+        let parent_url = saved_path
+            .parent()
+            .and_then(|parent| Url::from_directory_path(parent).ok());
+        let mut saved_to = HyperlinkLine::new(Line::from(vec!["  └ ".dim(), "Saved to: ".dim()]));
+        if let Some(parent_url) = parent_url.as_ref() {
+            saved_to.push_trusted_file_span(saved_path_url.cyan().underlined(), parent_url);
+        } else {
+            saved_to.line.push_span(saved_path_url);
+        }
+        lines.push(saved_to);
 
-        if let Some(parent) = saved_path.parent()
-            && let Ok(parent_url) = Url::from_directory_path(parent)
-        {
+        if let Some(parent_url) = parent_url {
             lines.push(open_folder_link_line(
                 &parent_url,
                 terminal_name_for_link_rendering(),

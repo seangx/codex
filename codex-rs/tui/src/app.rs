@@ -1285,6 +1285,13 @@ See the Codex keymap documentation for supported actions and examples."
         app_server: &mut AppServerSession,
         event: TuiEvent,
     ) -> Result<AppRunControl> {
+        if let TuiEvent::Mouse(mouse_event) = &event {
+            if let Err(error) = tui.open_hyperlink_at(*mouse_event) {
+                self.chat_widget.add_error_message(error);
+            }
+            return Ok(AppRunControl::Continue);
+        }
+
         if matches!(event, TuiEvent::Draw | TuiEvent::Resize) {
             self.handle_draw_pre_render(tui)?;
         }
@@ -1304,6 +1311,7 @@ See the Codex keymap documentation for supported actions and examples."
                     let pasted = pasted.replace("\r", "\n");
                     self.chat_widget.handle_paste(pasted);
                 }
+                TuiEvent::Mouse(_) => {}
                 TuiEvent::Draw | TuiEvent::Resize => {
                     if self.backtrack_render_pending {
                         self.rebuild_transcript_after_backtrack(tui)?;

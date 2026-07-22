@@ -22,12 +22,14 @@ use crossterm::event::EnableBracketedPaste;
 #[cfg(not(windows))]
 use crossterm::event::EnableFocusChange;
 use crossterm::event::KeyEvent;
+use crossterm::event::MouseEvent;
 use crossterm::terminal::EnterAlternateScreen;
 use crossterm::terminal::LeaveAlternateScreen;
 #[cfg(not(unix))]
 use crossterm::terminal::supports_keyboard_enhancement;
 use ratatui::backend::Backend;
 use ratatui::backend::CrosstermBackend;
+use ratatui::buffer::Buffer;
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::disable_raw_mode;
 use ratatui::crossterm::terminal::enable_raw_mode;
@@ -46,6 +48,7 @@ use crate::insert_history::InsertHistoryMode;
 use crate::notifications::DesktopNotificationBackend;
 use crate::notifications::detect_backend;
 use crate::terminal_hyperlinks::HyperlinkLine;
+use crate::terminal_hyperlinks::osc8_destination_from_symbol;
 use crate::terminal_hyperlinks::plain_hyperlink_lines;
 use crate::tui::event_stream::EventBroker;
 use crate::tui::event_stream::TuiEventStream;
@@ -68,6 +71,12 @@ mod windows_console;
 
 /// Target frame interval for UI redraw scheduling.
 pub(crate) const TARGET_FRAME_INTERVAL: Duration = frame_rate_limiter::MIN_FRAME_INTERVAL;
+
+fn hyperlink_destination_at(buffer: &Buffer, position: Position) -> Option<String> {
+    buffer
+        .cell(position)
+        .and_then(|cell| osc8_destination_from_symbol(cell.symbol()))
+}
 
 /// A type alias for the terminal type used in this application
 pub type Terminal = CustomTerminal<CrosstermBackend<Stdout>>;
@@ -101,14 +110,49 @@ impl Drop for Tui {
 mod tests {
     use std::io::Write as _;
 
+    use super::DisableMouseClickCapture;
+    use super::EnableMouseClickCapture;
     use super::clear_for_viewport_change;
+    use super::hyperlink_destination_at;
     use super::should_emit_notification;
     use crate::custom_terminal::Terminal as CustomTerminal;
     use crate::test_backend::VT100Backend;
     use codex_config::types::NotificationCondition;
+    use crossterm::Command as _;
+    use ratatui::buffer::Buffer;
     use ratatui::layout::Position;
     use ratatui::layout::Rect;
     use ratatui::text::Line;
+
+    #[test]
+    fn mouse_click_capture_does_not_enable_pointer_motion_reporting() {
+        let mut enable = String::new();
+        EnableMouseClickCapture
+            .write_ansi(&mut enable)
+            .expect("write enable sequence");
+        assert_eq!(enable, "\x1b[?1000h\x1b[?1006h");
+        assert!(!enable.contains("1002"));
+        assert!(!enable.contains("1003"));
+
+        let mut disable = String::new();
+        DisableMouseClickCapture
+            .write_ansi(&mut disable)
+            .expect("write disable sequence");
+        assert_eq!(disable, "\x1b[?1000l\x1b[?1006l");
+    }
+
+    #[test]
+    fn hyperlink_hit_testing_uses_rendered_cell_metadata() {
+        let area = Rect::new(0, 0, 4, 2);
+        let mut buffer = Buffer::empty(area);
+        buffer[(2, 1)].set_symbol("\x1b]8;;file:///Users/example/generated/\x07x\x1b]8;;\x07");
+
+        assert_eq!(
+            hyperlink_destination_at(&buffer, Position::new(2, 1)),
+            Some("file:///Users/example/generated/".to_string())
+        );
+        assert_eq!(hyperlink_destination_at(&buffer, Position::new(1, 1)), None);
+    }
 
     #[test]
     fn unfocused_notification_condition_is_suppressed_when_focused() {
@@ -230,7 +274,55 @@ pub fn set_modes() -> Result<()> {
     let _ = execute!(stdout(), EnableFocusChange);
     #[cfg(windows)]
     let _ = execute!(stdout(), DisableFocusChange);
+    let _ = execute!(stdout(), EnableMouseClickCapture);
     Ok(())
+}
+
+/// Capture button presses and wheel events without enabling pointer-movement reporting.
+///
+/// Crossterm's `EnableMouseCapture` also enables all-motion tracking, which produces a continuous
+/// event stream that Codex does not need. Normal tracking plus SGR coordinates is enough for link
+/// activation and works across Terminal.app, Ghostty, and other xterm-compatible terminals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EnableMouseClickCapture;
+
+impl Command for EnableMouseClickCapture {
+    fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
+        write!(f, "\x1b[?1000h\x1b[?1006h")
+    }
+
+    #[cfg(windows)]
+    fn execute_winapi(&self) -> Result<()> {
+        Err(std::io::Error::other(
+            "mouse click capture requires virtual terminal processing",
+        ))
+    }
+
+    #[cfg(windows)]
+    fn is_ansi_code_supported(&self) -> bool {
+        true
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DisableMouseClickCapture;
+
+impl Command for DisableMouseClickCapture {
+    fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
+        write!(f, "\x1b[?1000l\x1b[?1006l")
+    }
+
+    #[cfg(windows)]
+    fn execute_winapi(&self) -> Result<()> {
+        Err(std::io::Error::other(
+            "mouse click capture requires virtual terminal processing",
+        ))
+    }
+
+    #[cfg(windows)]
+    fn is_ansi_code_supported(&self) -> bool {
+        true
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -299,6 +391,9 @@ fn restore_common(
     }
 
     if let Err(err) = execute!(stdout(), DisableBracketedPaste) {
+        first_error.get_or_insert(err);
+    }
+    if let Err(err) = execute!(stdout(), DisableMouseClickCapture) {
         first_error.get_or_insert(err);
     }
     let _ = execute!(stdout(), DisableFocusChange);
@@ -547,6 +642,8 @@ pub enum TuiEvent {
     Key(KeyEvent),
     /// A bracketed paste payload normalized by the app layer before it reaches the composer.
     Paste(String),
+    /// A left-button press that may activate a rendered terminal hyperlink.
+    Mouse(MouseEvent),
     /// A terminal size notification that should be handled as resize-sensitive draw work.
     ///
     /// Resize is separate from `Draw` so the app can run feature-gated pre-render logic without
@@ -761,6 +858,18 @@ impl Tui {
             self.terminal_focused.clone(),
         );
         Box::pin(stream)
+    }
+
+    pub(crate) fn open_hyperlink_at(&self, event: MouseEvent) -> std::result::Result<bool, String> {
+        let position = Position::new(event.column, event.row);
+        let Some(destination) =
+            hyperlink_destination_at(self.terminal.displayed_buffer(), position)
+        else {
+            return Ok(false);
+        };
+        webbrowser::open(&destination)
+            .map(|_| true)
+            .map_err(|error| format!("Failed to open {destination}: {error}"))
     }
 
     /// Enter alternate screen and expand the viewport to full terminal size, saving the current

@@ -495,6 +495,12 @@ fn image_generation_call_renders_saved_path() {
     );
 
     let hyperlink_lines = cell.display_hyperlink_lines(/*width*/ 80);
+    let saved_path_line = &hyperlink_lines[2];
+    assert_eq!(saved_path_line.hyperlinks.len(), 1);
+    assert_eq!(
+        saved_path_line.hyperlinks[0].destination,
+        expected_directory
+    );
     let open_folder_line = hyperlink_lines
         .last()
         .expect("open-folder line should be present");
