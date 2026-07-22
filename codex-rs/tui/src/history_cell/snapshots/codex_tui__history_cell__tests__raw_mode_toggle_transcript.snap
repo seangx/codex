@@ -15,11 +15,7 @@ rich before:
    code    x = 1
   
   copy me
-• Called
-  └ workspace.inspect({"path":"README.md
-        "})
-    structured output
-    second line
+• workspace.inspect
 
 raw on:
 Please format this
@@ -51,8 +47,4 @@ rich after:
    code    x = 1
   
   copy me
-• Called
-  └ workspace.inspect({"path":"README.md
-        "})
-    structured output
-    second line
+• workspace.inspect

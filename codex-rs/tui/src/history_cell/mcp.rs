@@ -85,6 +85,47 @@ impl McpToolCallCell {
         self.result = Some(Err("interrupted".to_string()));
     }
 
+    fn compact_summary(&self) -> String {
+        let titled_summary = self
+            .invocation
+            .arguments
+            .as_ref()
+            .and_then(serde_json::Value::as_object)
+            .and_then(|arguments| {
+                ["title", "summary", "description"]
+                    .into_iter()
+                    .filter_map(|key| arguments.get(key).and_then(serde_json::Value::as_str))
+                    .map(|value| value.split_whitespace().collect::<Vec<_>>().join(" "))
+                    .find(|value| !value.is_empty())
+            });
+        titled_summary
+            .unwrap_or_else(|| format!("{}.{}", self.invocation.server, self.invocation.tool))
+    }
+
+    fn compact_summary_line(&self, width: u16, bullet: Span<'static>) -> Line<'static> {
+        let mut line = Line::from(bullet);
+        if width <= 1 {
+            return line;
+        }
+        line.push_span(" ");
+        let available = usize::from(width).saturating_sub(2);
+        if available == 0 {
+            return line;
+        }
+
+        let summary = self.compact_summary();
+        let (prefix, remainder, _) = take_prefix_by_width(&summary, available);
+        if remainder.is_empty() {
+            line.push_span(prefix.bold());
+            return line;
+        }
+
+        let (prefix, _, _) = take_prefix_by_width(&summary, available.saturating_sub(1));
+        line.push_span(prefix.bold());
+        line.push_span("…".dim());
+        line
+    }
+
     fn render_content_block(block: &serde_json::Value, width: usize) -> String {
         let content = match serde_json::from_value::<rmcp::model::Content>(block.clone()) {
             Ok(content) => content,
@@ -117,7 +158,9 @@ impl McpToolCallCell {
 
 impl HistoryCell for McpToolCallCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
-        let mut lines: Vec<Line<'static>> = Vec::new();
+        if width == 0 {
+            return Vec::new();
+        }
         let status = self.success();
         let bullet = match status {
             Some(true) => "•".green().bold(),
@@ -129,86 +172,7 @@ impl HistoryCell for McpToolCallCell {
             )
             .unwrap_or_else(|| "•".dim()),
         };
-        let header_text = if status.is_some() {
-            "Called"
-        } else {
-            "Calling"
-        };
-
-        let invocation_line = line_to_static(&format_mcp_invocation(self.invocation.clone()));
-        let mut compact_spans = vec![bullet.clone(), " ".into(), header_text.bold(), " ".into()];
-        let mut compact_header = Line::from(compact_spans.clone());
-        let reserved = compact_header.width();
-
-        let inline_invocation =
-            invocation_line.width() <= (width as usize).saturating_sub(reserved);
-
-        if inline_invocation {
-            compact_header.extend(invocation_line.spans.clone());
-            lines.push(compact_header);
-        } else {
-            compact_spans.pop(); // drop trailing space for standalone header
-            lines.push(Line::from(compact_spans));
-
-            let opts = RtOptions::new((width as usize).saturating_sub(4))
-                .initial_indent("".into())
-                .subsequent_indent("    ".into());
-            let wrapped = adaptive_wrap_line(&invocation_line, opts);
-            let body_lines: Vec<Line<'static>> = wrapped.iter().map(line_to_static).collect();
-            lines.extend(prefix_lines(body_lines, "  └ ".dim(), "    ".into()));
-        }
-
-        let mut detail_lines: Vec<Line<'static>> = Vec::new();
-        // Reserve four columns for the tree prefix ("  └ "/"    ") and ensure the wrapper still has at least one cell to work with.
-        let detail_wrap_width = (width as usize).saturating_sub(4).max(1);
-
-        if let Some(result) = &self.result {
-            match result {
-                Ok(codex_protocol::mcp::CallToolResult { content, .. }) => {
-                    if !content.is_empty() {
-                        for block in content {
-                            let text = Self::render_content_block(block, detail_wrap_width);
-                            for segment in text.split('\n') {
-                                let line = Line::from(segment.to_string().dim());
-                                let wrapped = adaptive_wrap_line(
-                                    &line,
-                                    RtOptions::new(detail_wrap_width)
-                                        .initial_indent("".into())
-                                        .subsequent_indent("    ".into()),
-                                );
-                                detail_lines.extend(wrapped.iter().map(line_to_static));
-                            }
-                        }
-                    }
-                }
-                Err(err) => {
-                    let err_text = format_and_truncate_tool_result(
-                        &format!("Error: {err}"),
-                        TOOL_CALL_MAX_LINES,
-                        width as usize,
-                    );
-                    let err_line = Line::from(err_text.dim());
-                    let wrapped = adaptive_wrap_line(
-                        &err_line,
-                        RtOptions::new(detail_wrap_width)
-                            .initial_indent("".into())
-                            .subsequent_indent("    ".into()),
-                    );
-                    detail_lines.extend(wrapped.iter().map(line_to_static));
-                }
-            }
-        }
-
-        if !detail_lines.is_empty() {
-            let initial_prefix: Span<'static> = if inline_invocation {
-                "  └ ".dim()
-            } else {
-                "    ".into()
-            };
-            lines.extend(prefix_lines(detail_lines, initial_prefix, "    ".into()));
-        }
-
-        lines
+        vec![self.compact_summary_line(width, bullet)]
     }
 
     fn raw_lines(&self) -> Vec<Line<'static>> {

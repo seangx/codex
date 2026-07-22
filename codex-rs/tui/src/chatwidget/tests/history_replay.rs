@@ -1133,7 +1133,8 @@ async fn replayed_in_progress_mcp_tool_call_stays_active() {
 
     assert!(drain_insert_history(&mut rx).is_empty());
     let active = active_blob(&chat);
-    assert!(active.contains("Calling"));
+    assert!(active.contains("copilot-bridge.copilot"));
+    assert!(!active.contains("\"action\""));
     assert!(!active.contains("MCP tool call completed without a result"));
 }
 
@@ -1192,7 +1193,8 @@ async fn deferred_mcp_lifecycle_events_keep_fifo_after_stream_finishes() {
         .into_iter()
         .map(|lines| lines_to_single_string(&lines))
         .collect::<String>();
-    assert!(rendered.contains("deferred result"), "{rendered}");
+    assert!(rendered.contains("copilot-bridge.copilot"), "{rendered}");
+    assert!(!rendered.contains("deferred result"), "{rendered}");
 }
 
 #[tokio::test]

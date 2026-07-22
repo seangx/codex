@@ -407,6 +407,50 @@ fn structured_tool_cell_renders_raw_plain_text_without_prefix_or_style() {
 }
 
 #[test]
+fn mcp_tool_call_display_uses_title_and_hides_script_and_result() {
+    let invocation = McpInvocation {
+        server: "node_repl".into(),
+        tool: "js".into(),
+        arguments: Some(json!({
+            "title": "检查 Terminal.app 状态",
+            "code": "const secretImplementation = await inspectTerminal();",
+        })),
+    };
+    let result = CallToolResult {
+        content: vec![text_block("verbose implementation result")],
+        is_error: None,
+        structured_content: None,
+        meta: None,
+    };
+    let mut cell = new_active_mcp_tool_call(
+        "call-compact".to_string(),
+        invocation,
+        /*animations_enabled*/ false,
+    );
+    assert!(
+        cell.complete(Duration::from_millis(1), Ok(result))
+            .is_none()
+    );
+
+    let rendered = render_lines(&cell.display_lines(/*width*/ 80));
+    assert_eq!(rendered, ["• 检查 Terminal.app 状态"]);
+    assert!(!rendered.join("\n").contains("secretImplementation"));
+    assert!(
+        !rendered
+            .join("\n")
+            .contains("verbose implementation result")
+    );
+
+    let raw = render_lines(&cell.raw_lines()).join("\n");
+    assert!(raw.contains("secretImplementation"));
+    assert!(raw.contains("verbose implementation result"));
+
+    let narrow = cell.display_lines(/*width*/ 12);
+    assert_eq!(narrow.len(), 1);
+    assert!(narrow[0].width() <= 12);
+}
+
+#[test]
 fn raw_mode_toggle_transcript_snapshot() {
     let mut tool_cell = new_active_mcp_tool_call(
         "call-snapshot".to_string(),
