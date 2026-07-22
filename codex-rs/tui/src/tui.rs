@@ -74,7 +74,6 @@ mod windows_console;
 
 /// Target frame interval for UI redraw scheduling.
 pub(crate) const TARGET_FRAME_INTERVAL: Duration = frame_rate_limiter::MIN_FRAME_INTERVAL;
-const MOUSE_SCROLL_HANDOFF_DURATION: Duration = Duration::from_millis(600);
 
 fn hyperlink_destination_at(buffer: &Buffer, position: Position) -> Option<String> {
     buffer
@@ -171,9 +170,6 @@ fn should_emit_notification(condition: NotificationCondition, terminal_focused: 
 
 impl Drop for Tui {
     fn drop(&mut self) {
-        if let Some(task) = self.mouse_capture_restore_task.take() {
-            task.abort();
-        }
         if let Err(err) = self.clear_ambient_pet_image() {
             tracing::debug!(error = %err, "failed to clear ambient pet image on TUI drop");
         }
@@ -747,8 +743,6 @@ pub enum TuiEvent {
     Paste(String),
     /// A left-button press that may activate a rendered terminal hyperlink.
     Mouse(MouseEvent),
-    /// Relinquish mouse reporting briefly so the terminal can handle a native scroll gesture.
-    MouseScrollHandoff,
     /// A terminal size notification that should be handled as resize-sensitive draw work.
     ///
     /// Resize is separate from `Draw` so the app can run feature-gated pre-render logic without
@@ -776,7 +770,6 @@ pub struct Tui {
     enhanced_keys_supported: bool,
     notification_backend: Option<DesktopNotificationBackend>,
     notification_condition: NotificationCondition,
-    mouse_capture_restore_task: Option<tokio::task::JoinHandle<()>>,
     // Raw terminal-wrapped history needs a non-scroll-region insertion path in Zellij.
     is_zellij: bool,
     // When false, enter_alt_screen() becomes a no-op.
@@ -832,7 +825,6 @@ impl Tui {
             enhanced_keys_supported,
             notification_backend: Some(detect_backend(NotificationMethod::default())),
             notification_condition: NotificationCondition::default(),
-            mouse_capture_restore_task: None,
             is_zellij,
             alt_screen_enabled: true,
             _stderr_guard: stderr_guard,
@@ -977,20 +969,6 @@ impl Tui {
             return Ok(false);
         };
         open_hyperlink_destination(&destination).map(|()| true)
-    }
-
-    pub(crate) fn hand_off_mouse_scroll_to_terminal(&mut self) -> std::result::Result<(), String> {
-        if let Some(task) = self.mouse_capture_restore_task.take() {
-            task.abort();
-        }
-        execute!(self.terminal.backend_mut(), DisableMouseClickCapture).map_err(|error| {
-            format!("Failed to release mouse scrolling to the terminal: {error}")
-        })?;
-        self.mouse_capture_restore_task = Some(tokio::spawn(async {
-            tokio::time::sleep(MOUSE_SCROLL_HANDOFF_DURATION).await;
-            let _ = execute!(stdout(), EnableMouseClickCapture);
-        }));
-        Ok(())
     }
 
     /// Enter alternate screen and expand the viewport to full terminal size, saving the current

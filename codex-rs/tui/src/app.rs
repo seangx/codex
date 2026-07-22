@@ -172,6 +172,7 @@ use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
 use crossterm::event::KeyModifiers;
+use crossterm::event::MouseEventKind;
 use ratatui::backend::Backend;
 use ratatui::layout::Rect;
 use ratatui::style::Stylize;
@@ -1286,14 +1287,18 @@ See the Codex keymap documentation for supported actions and examples."
         event: TuiEvent,
     ) -> Result<AppRunControl> {
         if let TuiEvent::Mouse(mouse_event) = &event {
-            if let Err(error) = tui.open_hyperlink_at(*mouse_event) {
-                self.chat_widget.add_error_message(error);
-            }
-            return Ok(AppRunControl::Continue);
-        }
-        if matches!(event, TuiEvent::MouseScrollHandoff) {
-            if let Err(error) = tui.hand_off_mouse_scroll_to_terminal() {
-                self.chat_widget.add_error_message(error);
+            match mouse_event.kind {
+                MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                    if let Err(error) = tui.open_hyperlink_at(*mouse_event) {
+                        self.chat_widget.add_error_message(error);
+                    }
+                }
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                    if let Err(error) = self.handle_mouse_scroll(tui, *mouse_event) {
+                        self.chat_widget.add_error_message(error.to_string());
+                    }
+                }
+                _ => {}
             }
             return Ok(AppRunControl::Continue);
         }
@@ -1302,12 +1307,25 @@ See the Codex keymap documentation for supported actions and examples."
             self.handle_draw_pre_render(tui)?;
         }
 
-        if self.overlay.is_some() {
+        let embedded_transcript = self
+            .overlay
+            .as_ref()
+            .is_some_and(Overlay::is_embedded_transcript);
+        if self.overlay.is_some() && !embedded_transcript {
             let _ = self.handle_backtrack_overlay_event(tui, event).await?;
         } else {
             match event {
                 TuiEvent::Key(key_event) => {
-                    self.handle_key_event(tui, app_server, key_event).await;
+                    if embedded_transcript && self.keymap.app.open_transcript.is_pressed(key_event)
+                    {
+                        self.overlay = Some(Overlay::new_transcript(
+                            self.transcript_cells.clone(),
+                            self.keymap.pager.clone(),
+                        ));
+                        tui.frame_requester().schedule_frame();
+                    } else {
+                        self.handle_key_event(tui, app_server, key_event).await;
+                    }
                 }
                 TuiEvent::Paste(pasted) => {
                     // Many terminals convert newlines to \r when pasting (e.g., iTerm2),
@@ -1318,7 +1336,6 @@ See the Codex keymap documentation for supported actions and examples."
                     self.chat_widget.handle_paste(pasted);
                 }
                 TuiEvent::Mouse(_) => {}
-                TuiEvent::MouseScrollHandoff => {}
                 TuiEvent::Draw | TuiEvent::Resize => {
                     if self.backtrack_render_pending {
                         self.rebuild_transcript_after_backtrack(tui)?;
@@ -1333,7 +1350,12 @@ See the Codex keymap documentation for supported actions and examples."
                     }
                     // Allow widgets to process any pending timers before rendering.
                     self.chat_widget.pre_draw_tick();
-                    let rendered_area = self.render_chat_widget_frame(tui)?;
+                    let rendered_area = if embedded_transcript {
+                        self.overlay_forward_event(tui, TuiEvent::Draw)?;
+                        tui.terminal.viewport_area
+                    } else {
+                        self.render_chat_widget_frame(tui)?
+                    };
                     if self.chat_widget.ambient_pet_image_enabled() {
                         let terminal_size = tui.terminal.size()?;
                         let ambient_pet_area = Rect::new(

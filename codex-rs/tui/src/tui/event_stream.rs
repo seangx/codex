@@ -26,8 +26,6 @@ use std::task::Context;
 use std::task::Poll;
 
 use crossterm::event::Event;
-use crossterm::event::KeyCode;
-use crossterm::event::KeyEvent;
 use crossterm::event::MouseButton;
 use crossterm::event::MouseEventKind;
 use tokio::sync::broadcast;
@@ -272,19 +270,9 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
             Event::Resize(_, _) => Some(TuiEvent::Resize),
             Event::Paste(pasted) => Some(TuiEvent::Paste(pasted)),
             Event::Mouse(mouse_event) => match mouse_event.kind {
-                MouseEventKind::Down(MouseButton::Left) => Some(TuiEvent::Mouse(mouse_event)),
-                MouseEventKind::ScrollUp if self.alt_screen_active.load(Ordering::Relaxed) => Some(
-                    TuiEvent::Key(KeyEvent::new(KeyCode::Up, mouse_event.modifiers)),
-                ),
-                MouseEventKind::ScrollDown if self.alt_screen_active.load(Ordering::Relaxed) => {
-                    Some(TuiEvent::Key(KeyEvent::new(
-                        KeyCode::Down,
-                        mouse_event.modifiers,
-                    )))
-                }
-                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-                    Some(TuiEvent::MouseScrollHandoff)
-                }
+                MouseEventKind::Down(MouseButton::Left)
+                | MouseEventKind::ScrollUp
+                | MouseEventKind::ScrollDown => Some(TuiEvent::Mouse(mouse_event)),
                 _ => None,
             },
             Event::FocusGained => {
@@ -464,37 +452,35 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn mouse_wheel_preserves_alternate_screen_arrow_behavior() {
+    async fn mouse_wheel_maps_to_mouse_event_in_alternate_screen() {
         let (broker, handle, _draw_tx, draw_rx, terminal_focused) = setup();
         let mut stream = make_stream(broker, draw_rx, terminal_focused);
         stream.alt_screen_active.store(true, Ordering::Relaxed);
-        handle.send(Ok(Event::Mouse(crossterm::event::MouseEvent {
+        let mouse = crossterm::event::MouseEvent {
             kind: MouseEventKind::ScrollUp,
             column: 0,
             row: 0,
             modifiers: KeyModifiers::NONE,
-        })));
+        };
+        handle.send(Ok(Event::Mouse(mouse)));
 
-        assert!(matches!(
-            stream.next().await,
-            Some(TuiEvent::Key(event)) if event == KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)
-        ));
+        assert!(matches!(stream.next().await, Some(TuiEvent::Mouse(event)) if event == mouse));
     }
 
     #[test]
-    fn mouse_wheel_hands_inline_scrolling_back_to_the_terminal() {
+    fn mouse_wheel_maps_to_mouse_event_inline() {
         let (broker, _handle, _draw_tx, draw_rx, terminal_focused) = setup();
         let mut stream = make_stream(broker, draw_rx, terminal_focused);
-        let event = Event::Mouse(crossterm::event::MouseEvent {
+        let mouse = crossterm::event::MouseEvent {
             kind: MouseEventKind::ScrollUp,
             column: 0,
             row: 0,
             modifiers: KeyModifiers::NONE,
-        });
+        };
 
         assert!(matches!(
-            stream.map_crossterm_event(event),
-            Some(TuiEvent::MouseScrollHandoff)
+            stream.map_crossterm_event(Event::Mouse(mouse)),
+            Some(TuiEvent::Mouse(event)) if event == mouse
         ));
     }
 

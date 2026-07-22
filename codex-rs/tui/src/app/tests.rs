@@ -117,6 +117,8 @@ use codex_protocol::request_permissions::RequestPermissionProfile;
 use codex_protocol::user_input::TextElement;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use crossterm::event::KeyModifiers;
+use crossterm::event::MouseEvent;
+use crossterm::event::MouseEventKind;
 use insta::assert_snapshot;
 use pretty_assertions::assert_eq;
 use ratatui::buffer::Buffer;
@@ -140,6 +142,44 @@ macro_rules! assert_app_snapshot {
 
 fn test_absolute_path(path: &str) -> AbsolutePathBuf {
     AbsolutePathBuf::try_from(PathBuf::from(path)).expect("absolute test path")
+}
+
+#[tokio::test]
+async fn mouse_scroll_keeps_composer_while_using_clickable_embedded_transcript() -> Result<()> {
+    let mut app = make_test_app().await;
+    app.chat_widget
+        .restore_user_message_to_composer("draft stays editable".into());
+    app.transcript_cells = (0..30)
+        .map(|i| plain_line_cell(format!("history-{i}")))
+        .collect();
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    let scroll = |kind| MouseEvent {
+        kind,
+        column: 0,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    };
+
+    app.handle_mouse_scroll(&mut tui, scroll(MouseEventKind::ScrollUp))?;
+
+    assert!(
+        app.overlay
+            .as_ref()
+            .is_some_and(Overlay::is_embedded_transcript)
+    );
+    assert_eq!(
+        app.chat_widget.composer_text_with_pending(),
+        "draft stays editable"
+    );
+
+    app.handle_mouse_scroll(&mut tui, scroll(MouseEventKind::ScrollDown))?;
+
+    assert!(app.overlay.is_none());
+    assert_eq!(
+        app.chat_widget.composer_text_with_pending(),
+        "draft stays editable"
+    );
+    Ok(())
 }
 
 #[tokio::test]

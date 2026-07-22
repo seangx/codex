@@ -35,6 +35,7 @@ use crate::history_cell::AgentMessageCell;
 use crate::history_cell::SessionInfoCell;
 use crate::history_cell::UserHistoryCell;
 use crate::pager_overlay::Overlay;
+use crate::render::renderable::Renderable;
 use crate::tui;
 use crate::tui::TuiEvent;
 use codex_app_server_protocol::ThreadItem;
@@ -47,10 +48,32 @@ use color_eyre::eyre::bail;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
+use crossterm::event::MouseEvent;
+use crossterm::event::MouseEventKind;
+use ratatui::layout::Rect;
+use ratatui::layout::Size;
 
 const NO_PREVIOUS_MESSAGE_TO_EDIT: &str = "No previous message to edit.";
+const MOUSE_SCROLL_ROWS: usize = 3;
+const MIN_EMBEDDED_TRANSCRIPT_ROWS: u16 = 3;
 pub(crate) const SIDE_EDIT_PREVIOUS_UNAVAILABLE_MESSAGE: &str =
     "Editing previous prompts is unavailable in side conversations.";
+
+fn embedded_transcript_areas_for(chat_widget: &ChatWidget, area: Rect) -> (Rect, Rect) {
+    let chat_height = chat_widget
+        .desired_height(area.width)
+        .min(area.height.saturating_sub(MIN_EMBEDDED_TRANSCRIPT_ROWS));
+    let transcript_height = area.height.saturating_sub(chat_height);
+    (
+        Rect::new(area.x, area.y, area.width, transcript_height),
+        Rect::new(
+            area.x,
+            area.y.saturating_add(transcript_height),
+            area.width,
+            chat_height,
+        ),
+    )
+}
 
 /// Aggregates all backtrack-related state used by the App.
 #[derive(Default)]
@@ -80,6 +103,67 @@ pub(crate) struct BacktrackSelection {
 }
 
 impl App {
+    fn embedded_transcript_areas(&self, size: Size) -> (Rect, Rect) {
+        embedded_transcript_areas_for(&self.chat_widget, Rect::new(0, 0, size.width, size.height))
+    }
+
+    pub(crate) fn handle_mouse_scroll(
+        &mut self,
+        tui: &mut tui::Tui,
+        event: MouseEvent,
+    ) -> Result<()> {
+        let scroll_up = matches!(event.kind, MouseEventKind::ScrollUp);
+        let scroll_down = matches!(event.kind, MouseEventKind::ScrollDown);
+        if !scroll_up && !scroll_down {
+            return Ok(());
+        }
+
+        if self.overlay.is_none() {
+            if scroll_down || self.transcript_cells.is_empty() {
+                return Ok(());
+            }
+            tui.enter_alt_screen()?;
+            self.overlay = Some(Overlay::new_embedded_transcript(
+                self.transcript_cells.clone(),
+                self.keymap.pager.clone(),
+            ));
+        }
+
+        let size = tui.terminal.size()?;
+        let full_area = Rect::new(0, 0, size.width, size.height);
+        let (embedded_area, _) = self.embedded_transcript_areas(size);
+        let mut close_embedded = false;
+
+        if let Some(Overlay::Transcript(overlay)) = &mut self.overlay {
+            let scroll_area = if overlay.is_embedded() {
+                embedded_area
+            } else {
+                full_area
+            };
+            if scroll_up {
+                overlay.scroll_up(scroll_area, MOUSE_SCROLL_ROWS);
+            } else {
+                overlay.scroll_down(scroll_area, MOUSE_SCROLL_ROWS);
+                close_embedded =
+                    overlay.is_embedded() && overlay.is_scrolled_to_bottom_in(scroll_area);
+            }
+        } else if let Some(overlay) = &mut self.overlay {
+            let code = if scroll_up {
+                KeyCode::Up
+            } else {
+                KeyCode::Down
+            };
+            overlay.handle_event(tui, TuiEvent::Key(KeyEvent::new(code, event.modifiers)))?;
+        }
+
+        if close_embedded {
+            self.close_transcript_overlay(tui);
+        } else {
+            tui.frame_requester().schedule_frame();
+        }
+        Ok(())
+    }
+
     /// Route overlay events while the transcript overlay is active.
     ///
     /// If backtrack preview is active, Esc / Left steps selection, Right steps forward, Enter
@@ -340,10 +424,29 @@ impl App {
     /// This logic lives here (instead of inside the overlay widget) because `ChatWidget` is the
     /// source of truth for the active cell and its cache invalidation key, and because `App` owns
     /// overlay lifecycle and frame scheduling for animations.
-    fn overlay_forward_event(&mut self, tui: &mut tui::Tui, event: TuiEvent) -> Result<()> {
+    pub(crate) fn overlay_forward_event(
+        &mut self,
+        tui: &mut tui::Tui,
+        event: TuiEvent,
+    ) -> Result<()> {
         if matches!(&event, TuiEvent::Draw | TuiEvent::Resize)
             && let Some(Overlay::Transcript(t)) = &mut self.overlay
         {
+            if t.is_embedded() {
+                let chat_widget = &self.chat_widget;
+                tui.draw(u16::MAX, |frame| {
+                    let (transcript_area, chat_area) =
+                        embedded_transcript_areas_for(chat_widget, frame.area());
+                    t.render_embedded(transcript_area, frame.buffer);
+                    chat_widget.render(chat_area, frame.buffer);
+                    chat_widget.note_rendered_width(chat_area.width);
+                    if let Some((x, y)) = chat_widget.cursor_pos(chat_area) {
+                        frame.set_cursor_style(chat_widget.cursor_style(chat_area));
+                        frame.set_cursor_position((x, y));
+                    }
+                })?;
+                return Ok(());
+            }
             let active_key = self.chat_widget.active_cell_transcript_key();
             let chat_widget = &self.chat_widget;
             tui.draw(u16::MAX, |frame| {

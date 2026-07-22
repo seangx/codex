@@ -60,6 +60,17 @@ impl Overlay {
         Self::Transcript(TranscriptOverlay::new(cells, keymap))
     }
 
+    pub(crate) fn new_embedded_transcript(
+        cells: Vec<Arc<dyn HistoryCell>>,
+        keymap: PagerKeymap,
+    ) -> Self {
+        Self::Transcript(TranscriptOverlay::new_embedded(cells, keymap))
+    }
+
+    pub(crate) fn is_embedded_transcript(&self) -> bool {
+        matches!(self, Self::Transcript(overlay) if overlay.is_embedded())
+    }
+
     pub(crate) fn new_static_with_lines(
         lines: Vec<Line<'static>>,
         title: String,
@@ -172,6 +183,40 @@ impl PagerView {
         self.render_content(content_area, buf);
 
         self.render_bottom_bar(area, content_area, buf, content_height);
+    }
+
+    fn render_content_only(&mut self, area: Rect, buf: &mut Buffer) {
+        Clear.render(area, buf);
+        self.update_last_content_height(area.height);
+        let content_height = self.content_height(area.width);
+        self.last_rendered_height = Some(content_height);
+        self.scroll_offset = self
+            .scroll_offset
+            .min(content_height.saturating_sub(area.height as usize));
+        self.render_content(area, buf);
+    }
+
+    fn scroll_up(&mut self, area: Rect, rows: usize) {
+        let max_scroll = self
+            .content_height(area.width)
+            .saturating_sub(area.height as usize);
+        let current = self.scroll_offset.min(max_scroll);
+        self.scroll_offset = current.saturating_sub(rows);
+    }
+
+    fn scroll_down(&mut self, area: Rect, rows: usize) {
+        let max_scroll = self
+            .content_height(area.width)
+            .saturating_sub(area.height as usize);
+        let current = self.scroll_offset.min(max_scroll);
+        self.scroll_offset = current.saturating_add(rows).min(max_scroll);
+    }
+
+    fn is_scrolled_to_bottom_in(&self, area: Rect) -> bool {
+        let max_scroll = self
+            .content_height(area.width)
+            .saturating_sub(area.height as usize);
+        self.scroll_offset.min(max_scroll) >= max_scroll
     }
 
     fn render_header(&self, area: Rect, buf: &mut Buffer) {
@@ -453,6 +498,7 @@ pub(crate) struct TranscriptOverlay {
     /// Cache key for the render-only live tail appended after committed cells.
     live_tail_key: Option<LiveTailKey>,
     is_done: bool,
+    embedded: bool,
 }
 
 /// Cache key for the active-cell "live tail" appended to the transcript overlay.
@@ -487,6 +533,42 @@ impl TranscriptOverlay {
             highlight_cell: None,
             live_tail_key: None,
             is_done: false,
+            embedded: false,
+        }
+    }
+
+    pub(crate) fn new_embedded(
+        transcript_cells: Vec<Arc<dyn HistoryCell>>,
+        keymap: PagerKeymap,
+    ) -> Self {
+        let mut overlay = Self::new(transcript_cells, keymap);
+        overlay.embedded = true;
+        overlay
+    }
+
+    pub(crate) fn is_embedded(&self) -> bool {
+        self.embedded
+    }
+
+    pub(crate) fn scroll_up(&mut self, area: Rect, rows: usize) {
+        self.view.scroll_up(self.scroll_area(area), rows);
+    }
+
+    pub(crate) fn scroll_down(&mut self, area: Rect, rows: usize) {
+        self.view.scroll_down(self.scroll_area(area), rows);
+    }
+
+    pub(crate) fn is_scrolled_to_bottom_in(&self, area: Rect) -> bool {
+        self.view.is_scrolled_to_bottom_in(self.scroll_area(area))
+    }
+
+    fn scroll_area(&self, area: Rect) -> Rect {
+        if self.embedded {
+            area
+        } else {
+            let pager_height = area.height.saturating_sub(3);
+            self.view
+                .content_area(Rect::new(area.x, area.y, area.width, pager_height))
         }
     }
 
@@ -786,6 +868,10 @@ impl TranscriptOverlay {
         self.view.render(top, buf);
         self.render_hints(bottom, buf);
     }
+
+    pub(crate) fn render_embedded(&mut self, area: Rect, buf: &mut Buffer) {
+        self.view.render_content_only(area, buf);
+    }
 }
 
 impl TranscriptOverlay {
@@ -961,7 +1047,9 @@ mod tests {
     use codex_protocol::parse_command::ParsedCommand;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::text::Span;
     use ratatui::text::Text;
+    use url::Url;
 
     #[derive(Debug)]
     struct TestCell {
@@ -979,6 +1067,28 @@ mod tests {
 
         fn transcript_lines(&self, _width: u16) -> Vec<Line<'static>> {
             self.lines.clone()
+        }
+    }
+
+    #[derive(Debug)]
+    struct LinkedTestCell;
+
+    impl crate::history_cell::HistoryCell for LinkedTestCell {
+        fn display_lines(&self, _width: u16) -> Vec<Line<'static>> {
+            vec![Line::from("generated")]
+        }
+
+        fn raw_lines(&self) -> Vec<Line<'static>> {
+            vec![Line::from("generated")]
+        }
+
+        fn transcript_hyperlink_lines(&self, _width: u16) -> Vec<HyperlinkLine> {
+            let mut line = HyperlinkLine::default();
+            line.push_trusted_file_span(
+                Span::raw("generated"),
+                &Url::parse("file:///tmp/generated/").expect("valid file URL"),
+            );
+            vec![line]
         }
     }
 
@@ -1051,6 +1161,59 @@ mod tests {
         assert!(
             s.contains("edit prev"),
             "expected 'edit prev' hint in overlay footer, got: {s:?}"
+        );
+    }
+
+    #[test]
+    fn embedded_transcript_scrolls_without_fullscreen_chrome() {
+        let mut overlay = TranscriptOverlay::new_embedded(
+            (0..10)
+                .map(|i| {
+                    Arc::new(TestCell {
+                        lines: vec![Line::from(format!("line-{i:02}"))],
+                    }) as Arc<dyn HistoryCell>
+                })
+                .collect(),
+            default_pager_keymap(),
+        );
+        let area = Rect::new(0, 0, 24, 4);
+        let mut bottom = Buffer::empty(area);
+        overlay.render_embedded(area, &mut bottom);
+        let bottom_text = buffer_to_text(&bottom, area);
+        assert!(bottom_text.contains("line-09"));
+        assert!(!bottom_text.contains("T R A N S C R I P T"));
+
+        overlay.scroll_up(area, 3);
+        let mut scrolled = Buffer::empty(area);
+        overlay.render_embedded(area, &mut scrolled);
+        assert_ne!(buffer_to_text(&scrolled, area), bottom_text);
+        assert!(!overlay.is_scrolled_to_bottom_in(area));
+
+        overlay.scroll_down(area, usize::MAX);
+        assert!(overlay.is_scrolled_to_bottom_in(area));
+    }
+
+    #[test]
+    fn embedded_transcript_keeps_file_link_targets_after_scrolling() {
+        let mut overlay = TranscriptOverlay::new_embedded(
+            vec![
+                Arc::new(LinkedTestCell) as Arc<dyn HistoryCell>,
+                Arc::new(TestCell {
+                    lines: vec![Line::from("later-1"), Line::from("later-2")],
+                }),
+            ],
+            default_pager_keymap(),
+        );
+        let area = Rect::new(0, 0, 24, 2);
+        overlay.scroll_up(area, usize::MAX);
+        let mut buffer = Buffer::empty(area);
+        overlay.render_embedded(area, &mut buffer);
+
+        assert!(
+            buffer
+                .content
+                .iter()
+                .any(|cell| { cell.symbol().contains("file:///tmp/generated/") })
         );
     }
 
