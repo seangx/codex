@@ -517,7 +517,11 @@ impl ChatWidget {
             .count();
         self.transcript.last_plan_progress = (total > 0).then_some((completed, total));
         self.refresh_status_surfaces();
-        self.transcript.pinned_plan = Some(history_cell::new_plan_update(update));
+        self.transcript.pinned_plan = if completed == total {
+            None
+        } else {
+            Some(history_cell::new_plan_update(update))
+        };
         self.request_redraw();
     }
 

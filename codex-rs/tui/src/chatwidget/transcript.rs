@@ -60,7 +60,6 @@ impl TranscriptState {
     pub(super) fn reset_turn_flags(&mut self) {
         self.saw_copy_source_this_turn = false;
         self.saw_plan_update_this_turn = false;
-        self.pinned_plan = None;
         self.saw_plan_item_this_turn = false;
         self.had_work_activity = false;
         self.latest_proposed_plan_markdown = None;

@@ -1708,7 +1708,7 @@ async fn user_turn_includes_personality_from_config() {
 }
 
 #[tokio::test]
-async fn pinned_plan_stays_visible_until_the_next_task_starts() {
+async fn pinned_plan_survives_turn_changes_and_closes_when_completed() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.on_task_started();
     let update = UpdatePlanArgs {
@@ -1750,12 +1750,40 @@ async fn pinned_plan_stays_visible_until_the_next_task_starts() {
     assert!(chat.transcript.pinned_plan.is_some());
 
     chat.on_task_started();
-    assert!(chat.transcript.pinned_plan.is_none());
+    assert!(chat.transcript.pinned_plan.is_some());
 
-    chat.on_plan_update(update);
     chat.on_interrupted_turn(TurnAbortReason::Interrupted);
     assert!(chat.transcript.pinned_plan.is_some());
 
-    chat.on_task_started();
+    chat.on_plan_update(UpdatePlanArgs {
+        explanation: Some("Plan complete".to_string()),
+        plan: update
+            .plan
+            .into_iter()
+            .map(|mut item| {
+                item.status = StepStatus::Completed;
+                item
+            })
+            .collect(),
+    });
+    assert!(chat.transcript.pinned_plan.is_none());
+}
+
+#[tokio::test]
+async fn empty_plan_update_closes_pinned_plan_on_request() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.on_plan_update(UpdatePlanArgs {
+        explanation: None,
+        plan: vec![PlanItemArg {
+            step: "Keep panel open".into(),
+            status: StepStatus::InProgress,
+        }],
+    });
+    assert!(chat.transcript.pinned_plan.is_some());
+
+    chat.on_plan_update(UpdatePlanArgs {
+        explanation: None,
+        plan: Vec::new(),
+    });
     assert!(chat.transcript.pinned_plan.is_none());
 }
