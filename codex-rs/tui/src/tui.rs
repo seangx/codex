@@ -955,6 +955,7 @@ impl Tui {
             self.event_broker.clone(),
             self.draw_tx.subscribe(),
             self.terminal_focused.clone(),
+            self.alt_screen_active.clone(),
         );
         Box::pin(stream)
     }
