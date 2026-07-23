@@ -439,11 +439,15 @@ impl Renderable for CachedRenderable {
 struct CellRenderable {
     cell: Arc<dyn HistoryCell>,
     highlighted: bool,
+    content: TranscriptContent,
 }
 
 impl Renderable for CellRenderable {
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        let hyperlink_lines = self.cell.transcript_hyperlink_lines(area.width);
+        let hyperlink_lines = match self.content {
+            TranscriptContent::Full => self.cell.transcript_hyperlink_lines(area.width),
+            TranscriptContent::Compact => self.cell.display_hyperlink_lines(area.width),
+        };
         let style = if self.cell.as_any().is::<UserHistoryCell>() {
             if self.highlighted {
                 user_message_style().reversed()
@@ -461,8 +465,17 @@ impl Renderable for CellRenderable {
     }
 
     fn desired_height(&self, width: u16) -> u16 {
-        self.cell.desired_transcript_height(width)
+        match self.content {
+            TranscriptContent::Full => self.cell.desired_transcript_height(width),
+            TranscriptContent::Compact => self.cell.desired_height(width),
+        }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TranscriptContent {
+    Full,
+    Compact,
 }
 
 struct HyperlinkLinesRenderable {
@@ -499,6 +512,7 @@ pub(crate) struct TranscriptOverlay {
     live_tail_key: Option<LiveTailKey>,
     is_done: bool,
     embedded: bool,
+    content: TranscriptContent,
 }
 
 /// Cache key for the active-cell "live tail" appended to the transcript overlay.
@@ -524,7 +538,11 @@ impl TranscriptOverlay {
     pub(crate) fn new(transcript_cells: Vec<Arc<dyn HistoryCell>>, keymap: PagerKeymap) -> Self {
         Self {
             view: PagerView::new(
-                Self::render_cells(&transcript_cells, /*highlight_cell*/ None),
+                Self::render_cells(
+                    &transcript_cells,
+                    /*highlight_cell*/ None,
+                    TranscriptContent::Full,
+                ),
                 "T R A N S C R I P T".to_string(),
                 usize::MAX,
                 keymap,
@@ -534,6 +552,7 @@ impl TranscriptOverlay {
             live_tail_key: None,
             is_done: false,
             embedded: false,
+            content: TranscriptContent::Full,
         }
     }
 
@@ -541,9 +560,24 @@ impl TranscriptOverlay {
         transcript_cells: Vec<Arc<dyn HistoryCell>>,
         keymap: PagerKeymap,
     ) -> Self {
-        let mut overlay = Self::new(transcript_cells, keymap);
-        overlay.embedded = true;
-        overlay
+        Self {
+            view: PagerView::new(
+                Self::render_cells(
+                    &transcript_cells,
+                    /*highlight_cell*/ None,
+                    TranscriptContent::Compact,
+                ),
+                "T R A N S C R I P T".to_string(),
+                usize::MAX,
+                keymap,
+            ),
+            cells: transcript_cells,
+            highlight_cell: None,
+            live_tail_key: None,
+            is_done: false,
+            embedded: true,
+            content: TranscriptContent::Compact,
+        }
     }
 
     pub(crate) fn is_embedded(&self) -> bool {
@@ -575,11 +609,12 @@ impl TranscriptOverlay {
     fn render_cells(
         cells: &[Arc<dyn HistoryCell>],
         highlight_cell: Option<usize>,
+        content: TranscriptContent,
     ) -> Vec<Box<dyn Renderable>> {
         cells
             .iter()
             .enumerate()
-            .map(|(i, cell)| Self::render_cell(cell, i, highlight_cell))
+            .map(|(i, cell)| Self::render_cell(cell, i, highlight_cell, content))
             .collect()
     }
 
@@ -588,10 +623,12 @@ impl TranscriptOverlay {
         cell: &Arc<dyn HistoryCell>,
         index: usize,
         highlight_cell: Option<usize>,
+        content: TranscriptContent,
     ) -> Box<dyn Renderable> {
         let cell_renderable = CellRenderable {
             cell: cell.clone(),
             highlighted: highlight_cell == Some(index),
+            content,
         };
         let mut cell_renderable: Box<dyn Renderable> = if cell.has_stable_transcript_height() {
             Box::new(CachedRenderable::new(cell_renderable))
@@ -623,7 +660,8 @@ impl TranscriptOverlay {
         let follow_bottom = self.view.is_scrolled_to_bottom();
         let had_prior_cells = !self.cells.is_empty();
         let tail_renderable = self.take_live_tail_renderable();
-        let cell_renderable = Self::render_cell(&cell, self.cells.len(), self.highlight_cell);
+        let cell_renderable =
+            Self::render_cell(&cell, self.cells.len(), self.highlight_cell, self.content);
         self.cells.push(cell);
         self.view.renderables.push(cell_renderable);
         if let Some(tail) = tail_renderable {
@@ -779,7 +817,7 @@ impl TranscriptOverlay {
 
     fn rebuild_renderables(&mut self) {
         let tail_renderable = self.take_live_tail_renderable();
-        self.view.renderables = Self::render_cells(&self.cells, self.highlight_cell);
+        self.view.renderables = Self::render_cells(&self.cells, self.highlight_cell, self.content);
         if let Some(tail) = tail_renderable {
             self.view.renderables.push(tail);
         }
@@ -1073,6 +1111,17 @@ mod tests {
     #[derive(Debug)]
     struct LinkedTestCell;
 
+    impl LinkedTestCell {
+        fn hyperlink_lines() -> Vec<HyperlinkLine> {
+            let mut line = HyperlinkLine::default();
+            line.push_trusted_file_span(
+                Span::raw("generated"),
+                &Url::parse("file:///tmp/generated/").expect("valid file URL"),
+            );
+            vec![line]
+        }
+    }
+
     impl crate::history_cell::HistoryCell for LinkedTestCell {
         fn display_lines(&self, _width: u16) -> Vec<Line<'static>> {
             vec![Line::from("generated")]
@@ -1082,13 +1131,33 @@ mod tests {
             vec![Line::from("generated")]
         }
 
+        fn display_hyperlink_lines(&self, _width: u16) -> Vec<HyperlinkLine> {
+            Self::hyperlink_lines()
+        }
+
         fn transcript_hyperlink_lines(&self, _width: u16) -> Vec<HyperlinkLine> {
-            let mut line = HyperlinkLine::default();
-            line.push_trusted_file_span(
-                Span::raw("generated"),
-                &Url::parse("file:///tmp/generated/").expect("valid file URL"),
-            );
-            vec![line]
+            Self::hyperlink_lines()
+        }
+    }
+
+    #[derive(Debug)]
+    struct DifferingTestCell;
+
+    impl crate::history_cell::HistoryCell for DifferingTestCell {
+        fn display_lines(&self, _width: u16) -> Vec<Line<'static>> {
+            vec![Line::from("compact tool summary")]
+        }
+
+        fn raw_lines(&self) -> Vec<Line<'static>> {
+            vec![Line::from("raw tool output")]
+        }
+
+        fn transcript_lines(&self, _width: u16) -> Vec<Line<'static>> {
+            vec![
+                Line::from("$ command"),
+                Line::from("expanded output line 1"),
+                Line::from("expanded output line 2"),
+            ]
         }
     }
 
@@ -1191,6 +1260,41 @@ mod tests {
 
         overlay.scroll_down(area, usize::MAX);
         assert!(overlay.is_scrolled_to_bottom_in(area));
+    }
+
+    #[test]
+    fn embedded_transcript_uses_compact_cell_content() {
+        let mut overlay = TranscriptOverlay::new_embedded(
+            vec![Arc::new(DifferingTestCell) as Arc<dyn HistoryCell>],
+            default_pager_keymap(),
+        );
+        let area = Rect::new(0, 0, 32, 4);
+        let mut buffer = Buffer::empty(area);
+
+        overlay.render_embedded(area, &mut buffer);
+
+        insta::assert_snapshot!(buffer_to_text(&buffer, area), @"
+        compact tool summary
+        ~
+        ~
+        ~
+        ");
+    }
+
+    #[test]
+    fn full_transcript_keeps_expanded_cell_content() {
+        let mut overlay = TranscriptOverlay::new(
+            vec![Arc::new(DifferingTestCell) as Arc<dyn HistoryCell>],
+            default_pager_keymap(),
+        );
+        let area = Rect::new(0, 0, 32, 7);
+        let mut buffer = Buffer::empty(area);
+
+        overlay.render(area, &mut buffer);
+        let rendered = buffer_to_text(&buffer, area);
+
+        assert!(rendered.contains("expanded output line 1"));
+        assert!(!rendered.contains("compact tool summary"));
     }
 
     #[test]
