@@ -655,6 +655,30 @@ mod tests {
     }
 
     #[test]
+    fn scrollback_selection_does_not_highlight_trailing_blank_columns() {
+        use crate::mouse_selection::SelectionRange;
+
+        let width: u16 = 20;
+        let height: u16 = 6;
+        let backend = VT100Backend::new(width, height);
+        let mut term = crate::custom_terminal::Terminal::with_options(backend).expect("terminal");
+        term.set_viewport_area(Rect::new(0, height - 1, width, 1));
+        insert_history_lines(&mut term, vec![Line::from("history")]).expect("insert history text");
+
+        let selection = SelectionRange::new(
+            ratatui::layout::Position::new(0, 4),
+            ratatui::layout::Position::new(19, 4),
+        );
+        term.render_history_selection(Some(selection))
+            .expect("highlight history selection");
+
+        let screen = term.backend().vt100().screen();
+        assert!(screen.cell(4, 6).is_some_and(vt100::Cell::inverse));
+        assert!(!screen.cell(4, 7).is_some_and(vt100::Cell::inverse));
+        assert!(!screen.cell(4, 19).is_some_and(vt100::Cell::inverse));
+    }
+
+    #[test]
     fn vt100_blockquote_line_emits_green_fg() {
         // Set up a small off-screen terminal
         let width: u16 = 40;

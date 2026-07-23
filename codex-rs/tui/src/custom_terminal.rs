@@ -675,8 +675,11 @@ where
             .enumerate()
         {
             let y = first_y.saturating_add(u16::try_from(row_offset).unwrap_or(u16::MAX));
+            let Some(content_end) = history_row_content_end(row.cells()) else {
+                continue;
+            };
             let mut x = 0usize;
-            while x < row.cells().len() {
+            while x < row.cells().len() && x <= content_end {
                 let source_cell = &row.cells()[x];
                 let width = display_width(source_cell.symbol()).max(1);
                 let end = x.saturating_add(width).min(row.cells().len());
@@ -746,6 +749,24 @@ where
         }
         self.backend.size()
     }
+}
+
+fn history_row_content_end(cells: &[Cell]) -> Option<usize> {
+    let mut content_end = None;
+    let mut x = 0usize;
+    while x < cells.len() {
+        let symbol = cells[x].symbol();
+        let width = display_width(symbol).max(1);
+        if symbol.chars().any(|ch| !ch.is_whitespace()) {
+            content_end = Some(
+                x.saturating_add(width)
+                    .saturating_sub(1)
+                    .min(cells.len() - 1),
+            );
+        }
+        x = x.saturating_add(width);
+    }
+    content_end
 }
 
 use ratatui::buffer::Cell;

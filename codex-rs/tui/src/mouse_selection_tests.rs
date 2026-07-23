@@ -115,6 +115,27 @@ fn selection_endpoints_on_wide_character_continuations_snap_to_the_character() {
 }
 
 #[test]
+fn mouse_up_copies_text_and_clears_the_selection_highlight() {
+    let buffer = buffer_with_lines(&["select me"]);
+    let mut state = MouseSelectionState::default();
+
+    state.handle_event(
+        mouse(MouseEventKind::Down(MouseButton::Left), 0, 0),
+        &buffer,
+    );
+    state.handle_event(
+        mouse(MouseEventKind::Drag(MouseButton::Left), 5, 0),
+        &buffer,
+    );
+    assert!(state.selection().is_some());
+    assert_eq!(
+        state.handle_event(mouse(MouseEventKind::Up(MouseButton::Left), 5, 0), &buffer),
+        MouseSelectionAction::Copy("select".to_string())
+    );
+    assert_eq!(state.selection(), None);
+}
+
+#[test]
 fn click_is_distinct_from_drag_selection() {
     let buffer = buffer_with_lines(&["link"]);
     let mut state = MouseSelectionState::default();
@@ -162,4 +183,26 @@ fn selection_above_inline_viewport_does_not_highlight_viewport_edge() {
             .iter()
             .all(|cell| !cell.modifier.contains(Modifier::REVERSED))
     );
+}
+
+#[test]
+fn selection_highlight_excludes_trailing_blank_terminal_columns() {
+    let mut buffer = Buffer::empty(Rect::new(0, 0, 20, 2));
+    buffer.set_string(0, 0, "short", ratatui::style::Style::default());
+    buffer.set_string(0, 1, "line", ratatui::style::Style::default());
+
+    SelectionRange::new(Position::new(0, 0), Position::new(19, 1)).highlight(&mut buffer);
+
+    for x in 0..20 {
+        assert_eq!(
+            buffer[(x, 0)].modifier.contains(Modifier::REVERSED),
+            x < 5,
+            "unexpected row 0 highlight at x={x}"
+        );
+        assert_eq!(
+            buffer[(x, 1)].modifier.contains(Modifier::REVERSED),
+            x < 4,
+            "unexpected row 1 highlight at x={x}"
+        );
+    }
 }

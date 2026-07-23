@@ -41,11 +41,18 @@ impl SelectionRange {
 
         for y in start.y..=end.y {
             let row_start = if y == start.y { start.x } else { buffer.area.x };
-            let row_end = if y == end.y {
+            let selected_row_end = if y == end.y {
                 end.x
             } else {
                 buffer.area.right().saturating_sub(1)
             };
+            let Some(content_end) = row_content_end(buffer, y) else {
+                continue;
+            };
+            let row_end = selected_row_end.min(content_end);
+            if row_start > row_end {
+                continue;
+            }
             for x in row_start..=row_end {
                 buffer[(x, y)].modifier.insert(Modifier::REVERSED);
             }
@@ -155,10 +162,11 @@ impl MouseSelectionState {
                 }
 
                 let selection = SelectionRange::new(anchor, position);
-                self.selection = Some(selection);
-                selection
+                let action = selection
                     .text(displayed_buffer)
-                    .map_or(MouseSelectionAction::None, MouseSelectionAction::Copy)
+                    .map_or(MouseSelectionAction::None, MouseSelectionAction::Copy);
+                self.selection = None;
+                action
             }
             _ => MouseSelectionAction::None,
         }
@@ -187,6 +195,25 @@ fn symbol_start_at(buffer: &Buffer, position: Position) -> Position {
         x = x.saturating_add(width);
     }
     position
+}
+
+fn row_content_end(buffer: &Buffer, y: u16) -> Option<u16> {
+    let mut content_end = None;
+    let mut x = buffer.area.x;
+    while x < buffer.area.right() {
+        let symbol = strip_osc8(buffer[(x, y)].symbol());
+        let width =
+            u16::try_from(UnicodeWidthStr::width(symbol.as_str()).max(1)).unwrap_or(u16::MAX);
+        if symbol.chars().any(|ch| !ch.is_whitespace()) {
+            content_end = Some(
+                x.saturating_add(width)
+                    .saturating_sub(1)
+                    .min(buffer.area.right().saturating_sub(1)),
+            );
+        }
+        x = x.saturating_add(width);
+    }
+    content_end
 }
 
 fn position_max(left: Position, right: Position) -> Position {
