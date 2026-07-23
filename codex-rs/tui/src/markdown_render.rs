@@ -767,8 +767,9 @@ where
             return;
         }
         self.line_ends_with_local_link_target = false;
+        let code = code.into_string();
         if self.in_table_cell() {
-            self.push_span_to_table_cell(Span::from(code.into_string()).style(self.styles.code));
+            self.push_span_to_table_cell(Span::from(code).style(self.styles.code));
             return;
         }
 
@@ -776,8 +777,15 @@ where
             self.push_line(Line::default());
             self.pending_marker_line = false;
         }
-        let span = Span::from(code.into_string()).style(self.styles.code);
-        self.push_span(span);
+        let destination = web_destination(&code);
+        let span = Span::from(code).style(self.styles.code);
+        if let Some(destination) = destination {
+            let mut annotated = HyperlinkLine::new(Line::default());
+            annotated.push_span(span, Some(&destination));
+            self.push_annotated(annotated);
+        } else {
+            self.push_span(span);
+        }
     }
 
     fn html(&mut self, html: CowStr<'a>, inline: bool) {
@@ -2954,15 +2962,22 @@ mod tests {
     }
 
     #[test]
-    fn does_not_annotate_code_or_non_web_markdown_links() {
-        let markdown = "`https://example.com/inline`\n\n```text\nhttps://example.com/block\n```\n\n[mail](mailto:test@example.com)\n\n[https://example.com/label](mailto:test@example.com)\n\n| Target |\n| --- |\n| [https://example.com/table-label](mailto:test@example.com) |";
+    fn annotates_web_url_inline_code_but_not_code_blocks_or_non_web_links() {
+        let inline_url = "http://localhost:5302/flip-demo.html";
+        let markdown = format!(
+            "`{inline_url}`\n\n```text\nhttps://example.com/block\n```\n\n[mail](mailto:test@example.com)\n\n[https://example.com/label](mailto:test@example.com)\n\n| Target |\n| --- |\n| [https://example.com/table-label](mailto:test@example.com) |"
+        );
         let lines = render_markdown_lines_with_width_and_cwd(
-            markdown,
+            &markdown,
             /*width*/ Some(80),
             /*cwd*/ None,
         );
 
-        assert!(lines.iter().all(|line| line.hyperlinks.is_empty()));
+        let destinations = lines
+            .iter()
+            .flat_map(|line| line.hyperlinks.iter().map(|link| link.destination.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(destinations, vec![inline_url]);
     }
 
     #[test]

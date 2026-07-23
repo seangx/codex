@@ -222,7 +222,11 @@ impl ToolActivitySummary {
         if !self.mcp_calls.is_empty() {
             let first = &self.mcp_calls[0];
             if self.mcp_calls.iter().all(|call| call == first) {
-                let suffix = if self.mcp_calls.len() > 1 { format!(" {} times", self.mcp_calls.len()) } else { Default::default() };
+                let suffix = if self.mcp_calls.len() > 1 {
+                    format!(" {} times", self.mcp_calls.len())
+                } else {
+                    Default::default()
+                };
                 parts.push(format!("Called {first}{suffix}"));
             } else {
                 parts.push(format!("Called {} tools", self.mcp_calls.len()));
