@@ -156,6 +156,7 @@ pub struct TuiEventStream<S: EventSource + Default + Unpin = CrosstermEventSourc
     broker: Arc<EventBroker<S>>,
     draw_stream: BroadcastStream<()>,
     resume_stream: WatchStream<()>,
+    pending_crossterm_event: Option<Event>,
     terminal_focused: Arc<AtomicBool>,
     poll_draw_first: bool,
     #[cfg(unix)]
@@ -176,6 +177,7 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
             broker,
             draw_stream: BroadcastStream::new(draw_rx),
             resume_stream,
+            pending_crossterm_event: None,
             terminal_focused,
             poll_draw_first: false,
             #[cfg(unix)]
@@ -193,7 +195,9 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
         // Some crossterm events map to None (e.g. FocusLost, mouse); loop so we keep polling
         // until we return a mapped event, hit Pending, or see EOF/error.
         loop {
-            let poll_result = {
+            let poll_result = if let Some(event) = self.pending_crossterm_event.take() {
+                Some(event)
+            } else {
                 let mut state = self
                     .broker
                     .state
@@ -229,10 +233,42 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
                 }
             };
 
+            let poll_result = poll_result.map(|event| self.coalesce_mouse_scroll(event, cx));
             if let Some(mapped) = poll_result.and_then(|event| self.map_crossterm_event(event)) {
                 return Poll::Ready(Some(mapped));
             }
         }
+    }
+
+    /// Drop stale wheel ticks that have already accumulated in the terminal input buffer.
+    ///
+    /// Trackpads can produce wheel events faster than the TUI redraws. Replaying every buffered
+    /// tick makes the viewport keep moving after the gesture has ended. Preserve the newest wheel
+    /// direction and defer the first non-wheel event so clicks and keyboard input are never lost.
+    fn coalesce_mouse_scroll(&mut self, mut event: Event, cx: &mut Context<'_>) -> Event {
+        if !is_mouse_scroll(&event) {
+            return event;
+        }
+
+        let mut state = self
+            .broker
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(events) = state.active_event_source_mut() else {
+            return event;
+        };
+        loop {
+            match Pin::new(&mut *events).poll_next(cx) {
+                Poll::Ready(Some(Ok(next))) if is_mouse_scroll(&next) => event = next,
+                Poll::Ready(Some(Ok(next))) => {
+                    self.pending_crossterm_event = Some(next);
+                    break;
+                }
+                Poll::Ready(Some(Err(_))) | Poll::Ready(None) | Poll::Pending => break,
+            }
+        }
+        event
     }
 
     /// Poll the draw broadcast stream for the next draw event. Draw events are used to trigger a redraw of the TUI.
@@ -286,6 +322,17 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
             }
         }
     }
+}
+
+fn is_mouse_scroll(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::Mouse(mouse)
+            if matches!(
+                mouse.kind,
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+            )
+    )
 }
 
 impl<S: EventSource + Default + Unpin> Unpin for TuiEventStream<S> {}
@@ -465,6 +512,33 @@ mod tests {
         handle.send(Ok(Event::Mouse(mouse)));
 
         assert!(matches!(stream.next().await, Some(TuiEvent::Mouse(event)) if event == mouse));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn coalesces_buffered_mouse_wheel_events_and_preserves_following_input() {
+        let (broker, handle, _draw_tx, draw_rx, terminal_focused) = setup();
+        let mut stream = make_stream(broker, draw_rx, terminal_focused);
+        let scroll_up = crossterm::event::MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+        let scroll_down = crossterm::event::MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            ..scroll_up
+        };
+        let key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
+
+        handle.send(Ok(Event::Mouse(scroll_up)));
+        handle.send(Ok(Event::Mouse(scroll_up)));
+        handle.send(Ok(Event::Mouse(scroll_down)));
+        handle.send(Ok(Event::Key(key)));
+
+        assert!(
+            matches!(stream.next().await, Some(TuiEvent::Mouse(event)) if event == scroll_down)
+        );
+        assert!(matches!(stream.next().await, Some(TuiEvent::Key(event)) if event == key));
     }
 
     #[test]
