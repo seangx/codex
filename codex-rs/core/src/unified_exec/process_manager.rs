@@ -58,6 +58,7 @@ use crate::unified_exec::process::OutputBuffer;
 use crate::unified_exec::process::OutputHandles;
 use crate::unified_exec::process::SpawnLifecycleHandle;
 use crate::unified_exec::process::UnifiedExecProcess;
+use crate::unified_exec::start_monitoring_output;
 use codex_network_proxy::NetworkProxy;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
 use codex_protocol::error::CodexErr;
@@ -452,7 +453,16 @@ impl UnifiedExecProcessManager {
         );
         emitter.emit(event_ctx, ToolEventStage::Begin).await;
 
-        start_streaming_output(&process, context, Arc::clone(&transcript));
+        if !request.monitor {
+            start_streaming_output(&process, context, Arc::clone(&transcript));
+        }
+        if request.monitor {
+            start_monitoring_output(
+                Arc::clone(&process),
+                Arc::clone(&context.session),
+                request.process_id,
+            );
+        }
         let start = Instant::now();
         // Persist live sessions before the initial yield wait so interrupting the
         // turn cannot drop the last Arc and terminate the background process.
@@ -472,6 +482,7 @@ impl UnifiedExecProcessManager {
                 network_denial_monitor,
                 Arc::clone(&transcript),
                 Arc::clone(&initial_exec_command_active),
+                request.monitor,
             )
             .await;
             Some(InitialExecCommandGuard {
@@ -935,6 +946,7 @@ impl UnifiedExecProcessManager {
         network_denial_monitor: Option<tokio::task::JoinHandle<()>>,
         transcript: Arc<tokio::sync::Mutex<HeadTailBuffer>>,
         initial_exec_command_active: Arc<AtomicBool>,
+        monitor: bool,
     ) {
         let entry = ProcessEntry {
             process: Arc::clone(&process),
@@ -947,6 +959,7 @@ impl UnifiedExecProcessManager {
             network_approval,
             session: Arc::downgrade(&context.session),
             last_used: started_at,
+            monitor,
         };
         let pruned_entry = {
             let mut store = self.process_store.lock().await;
@@ -1485,6 +1498,20 @@ impl UnifiedExecProcessManager {
 
         unregister_network_approval_for_entry(&entry).await;
         true
+    }
+
+    pub(crate) async fn terminate_monitor(&self, process_id: i32) -> bool {
+        let is_monitor = {
+            let store = self.process_store.lock().await;
+            store
+                .processes
+                .get(&process_id)
+                .is_some_and(|entry| entry.monitor)
+        };
+        if !is_monitor {
+            return false;
+        }
+        self.terminate_process(process_id).await
     }
 }
 

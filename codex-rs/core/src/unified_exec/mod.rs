@@ -46,6 +46,7 @@ use crate::tools::network_approval::DeferredNetworkApproval;
 mod async_watcher;
 mod errors;
 mod head_tail_buffer;
+mod monitor;
 mod process;
 mod process_manager;
 mod process_state;
@@ -55,6 +56,7 @@ pub(crate) fn set_deterministic_process_ids_for_tests(enabled: bool) {
 }
 
 pub(crate) use errors::UnifiedExecError;
+pub(crate) use monitor::start_monitoring_output;
 pub(crate) use process::NoopSpawnLifecycle;
 #[cfg(unix)]
 pub(crate) use process::SpawnLifecycle;
@@ -107,6 +109,7 @@ pub(crate) struct ExecCommandRequest {
     pub additional_permissions_preapproved: bool,
     pub justification: Option<String>,
     pub prefix_rule: Option<Vec<String>>,
+    pub monitor: bool,
 }
 
 #[derive(Debug)]
@@ -175,6 +178,7 @@ struct ProcessEntry {
     network_approval: Option<DeferredNetworkApproval>,
     session: Weak<Session>,
     last_used: tokio::time::Instant,
+    monitor: bool,
 }
 
 pub(crate) fn clamp_yield_time(yield_time_ms: u64) -> u64 {

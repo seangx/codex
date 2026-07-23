@@ -269,7 +269,7 @@ impl UnifiedExecProcess {
         self.terminate();
     }
 
-    async fn snapshot_output(&self) -> Vec<Vec<u8>> {
+    pub(super) async fn snapshot_output(&self) -> Vec<Vec<u8>> {
         let guard = self.output_buffer.lock().await;
         guard.snapshot_chunks()
     }
