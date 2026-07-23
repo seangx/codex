@@ -117,6 +117,8 @@ use codex_protocol::request_permissions::RequestPermissionProfile;
 use codex_protocol::user_input::TextElement;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use crossterm::event::KeyModifiers;
+use crossterm::event::MouseEvent;
+use crossterm::event::MouseEventKind;
 use insta::assert_snapshot;
 use pretty_assertions::assert_eq;
 use ratatui::buffer::Buffer;
@@ -140,6 +142,51 @@ macro_rules! assert_app_snapshot {
 
 fn test_absolute_path(path: &str) -> AbsolutePathBuf {
     AbsolutePathBuf::try_from(PathBuf::from(path)).expect("absolute test path")
+}
+
+#[tokio::test]
+async fn mouse_scroll_keeps_composer_while_using_clickable_embedded_transcript() -> Result<()> {
+    let mut app = make_test_app().await;
+    app.chat_widget
+        .restore_user_message_to_composer("draft stays editable".into());
+    app.transcript_cells = (0..30)
+        .map(|i| plain_line_cell(format!("history-{i}")))
+        .collect();
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    let scroll = |kind| MouseEvent {
+        kind,
+        column: 0,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    };
+
+    app.handle_mouse_scroll(&mut tui, scroll(MouseEventKind::ScrollUp))?;
+
+    assert!(
+        app.overlay
+            .as_ref()
+            .is_some_and(Overlay::is_embedded_transcript)
+    );
+    assert!(
+        !tui.is_alt_screen_active(),
+        "the blank alternate buffer must stay hidden until the first overlay draw"
+    );
+    assert_eq!(
+        app.chat_widget.composer_text_with_pending(),
+        "draft stays editable"
+    );
+
+    app.overlay_forward_event(&mut tui, TuiEvent::Draw)?;
+    assert!(tui.is_alt_screen_active());
+
+    app.handle_mouse_scroll(&mut tui, scroll(MouseEventKind::ScrollDown))?;
+
+    assert!(app.overlay.is_none());
+    assert_eq!(
+        app.chat_widget.composer_text_with_pending(),
+        "draft stays editable"
+    );
+    Ok(())
 }
 
 #[tokio::test]
@@ -5177,6 +5224,42 @@ async fn required_stream_reflow_during_capped_initial_replay_uses_transcript_tai
     app.finish_initial_history_replay_buffer(&mut tui);
     assert!(app.initial_history_replay_buffer.is_none());
     assert!(app.transcript_reflow.has_pending_reflow());
+    Ok(())
+}
+
+#[tokio::test]
+async fn directive_only_completion_removes_streamed_directive() -> Result<()> {
+    let (mut app, _rx, _op_rx) = make_test_app_with_channels().await;
+    app.config.terminal_resize_reflow.max_rows = TerminalResizeReflowMaxRows::Limit(20);
+    app.begin_initial_history_replay_buffer();
+    app.transcript_cells = vec![
+        plain_line_cell("before directive"),
+        Arc::new(AgentMessageCell::new(
+            vec![Line::from(r#"::git-stage{cwd="/tmp"}"#)],
+            /*is_first_line*/ true,
+        )),
+    ];
+
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    app.handle_consolidate_agent_message(
+        &mut tui,
+        String::new(),
+        PathBuf::from("/tmp"),
+        /*inline_visualization_context*/ None,
+        ConsolidationScrollbackReflow::Required,
+        /*deferred_history_cell*/ None,
+    )?;
+
+    let rendered = app.render_transcript_lines_for_reflow(/*width*/ 80);
+    assert_snapshot!(
+        "directive_only_completion_removes_streamed_directive",
+        rendered
+            .lines
+            .iter()
+            .map(rendered_line_text)
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
     Ok(())
 }
 

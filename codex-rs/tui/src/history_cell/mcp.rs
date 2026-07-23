@@ -2,6 +2,8 @@
 
 use super::*;
 
+const TOOL_SUMMARY_ORANGE: Color = Color::LightYellow;
+
 #[derive(Debug)]
 struct McpImageOutputCell;
 
@@ -643,13 +645,32 @@ fn format_mcp_invocation<'a>(invocation: McpInvocation) -> Line<'a> {
         })
         .unwrap_or_default();
 
+    let tool_summary_style = Style::default().fg(TOOL_SUMMARY_ORANGE);
     let invocation_spans = vec![
-        invocation.server.clone().cyan(),
-        ".".into(),
-        invocation.tool.cyan(),
+        Span::styled(invocation.server.clone(), tool_summary_style),
+        Span::styled(".", tool_summary_style),
+        Span::styled(invocation.tool, tool_summary_style),
         "(".into(),
         args_str.dim(),
         ")".into(),
     ];
     invocation_spans.into()
+}
+
+#[cfg(test)]
+mod invocation_style_tests {
+    use super::*;
+
+    #[test]
+    fn tool_summary_is_orange() {
+        let line = format_mcp_invocation(McpInvocation {
+            server: "hive".to_string(),
+            tool: "hive_inbox".to_string(),
+            arguments: None,
+        });
+
+        assert_eq!(line.spans[0].style.fg, Some(TOOL_SUMMARY_ORANGE));
+        assert_eq!(line.spans[1].style.fg, Some(TOOL_SUMMARY_ORANGE));
+        assert_eq!(line.spans[2].style.fg, Some(TOOL_SUMMARY_ORANGE));
+    }
 }

@@ -9,11 +9,11 @@ rich before:
 
 • - first item
   - second item
-  
+
    Col     Value
   ━━━━━━  ━━━━━━━
    code    x = 1
-  
+
   copy me
 • workspace.inspect
 
@@ -41,10 +41,10 @@ rich after:
 
 • - first item
   - second item
-  
+
    Col     Value
   ━━━━━━  ━━━━━━━
    code    x = 1
-  
+
   copy me
 • workspace.inspect

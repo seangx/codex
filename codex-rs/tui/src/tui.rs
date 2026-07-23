@@ -33,6 +33,7 @@ use ratatui::backend::Backend;
 use ratatui::backend::CrosstermBackend;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::execute;
+use ratatui::crossterm::queue;
 use ratatui::crossterm::terminal::disable_raw_mode;
 use ratatui::crossterm::terminal::enable_raw_mode;
 use ratatui::layout::Offset;
@@ -765,6 +766,9 @@ pub struct Tui {
     suspend_context: SuspendContext,
     // True when overlay alt-screen UI is active
     alt_screen_active: Arc<AtomicBool>,
+    // Enter alt-screen inside the next synchronized draw so the terminal never exposes its blank
+    // alternate buffer before the first frame is ready.
+    pending_alt_screen_enter: bool,
     // True when terminal/tab is focused; updated internally from crossterm events
     terminal_focused: Arc<AtomicBool>,
     enhanced_keys_supported: bool,
@@ -821,6 +825,7 @@ impl Tui {
             #[cfg(unix)]
             suspend_context: SuspendContext::new(),
             alt_screen_active: Arc::new(AtomicBool::new(false)),
+            pending_alt_screen_enter: false,
             terminal_focused: Arc::new(AtomicBool::new(true)),
             enhanced_keys_supported,
             notification_backend: Some(detect_backend(NotificationMethod::default())),
@@ -834,6 +839,9 @@ impl Tui {
     /// Set whether alternate screen is enabled. When false, enter_alt_screen() becomes a no-op.
     pub fn set_alt_screen_enabled(&mut self, enabled: bool) {
         self.alt_screen_enabled = enabled;
+        if !enabled {
+            self.pending_alt_screen_enter = false;
+        }
     }
 
     pub fn set_notification_settings(
@@ -955,6 +963,7 @@ impl Tui {
             self.event_broker.clone(),
             self.draw_tx.subscribe(),
             self.terminal_focused.clone(),
+            self.alt_screen_active.clone(),
         );
         Box::pin(stream)
     }
@@ -976,6 +985,7 @@ impl Tui {
         if !self.alt_screen_enabled {
             return Ok(());
         }
+        self.pending_alt_screen_enter = false;
         let _ = execute!(self.terminal.backend_mut(), EnterAlternateScreen);
         // Enable "alternate scroll" so terminals may translate wheel to arrows
         let _ = execute!(self.terminal.backend_mut(), EnableAlternateScroll);
@@ -993,9 +1003,22 @@ impl Tui {
         Ok(())
     }
 
+    /// Defer entering alt-screen until the next draw's synchronized update.
+    ///
+    /// This keeps the terminal's blank alternate buffer hidden until the first frame has been
+    /// rendered. Callers must schedule a frame after setting this state.
+    pub(crate) fn enter_alt_screen_on_next_draw(&mut self) {
+        if self.alt_screen_enabled && !self.is_alt_screen_active() {
+            self.pending_alt_screen_enter = true;
+        }
+    }
+
     /// Leave alternate screen and restore the previously saved inline viewport, if any.
     pub fn leave_alt_screen(&mut self) -> Result<()> {
         if !self.alt_screen_enabled {
+            return Ok(());
+        }
+        if std::mem::take(&mut self.pending_alt_screen_enter) && !self.is_alt_screen_active() {
             return Ok(());
         }
         // Disable alternate scroll when leaving alt-screen
@@ -1128,9 +1151,16 @@ impl Tui {
             .suspend_context
             .prepare_resume_action(&mut self.alt_saved_viewport);
 
+        let enter_alt_screen = std::mem::take(&mut self.pending_alt_screen_enter);
+
         // Precompute any viewport updates that need a cursor-position query before entering
         // the synchronized update, to avoid racing with the event reader.
-        let mut pending_viewport_area = self.pending_viewport_area()?;
+        // A pending alt-screen transition supersedes the current inline viewport calculation.
+        let mut pending_viewport_area = if enter_alt_screen {
+            None
+        } else {
+            self.pending_viewport_area()?
+        };
 
         ensure_virtual_terminal_processing()?;
 
@@ -1138,6 +1168,24 @@ impl Tui {
             #[cfg(unix)]
             if let Some(prepared) = prepared_resume.take() {
                 prepared.apply(&mut self.terminal)?;
+            }
+
+            if enter_alt_screen && !self.alt_screen_active.load(Ordering::Relaxed) {
+                queue!(
+                    self.terminal.backend_mut(),
+                    EnterAlternateScreen,
+                    EnableAlternateScroll
+                )?;
+                let size = self.terminal.size()?;
+                self.alt_saved_viewport = Some(self.terminal.viewport_area);
+                self.terminal.set_viewport_area(ratatui::layout::Rect::new(
+                    0,
+                    0,
+                    size.width,
+                    size.height,
+                ));
+                self.terminal.clear()?;
+                self.alt_screen_active.store(true, Ordering::Relaxed);
             }
 
             let terminal = &mut self.terminal;

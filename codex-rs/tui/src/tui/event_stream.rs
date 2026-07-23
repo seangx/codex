@@ -26,8 +26,6 @@ use std::task::Context;
 use std::task::Poll;
 
 use crossterm::event::Event;
-use crossterm::event::KeyCode;
-use crossterm::event::KeyEvent;
 use crossterm::event::MouseButton;
 use crossterm::event::MouseEventKind;
 use tokio::sync::broadcast;
@@ -162,7 +160,6 @@ pub struct TuiEventStream<S: EventSource + Default + Unpin = CrosstermEventSourc
     poll_draw_first: bool,
     #[cfg(unix)]
     suspend_context: crate::tui::job_control::SuspendContext,
-    #[cfg(unix)]
     alt_screen_active: Arc<AtomicBool>,
 }
 
@@ -172,7 +169,7 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
         draw_rx: broadcast::Receiver<()>,
         terminal_focused: Arc<AtomicBool>,
         #[cfg(unix)] suspend_context: crate::tui::job_control::SuspendContext,
-        #[cfg(unix)] alt_screen_active: Arc<AtomicBool>,
+        alt_screen_active: Arc<AtomicBool>,
     ) -> Self {
         let resume_stream = WatchStream::from_changes(broker.resume_events_rx());
         Self {
@@ -183,7 +180,6 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
             poll_draw_first: false,
             #[cfg(unix)]
             suspend_context,
-            #[cfg(unix)]
             alt_screen_active,
         }
     }
@@ -274,15 +270,9 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
             Event::Resize(_, _) => Some(TuiEvent::Resize),
             Event::Paste(pasted) => Some(TuiEvent::Paste(pasted)),
             Event::Mouse(mouse_event) => match mouse_event.kind {
-                MouseEventKind::Down(MouseButton::Left) => Some(TuiEvent::Mouse(mouse_event)),
-                MouseEventKind::ScrollUp => Some(TuiEvent::Key(KeyEvent::new(
-                    KeyCode::Up,
-                    mouse_event.modifiers,
-                ))),
-                MouseEventKind::ScrollDown => Some(TuiEvent::Key(KeyEvent::new(
-                    KeyCode::Down,
-                    mouse_event.modifiers,
-                ))),
+                MouseEventKind::Down(MouseButton::Left)
+                | MouseEventKind::ScrollUp
+                | MouseEventKind::ScrollDown => Some(TuiEvent::Mouse(mouse_event)),
                 _ => None,
             },
             Event::FocusGained => {
@@ -402,7 +392,6 @@ mod tests {
             terminal_focused,
             #[cfg(unix)]
             crate::tui::job_control::SuspendContext::new(),
-            #[cfg(unix)]
             Arc::new(AtomicBool::new(false)),
         )
     }
@@ -463,19 +452,35 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn mouse_wheel_preserves_alternate_screen_arrow_behavior() {
+    async fn mouse_wheel_maps_to_mouse_event_in_alternate_screen() {
         let (broker, handle, _draw_tx, draw_rx, terminal_focused) = setup();
         let mut stream = make_stream(broker, draw_rx, terminal_focused);
-        handle.send(Ok(Event::Mouse(crossterm::event::MouseEvent {
+        stream.alt_screen_active.store(true, Ordering::Relaxed);
+        let mouse = crossterm::event::MouseEvent {
             kind: MouseEventKind::ScrollUp,
             column: 0,
             row: 0,
             modifiers: KeyModifiers::NONE,
-        })));
+        };
+        handle.send(Ok(Event::Mouse(mouse)));
+
+        assert!(matches!(stream.next().await, Some(TuiEvent::Mouse(event)) if event == mouse));
+    }
+
+    #[test]
+    fn mouse_wheel_maps_to_mouse_event_inline() {
+        let (broker, _handle, _draw_tx, draw_rx, terminal_focused) = setup();
+        let mut stream = make_stream(broker, draw_rx, terminal_focused);
+        let mouse = crossterm::event::MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
 
         assert!(matches!(
-            stream.next().await,
-            Some(TuiEvent::Key(event)) if event == KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)
+            stream.map_crossterm_event(Event::Mouse(mouse)),
+            Some(TuiEvent::Mouse(event)) if event == mouse
         ));
     }
 
