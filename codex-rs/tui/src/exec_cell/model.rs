@@ -160,6 +160,16 @@ impl ExecCell {
         self.calls.iter().any(|c| c.duration.is_none())
     }
 
+    pub(crate) fn has_failed_call(&self) -> bool {
+        self.calls.iter().any(|call| {
+            call.duration.is_some()
+                && call
+                    .output
+                    .as_ref()
+                    .is_some_and(|output| output.exit_code != 0)
+        })
+    }
+
     pub(crate) fn active_start_time(&self) -> Option<Instant> {
         self.calls
             .iter()

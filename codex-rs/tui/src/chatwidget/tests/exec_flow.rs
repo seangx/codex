@@ -305,20 +305,18 @@ async fn exec_history_cell_shows_working_then_completed() {
     end_exec(&mut chat, begin, "done", "", /*exit_code*/ 0);
 
     let cells = drain_insert_history(&mut rx);
-    // Exec end now finalizes and flushes the exec cell immediately.
-    assert_eq!(cells.len(), 1, "expected finalized exec cell to flush");
-    // Inspect the flushed exec cell rendering.
-    let lines = &cells[0];
-    let blob = lines_to_single_string(lines);
-    // New behavior: no glyph markers; ensure command is shown and no panic.
+    assert!(cells.is_empty(), "tool group stays active until agent text");
+    let blob = active_blob(&chat);
     assert!(
-        blob.contains("• Ran"),
+        blob.contains("• Ran 1 shell command"),
         "expected summary header present: {blob:?}"
     );
+    let raw = active_raw_blob(&chat);
     assert!(
-        blob.contains("echo done"),
-        "expected command text to be present: {blob:?}"
+        raw.contains("$ echo done"),
+        "expected expanded command text to be present: {raw:?}"
     );
+    assert!(raw.contains("done"), "expected expanded output: {raw:?}");
 }
 
 #[tokio::test]
@@ -334,15 +332,18 @@ async fn exec_history_cell_shows_working_then_failed() {
     end_exec(&mut chat, begin, "", "Bloop", /*exit_code*/ 2);
 
     let cells = drain_insert_history(&mut rx);
-    // Exec end with failure should also flush immediately.
-    assert_eq!(cells.len(), 1, "expected finalized exec cell to flush");
-    let lines = &cells[0];
-    let blob = lines_to_single_string(lines);
+    assert!(cells.is_empty(), "tool group stays active until agent text");
+    let blob = active_blob(&chat);
     assert!(
-        blob.contains("• Ran false"),
-        "expected command and header text present: {blob:?}"
+        blob.contains("• Ran 1 shell command"),
+        "expected compact command summary: {blob:?}"
     );
-    assert!(blob.to_lowercase().contains("bloop"), "expected error text");
+    let raw = active_raw_blob(&chat);
+    assert!(
+        raw.contains("$ false"),
+        "expected expanded command: {raw:?}"
+    );
+    assert!(raw.to_lowercase().contains("bloop"), "expected error text");
 }
 
 #[tokio::test]
@@ -375,10 +376,10 @@ async fn exec_end_without_begin_uses_event_command() {
     );
 
     let cells = drain_insert_history(&mut rx);
-    assert_eq!(cells.len(), 1, "expected finalized exec cell to flush");
-    let blob = lines_to_single_string(&cells[0]);
+    assert!(cells.is_empty(), "tool group stays active until agent text");
+    let blob = active_raw_blob(&chat);
     assert!(
-        blob.contains("• Ran echo orphaned"),
+        blob.contains("$ echo orphaned"),
         "expected command text to come from event: {blob:?}"
     );
     assert!(
@@ -394,7 +395,7 @@ async fn exec_end_without_begin_does_not_flush_unrelated_running_exploring_cell(
 
     begin_exec(&mut chat, "call-exploring", "cat /dev/null");
     assert!(drain_insert_history(&mut rx).is_empty());
-    assert!(active_blob(&chat).contains("Read null"));
+    assert!(active_blob(&chat).contains("Read 1 file"));
 
     let orphan =
         begin_unified_exec_startup(&mut chat, "call-orphan", "proc-1", "echo repro-marker");
@@ -409,24 +410,23 @@ async fn exec_end_without_begin_does_not_flush_unrelated_running_exploring_cell(
     );
 
     let cells = drain_insert_history(&mut rx);
-    assert_eq!(cells.len(), 1, "only the orphan end should be inserted");
-    let orphan_blob = lines_to_single_string(&cells[0]);
     assert!(
-        orphan_blob.contains("• Ran echo repro-marker"),
-        "expected orphan end to render a standalone entry: {orphan_blob:?}"
+        cells.is_empty(),
+        "consecutive tools stay in one active group"
+    );
+    let orphan_blob = active_raw_blob(&chat);
+    assert!(
+        orphan_blob.contains("$ echo repro-marker"),
+        "expected orphan end in expanded group: {orphan_blob:?}"
     );
     let active = active_blob(&chat);
     assert!(
-        active.contains("• Exploring"),
-        "expected unrelated exploring call to remain active: {active:?}"
+        active.contains("Read 1 file"),
+        "expected exploring call in compact summary: {active:?}"
     );
     assert!(
-        active.contains("Read null"),
-        "expected active exploring command to remain visible: {active:?}"
-    );
-    assert!(
-        !active.contains("echo repro-marker"),
-        "orphaned end should not replace the active exploring cell: {active:?}"
+        active.contains("ran 1 shell command"),
+        "expected orphan call in compact summary: {active:?}"
     );
 }
 
@@ -438,34 +438,29 @@ async fn exec_end_without_begin_flushes_completed_unrelated_exploring_cell() {
     let begin_ls = begin_exec(&mut chat, "call-ls", "ls -la");
     end_exec(&mut chat, begin_ls, "", "", /*exit_code*/ 0);
     assert!(drain_insert_history(&mut rx).is_empty());
-    assert!(active_blob(&chat).contains("ls -la"));
+    assert!(active_blob(&chat).contains("Listed 1 path"));
 
     let orphan = begin_unified_exec_startup(&mut chat, "call-after", "proc-1", "echo after");
     end_exec(&mut chat, orphan, "after\n", "", /*exit_code*/ 0);
 
     let cells = drain_insert_history(&mut rx);
-    assert_eq!(
-        cells.len(),
-        2,
-        "completed exploring cell should flush before the orphan entry"
-    );
-    let first = lines_to_single_string(&cells[0]);
-    let second = lines_to_single_string(&cells[1]);
     assert!(
-        first.contains("• Explored"),
-        "expected flushed exploring cell: {first:?}"
+        cells.is_empty(),
+        "consecutive tools stay in one active group"
+    );
+    let compact = active_blob(&chat);
+    assert!(
+        compact.contains("Listed 1 path"),
+        "expected exploring summary: {compact:?}"
     );
     assert!(
-        first.contains("List ls -la"),
-        "expected flushed exploring cell: {first:?}"
+        compact.contains("ran 1 shell command"),
+        "expected shell summary: {compact:?}"
     );
+    let expanded = active_raw_blob(&chat);
     assert!(
-        second.contains("• Ran echo after"),
-        "expected orphan end entry after flush: {second:?}"
-    );
-    assert!(
-        chat.transcript.active_cell.is_none(),
-        "both entries should be finalized"
+        expanded.contains("$ ls -la") && expanded.contains("$ echo after"),
+        "both commands should remain expandable: {expanded:?}"
     );
 }
 
@@ -484,18 +479,10 @@ async fn overlapping_exploring_exec_end_is_not_misclassified_as_orphan() {
         cells.is_empty(),
         "tracked end inside an exploring cell should not render as an orphan"
     );
-    let active = active_blob(&chat);
+    let active = active_raw_blob(&chat);
     assert!(
-        active.contains("List ls -la"),
-        "expected first command still grouped: {active:?}"
-    );
-    assert!(
-        active.contains("Read foo.txt"),
-        "expected second running command to stay in the same active cell: {active:?}"
-    );
-    assert!(
-        active.contains("• Exploring"),
-        "expected grouped exploring header to remain active: {active:?}"
+        active.contains("$ ls -la") && active.contains("$ cat foo.txt"),
+        "expected both commands in expanded group: {active:?}"
     );
 
     end_exec(&mut chat, begin_cat, "hello\n", "", /*exit_code*/ 0);
@@ -526,10 +513,10 @@ async fn exec_history_shows_unified_exec_startup_commands() {
     );
 
     let cells = drain_insert_history(&mut rx);
-    assert_eq!(cells.len(), 1, "expected finalized exec cell to flush");
-    let blob = lines_to_single_string(&cells[0]);
+    assert!(cells.is_empty(), "tool group stays active until agent text");
+    let blob = active_raw_blob(&chat);
     assert!(
-        blob.contains("• Ran echo unified exec startup"),
+        blob.contains("$ echo unified exec startup"),
         "expected startup command to render: {blob:?}"
     );
 }
@@ -548,7 +535,7 @@ async fn exec_history_shows_unified_exec_tool_calls() {
     end_exec(&mut chat, begin, "", "", /*exit_code*/ 0);
 
     let blob = active_blob(&chat);
-    assert_eq!(blob, "• Explored\n  └ List ls\n");
+    assert_eq!(blob, "• Listed 1 path\n");
 }
 
 #[tokio::test]

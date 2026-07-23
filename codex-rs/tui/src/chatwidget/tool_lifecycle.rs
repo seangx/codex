@@ -70,13 +70,11 @@ impl ChatWidget {
 
     pub(super) fn on_web_search_begin(&mut self, call_id: String) {
         self.flush_answer_stream_with_separator();
-        self.flush_active_cell();
-        self.transcript.active_cell = Some(Box::new(history_cell::new_active_web_search_call(
+        self.push_tool_activity(history_cell::new_active_web_search_call(
             call_id,
             String::new(),
             self.config.animations,
-        )));
-        self.bump_active_cell_revision();
+        ));
         self.request_redraw();
     }
 
@@ -92,18 +90,17 @@ impl ChatWidget {
             .transcript
             .active_cell
             .as_mut()
-            .and_then(|cell| cell.as_any_mut().downcast_mut::<WebSearchCell>())
-            && cell.call_id() == call_id
+            .and_then(|cell| cell.as_any_mut().downcast_mut::<ToolActivityGroupCell>())
+            .and_then(|group| group.web_search_for_call_mut(&call_id))
         {
             cell.update(action.clone(), query.clone());
             cell.complete();
             self.bump_active_cell_revision();
-            self.flush_active_cell();
             handled = true;
         }
 
         if !handled {
-            self.add_to_history(history_cell::new_web_search_call(call_id, query, action));
+            self.push_tool_activity(history_cell::new_web_search_call(call_id, query, action));
         }
         self.transcript.had_work_activity = true;
     }
@@ -176,8 +173,7 @@ impl ChatWidget {
             return;
         };
         self.flush_answer_stream_with_separator();
-        self.flush_active_cell();
-        self.transcript.active_cell = Some(Box::new(history_cell::new_active_mcp_tool_call(
+        self.push_tool_activity(history_cell::new_active_mcp_tool_call(
             id,
             McpInvocation {
                 server,
@@ -185,8 +181,7 @@ impl ChatWidget {
                 arguments: Some(arguments),
             },
             self.config.animations,
-        )));
-        self.bump_active_cell_revision();
+        ));
         self.request_redraw();
     }
 
@@ -230,21 +225,22 @@ impl ChatWidget {
             .transcript
             .active_cell
             .as_mut()
-            .and_then(|cell| cell.as_any_mut().downcast_mut::<McpToolCallCell>())
+            .and_then(|cell| cell.as_any_mut().downcast_mut::<ToolActivityGroupCell>())
+            .and_then(|group| group.mcp_for_call_mut(&id))
         {
             Some(cell) if cell.call_id() == id => cell.complete(duration, result),
             _ => {
-                self.flush_active_cell();
                 let mut cell =
                     history_cell::new_active_mcp_tool_call(id, invocation, self.config.animations);
                 let extra_cell = cell.complete(duration, result);
-                self.transcript.active_cell = Some(Box::new(cell));
+                self.push_tool_activity(cell);
                 extra_cell
             }
         };
 
-        self.flush_active_cell();
+        self.bump_active_cell_revision();
         if let Some(extra) = extra_cell {
+            self.flush_active_cell();
             self.add_boxed_history(extra);
         }
         // Mark that actual work was done (MCP tool call)

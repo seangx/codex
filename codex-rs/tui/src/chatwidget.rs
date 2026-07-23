@@ -307,7 +307,7 @@ use crate::history_cell::HookCell;
 use crate::history_cell::McpInvocation;
 use crate::history_cell::McpToolCallCell;
 use crate::history_cell::PlainHistoryCell;
-use crate::history_cell::WebSearchCell;
+use crate::history_cell::ToolActivityGroupCell;
 use crate::key_hint;
 use crate::key_hint::KeyBinding;
 use crate::key_hint::KeyBindingListExt;
@@ -1207,6 +1207,21 @@ impl ChatWidget {
         }
     }
 
+    fn push_tool_activity(&mut self, cell: impl HistoryCell + 'static) {
+        if let Some(group) = self
+            .transcript
+            .active_cell
+            .as_mut()
+            .and_then(|cell| cell.as_any_mut().downcast_mut::<ToolActivityGroupCell>())
+        {
+            group.push(cell);
+        } else {
+            self.flush_active_cell();
+            self.transcript.active_cell = Some(Box::new(ToolActivityGroupCell::new(cell)));
+        }
+        self.bump_active_cell_revision();
+    }
+
     pub(crate) fn add_to_history(&mut self, cell: impl HistoryCell + 'static) {
         self.add_boxed_history(Box::new(cell));
     }
@@ -1356,6 +1371,11 @@ impl ChatWidget {
                 exec.mark_failed();
             } else if let Some(tool) = cell.as_any_mut().downcast_mut::<McpToolCallCell>() {
                 tool.mark_failed();
+            } else if let Some(group) = cell
+                .as_any_mut()
+                .downcast_mut::<history_cell::ToolActivityGroupCell>()
+            {
+                group.mark_failed();
             }
             self.add_boxed_history(cell);
             self.request_pending_usage_output_insertion();

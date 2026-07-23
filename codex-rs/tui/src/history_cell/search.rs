@@ -85,6 +85,10 @@ impl WebSearchCell {
     pub(crate) fn complete(&mut self) {
         self.completed = true;
     }
+
+    pub(crate) fn is_completed(&self) -> bool {
+        self.completed
+    }
 }
 
 impl HistoryCell for WebSearchCell {

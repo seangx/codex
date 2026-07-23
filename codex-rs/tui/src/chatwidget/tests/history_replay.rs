@@ -1188,6 +1188,10 @@ async fn deferred_mcp_lifecycle_events_keep_fifo_after_stream_finishes() {
     chat.flush_interrupt_queue();
 
     assert!(chat.interrupts.is_empty());
+    assert!(chat.transcript.active_cell.is_some());
+    assert!(active_blob(&chat).contains("copilot-bridge.copilot"));
+
+    chat.handle_streaming_delta("Continuing after tools".to_string());
     assert!(chat.transcript.active_cell.is_none());
     let rendered = drain_insert_history(&mut rx)
         .into_iter()
@@ -1195,6 +1199,73 @@ async fn deferred_mcp_lifecycle_events_keep_fifo_after_stream_finishes() {
         .collect::<String>();
     assert!(rendered.contains("copilot-bridge.copilot"), "{rendered}");
     assert!(!rendered.contains("deferred result"), "{rendered}");
+}
+
+#[tokio::test]
+async fn consecutive_tool_types_share_one_compact_group_until_agent_text() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let _ = drain_insert_history(&mut rx);
+
+    let search = begin_exec(&mut chat, "search-1", "rg needle src");
+    end_exec(&mut chat, search, "src/lib.rs:needle\n", "", 0);
+    chat.on_mcp_tool_call_started(AppServerThreadItem::McpToolCall {
+        id: "mcp-1".to_string(),
+        server: "plugin".to_string(),
+        tool: "playwright".to_string(),
+        status: codex_app_server_protocol::McpToolCallStatus::InProgress,
+        arguments: json!({}),
+        app_context: None,
+        mcp_app_resource_uri: None,
+        plugin_id: None,
+        result: None,
+        error: None,
+        duration_ms: None,
+    });
+    chat.on_mcp_tool_call_completed(AppServerThreadItem::McpToolCall {
+        id: "mcp-1".to_string(),
+        server: "plugin".to_string(),
+        tool: "playwright".to_string(),
+        status: codex_app_server_protocol::McpToolCallStatus::Completed,
+        arguments: json!({}),
+        app_context: None,
+        mcp_app_resource_uri: None,
+        plugin_id: None,
+        result: Some(Box::new(codex_app_server_protocol::McpToolCallResult {
+            content: vec![json!({"type": "text", "text": "ok"})],
+            structured_content: None,
+            meta: None,
+        })),
+        error: None,
+        duration_ms: Some(5),
+    });
+    let shell = begin_exec(&mut chat, "shell-1", "make check");
+    end_exec(&mut chat, shell, "ok\n", "", 0);
+
+    let active = chat
+        .transcript
+        .active_cell
+        .as_ref()
+        .expect("tool group should remain active");
+    let compact = lines_to_single_string(&active.display_lines(120));
+    assert_eq!(compact.lines().count(), 1, "{compact}");
+    assert!(compact.contains("Searched for 1 pattern"), "{compact}");
+    assert!(compact.contains("called plugin.playwright"), "{compact}");
+    assert!(compact.contains("ran 1 shell command"), "{compact}");
+
+    let expanded = lines_to_single_string(
+        &active.display_lines_for_mode(/*width*/ 120, HistoryRenderMode::Raw),
+    );
+    assert!(expanded.contains("$ rg needle src"), "{expanded}");
+    assert!(expanded.contains("Called plugin.playwright"), "{expanded}");
+    assert!(expanded.contains("$ make check"), "{expanded}");
+
+    chat.handle_streaming_delta("Tool work is complete.".to_string());
+    let inserted = drain_insert_history(&mut rx);
+    let grouped_rows = inserted
+        .iter()
+        .filter(|lines| lines_to_single_string(lines).contains("plugin.playwright"))
+        .count();
+    assert_eq!(grouped_rows, 1);
 }
 
 #[tokio::test]

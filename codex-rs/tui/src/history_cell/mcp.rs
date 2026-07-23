@@ -73,7 +73,7 @@ impl McpToolCallCell {
         image_cell
     }
 
-    fn success(&self) -> Option<bool> {
+    pub(crate) fn success(&self) -> Option<bool> {
         match self.result.as_ref() {
             Some(Ok(result)) => Some(!result.is_error.unwrap_or(false)),
             Some(Err(_)) => Some(false),
@@ -87,7 +87,7 @@ impl McpToolCallCell {
         self.result = Some(Err("interrupted".to_string()));
     }
 
-    fn compact_summary(&self) -> String {
+    pub(crate) fn compact_summary(&self) -> String {
         let titled_summary = self
             .invocation
             .arguments
@@ -102,6 +102,10 @@ impl McpToolCallCell {
             });
         titled_summary
             .unwrap_or_else(|| format!("{}.{}", self.invocation.server, self.invocation.tool))
+    }
+
+    pub(crate) fn is_active(&self) -> bool {
+        self.result.is_none()
     }
 
     fn compact_summary_line(&self, width: u16, bullet: Span<'static>) -> Line<'static> {

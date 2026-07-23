@@ -1118,6 +1118,16 @@ pub(super) fn active_blob(chat: &ChatWidget) -> String {
     lines_to_single_string(&lines)
 }
 
+pub(super) fn active_raw_blob(chat: &ChatWidget) -> String {
+    let lines = chat
+        .transcript
+        .active_cell
+        .as_ref()
+        .expect("active cell present")
+        .display_lines_for_mode(/*width*/ 80, HistoryRenderMode::Raw);
+    lines_to_single_string(&lines)
+}
+
 pub(super) fn active_hook_blob(chat: &ChatWidget) -> String {
     let Some(cell) = chat.active_hook_cell.as_ref() else {
         return "<empty>\n".to_string();
