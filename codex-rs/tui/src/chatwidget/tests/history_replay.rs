@@ -1336,6 +1336,83 @@ async fn dynamic_exec_tool_is_compacted_and_keeps_full_transcript() {
 }
 
 #[tokio::test]
+async fn dynamic_exec_groups_nested_user_shell_events_without_double_counting() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let _ = drain_insert_history(&mut rx);
+    let arguments =
+        serde_json::json!("const result = await tools.exec_command({cmd: \"ps aux\"});");
+
+    chat.handle_server_notification(
+        ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            started_at_ms: 0,
+            item: AppServerThreadItem::DynamicToolCall {
+                id: "dynamic-exec-1".to_string(),
+                namespace: Some("functions".to_string()),
+                tool: "exec".to_string(),
+                arguments: arguments.clone(),
+                status: codex_app_server_protocol::DynamicToolCallStatus::InProgress,
+                content_items: None,
+                success: None,
+                duration_ms: None,
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+    let begin = begin_exec_with_source(
+        &mut chat,
+        "nested-shell-1",
+        "ps aux",
+        ExecCommandSource::UserShell,
+    );
+    end_exec(
+        &mut chat,
+        begin,
+        "nested process output\n",
+        "",
+        /*exit_code*/ 0,
+    );
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
+            item: AppServerThreadItem::DynamicToolCall {
+                id: "dynamic-exec-1".to_string(),
+                namespace: Some("functions".to_string()),
+                tool: "exec".to_string(),
+                arguments,
+                status: codex_app_server_protocol::DynamicToolCallStatus::Completed,
+                content_items: Some(vec![
+                    codex_app_server_protocol::DynamicToolCallOutputContentItem::InputText {
+                        text: "wrapper output".to_string(),
+                    },
+                ]),
+                success: Some(true),
+                duration_ms: Some(5),
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+
+    assert!(drain_insert_history(&mut rx).is_empty());
+    let active = chat
+        .transcript
+        .active_cell
+        .as_ref()
+        .expect("dynamic tool group should remain active");
+    let compact = lines_to_single_string(&active.display_lines(120));
+    assert_eq!(compact.trim_end(), "• Ran 1 shell command");
+    let raw = lines_to_single_string(
+        &active.display_lines_for_mode(/*width*/ 120, HistoryRenderMode::Raw),
+    );
+    assert!(raw.contains("$ ps aux"), "{raw}");
+    assert!(raw.contains("nested process output"), "{raw}");
+    assert!(raw.contains("wrapper output"), "{raw}");
+}
+
+#[tokio::test]
 async fn live_reasoning_summary_is_not_rendered_twice_when_item_completes() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.show_welcome_banner = false;

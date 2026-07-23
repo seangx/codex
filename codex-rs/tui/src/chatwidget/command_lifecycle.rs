@@ -266,6 +266,22 @@ impl ChatWidget {
         // Ensure the status indicator is visible while the command runs.
         self.bottom_pane.ensure_status_indicator();
         let parsed_cmd = self.annotate_skill_reads_in_parsed_cmd(parsed_cmd);
+        // Code-mode dynamic tools execute their nested shell calls through the same app-server
+        // UserShell source used by explicit `!` commands. While an `exec` wrapper is active,
+        // normalize those nested events into regular agent tool activity so they stay in the
+        // compact group instead of flushing a full command cell into the main transcript.
+        let source = if source == ExecCommandSource::UserShell
+            && self
+                .transcript
+                .active_cell
+                .as_ref()
+                .and_then(|cell| cell.as_any().downcast_ref::<ToolActivityGroupCell>())
+                .is_some_and(ToolActivityGroupCell::has_active_dynamic_exec)
+        {
+            ExecCommandSource::Agent
+        } else {
+            source
+        };
         self.running_commands.insert(
             id.clone(),
             RunningCommand {

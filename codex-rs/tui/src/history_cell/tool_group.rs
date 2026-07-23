@@ -73,6 +73,14 @@ impl ToolActivityGroupCell {
         })
     }
 
+    pub(crate) fn has_active_dynamic_exec(&self) -> bool {
+        self.cells.iter().any(|cell| {
+            cell.as_any()
+                .downcast_ref::<DynamicToolCallCell>()
+                .is_some_and(|tool| tool.tool == "exec" && tool.is_active())
+        })
+    }
+
     pub(crate) fn mark_failed(&mut self) {
         for cell in &mut self.cells {
             if let Some(exec) = cell.as_any_mut().downcast_mut::<ExecCell>() {
@@ -90,6 +98,7 @@ impl ToolActivityGroupCell {
 
     fn summary(&self) -> ToolActivitySummary {
         let mut summary = ToolActivitySummary::default();
+        let has_exec_cells = self.cells.iter().any(|cell| cell.as_any().is::<ExecCell>());
         for cell in &self.cells {
             if let Some(exec) = cell.as_any().downcast_ref::<ExecCell>() {
                 summary.add_exec(exec);
@@ -101,7 +110,7 @@ impl ToolActivityGroupCell {
                 summary.web_searches += 1;
                 summary.active |= !search.is_completed();
             } else if let Some(tool) = cell.as_any().downcast_ref::<DynamicToolCallCell>() {
-                summary.add_dynamic_tool(tool);
+                summary.add_dynamic_tool(tool, !has_exec_cells);
             }
         }
         summary
@@ -324,9 +333,12 @@ impl ToolActivitySummary {
         }
     }
 
-    fn add_dynamic_tool(&mut self, tool: &DynamicToolCallCell) {
+    fn add_dynamic_tool(&mut self, tool: &DynamicToolCallCell, count_nested_shell: bool) {
         self.active |= tool.is_active();
         self.failed |= tool.failed();
+        if tool.tool == "exec" && !count_nested_shell {
+            return;
+        }
         let shell_commands = tool.nested_shell_command_count();
         if shell_commands > 0 {
             self.shell_commands += shell_commands;
