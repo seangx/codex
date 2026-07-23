@@ -167,10 +167,17 @@ async fn mouse_scroll_keeps_composer_while_using_clickable_embedded_transcript()
             .as_ref()
             .is_some_and(Overlay::is_embedded_transcript)
     );
+    assert!(
+        !tui.is_alt_screen_active(),
+        "the blank alternate buffer must stay hidden until the first overlay draw"
+    );
     assert_eq!(
         app.chat_widget.composer_text_with_pending(),
         "draft stays editable"
     );
+
+    app.overlay_forward_event(&mut tui, TuiEvent::Draw)?;
+    assert!(tui.is_alt_screen_active());
 
     app.handle_mouse_scroll(&mut tui, scroll(MouseEventKind::ScrollDown))?;
 

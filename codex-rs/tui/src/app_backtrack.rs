@@ -122,7 +122,7 @@ impl App {
             if scroll_down || self.transcript_cells.is_empty() {
                 return Ok(());
             }
-            tui.enter_alt_screen()?;
+            tui.enter_alt_screen_on_next_draw();
             self.overlay = Some(Overlay::new_embedded_transcript(
                 self.transcript_cells.clone(),
                 self.keymap.pager.clone(),
