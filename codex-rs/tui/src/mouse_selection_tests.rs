@@ -133,3 +133,17 @@ fn selection_highlight_snapshot() {
 
     insta::assert_debug_snapshot!(selected_cells);
 }
+
+#[test]
+fn selection_above_inline_viewport_does_not_highlight_viewport_edge() {
+    let mut buffer = Buffer::empty(Rect::new(0, 10, 8, 3));
+
+    SelectionRange::new(Position::new(2, 2), Position::new(5, 2)).highlight(&mut buffer);
+
+    assert!(
+        buffer
+            .content
+            .iter()
+            .all(|cell| !cell.modifier.contains(Modifier::REVERSED))
+    );
+}

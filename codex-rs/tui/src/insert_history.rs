@@ -12,6 +12,7 @@ use crate::terminal_hyperlinks::HyperlinkLine;
 use crate::terminal_hyperlinks::decorate_spans;
 use crate::terminal_hyperlinks::plain_hyperlink_lines;
 use crate::terminal_hyperlinks::remap_wrapped_line;
+use crate::terminal_hyperlinks::terminal_wrapped_history_rows;
 use crate::terminal_hyperlinks::terminal_wrapped_hyperlink_rows;
 use crate::wrapping::RtOptions;
 use crate::wrapping::adaptive_wrap_line;
@@ -251,8 +252,10 @@ where
     }
     if wrapped_lines > 0 {
         let hyperlink_rows = terminal_wrapped_hyperlink_rows(&wrapped, wrap_width);
+        let history_rows = terminal_wrapped_history_rows(&wrapped, wrap_width);
         debug_assert_eq!(hyperlink_rows.len(), wrapped_rows);
-        terminal.note_history_rows_inserted(hyperlink_rows);
+        debug_assert_eq!(history_rows.len(), wrapped_rows);
+        terminal.note_history_rows_inserted(hyperlink_rows, history_rows);
     }
 
     Ok(())
@@ -557,6 +560,71 @@ mod tests {
         assert_eq!(
             term.history_hyperlink_destination_at(ratatui::layout::Position::new(10, 4)),
             None
+        );
+    }
+
+    #[test]
+    fn committed_scrollback_text_is_selectable_and_highlighted_at_screen_coordinates() {
+        use crossterm::event::KeyModifiers;
+        use crossterm::event::MouseButton;
+        use crossterm::event::MouseEvent;
+        use crossterm::event::MouseEventKind;
+
+        use crate::mouse_selection::MouseSelectionAction;
+        use crate::mouse_selection::MouseSelectionState;
+        use crate::mouse_selection::SelectionRange;
+
+        let width: u16 = 20;
+        let height: u16 = 6;
+        let backend = VT100Backend::new(width, height);
+        let mut term = crate::custom_terminal::Terminal::with_options(backend).expect("terminal");
+        term.set_viewport_area(Rect::new(0, height - 1, width, 1));
+        insert_history_lines(&mut term, vec![Line::from("history text")])
+            .expect("insert history text");
+
+        let selection_buffer = term.selection_buffer();
+        let mouse = |kind, column, row| MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        let mut state = MouseSelectionState::default();
+        state.handle_event(
+            mouse(MouseEventKind::Down(MouseButton::Left), 0, 4),
+            &selection_buffer,
+        );
+        assert_eq!(
+            state.handle_event(
+                mouse(MouseEventKind::Up(MouseButton::Left), 6, 4),
+                &selection_buffer,
+            ),
+            MouseSelectionAction::Copy("history".to_string())
+        );
+
+        let selection = SelectionRange::new(
+            ratatui::layout::Position::new(0, 4),
+            ratatui::layout::Position::new(6, 4),
+        );
+        term.render_history_selection(Some(selection))
+            .expect("highlight history selection");
+        assert!(
+            term.backend()
+                .vt100()
+                .screen()
+                .cell(4, 0)
+                .is_some_and(vt100::Cell::inverse)
+        );
+
+        term.render_history_selection(None)
+            .expect("clear history selection");
+        assert!(
+            !term
+                .backend()
+                .vt100()
+                .screen()
+                .cell(4, 0)
+                .is_some_and(vt100::Cell::inverse)
         );
     }
 

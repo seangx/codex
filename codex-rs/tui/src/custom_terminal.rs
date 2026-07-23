@@ -26,6 +26,8 @@ use std::io;
 use std::io::Write;
 
 use crossterm::cursor::MoveTo;
+use crossterm::cursor::RestorePosition;
+use crossterm::cursor::SavePosition;
 use crossterm::cursor::SetCursorStyle;
 use crossterm::queue;
 use crossterm::style::Colors;
@@ -47,6 +49,8 @@ use ratatui::style::Modifier;
 use ratatui::widgets::WidgetRef;
 use unicode_width::UnicodeWidthStr;
 
+use crate::mouse_selection::SelectionRange;
+use crate::terminal_hyperlinks::TerminalHistoryRow;
 use crate::terminal_hyperlinks::TerminalHyperlinkRow;
 
 const MAX_TRACKED_HISTORY_ROWS: usize = 4096;
@@ -183,6 +187,10 @@ where
     visible_history_rows: u16,
     /// Link hit targets for recently inserted terminal scrollback rows.
     visible_history_hyperlinks: VecDeque<TerminalHyperlinkRow>,
+    /// Styled cells for visible scrollback rows used by application-owned mouse selection.
+    visible_history_cells: VecDeque<TerminalHistoryRow>,
+    /// History-range highlight that was painted outside the ratatui viewport.
+    rendered_history_selection: Option<SelectionRange>,
     #[cfg(test)]
     screen_size_override: Option<Size>,
 }
@@ -263,6 +271,8 @@ where
             last_known_cursor_pos: cursor_pos,
             visible_history_rows: 0,
             visible_history_hyperlinks: VecDeque::new(),
+            visible_history_cells: VecDeque::new(),
+            rendered_history_selection: None,
             #[cfg(test)]
             screen_size_override: None,
         }
@@ -544,6 +554,8 @@ where
         std::io::Write::flush(&mut self.backend)?;
         self.visible_history_rows = 0;
         self.visible_history_hyperlinks.clear();
+        self.visible_history_cells.clear();
+        self.rendered_history_selection = None;
         self.previous_buffer_mut().reset();
         Ok(())
     }
@@ -564,20 +576,130 @@ where
         self.last_known_cursor_pos = Position { x: 0, y: 0 };
         self.visible_history_rows = 0;
         self.visible_history_hyperlinks.clear();
+        self.visible_history_cells.clear();
+        self.rendered_history_selection = None;
         self.previous_buffer_mut().reset();
         Ok(())
     }
 
-    pub(crate) fn note_history_rows_inserted(&mut self, hyperlink_rows: Vec<TerminalHyperlinkRow>) {
+    pub(crate) fn note_history_rows_inserted(
+        &mut self,
+        hyperlink_rows: Vec<TerminalHyperlinkRow>,
+        history_rows: Vec<TerminalHistoryRow>,
+    ) {
+        debug_assert_eq!(hyperlink_rows.len(), history_rows.len());
         let inserted_rows = u16::try_from(hyperlink_rows.len()).unwrap_or(u16::MAX);
         self.visible_history_hyperlinks.extend(hyperlink_rows);
+        self.visible_history_cells.extend(history_rows);
         while self.visible_history_hyperlinks.len() > MAX_TRACKED_HISTORY_ROWS {
             self.visible_history_hyperlinks.pop_front();
+        }
+        while self.visible_history_cells.len() > MAX_TRACKED_HISTORY_ROWS {
+            self.visible_history_cells.pop_front();
         }
         self.visible_history_rows = self
             .visible_history_rows
             .saturating_add(inserted_rows)
             .min(self.viewport_area.top());
+    }
+
+    pub(crate) fn selection_buffer(&self) -> Buffer {
+        let area = Rect::new(
+            0,
+            0,
+            self.last_known_screen_size.width,
+            self.last_known_screen_size.height,
+        );
+        let mut buffer = Buffer::empty(area);
+        let visible_rows = usize::from(self.visible_history_rows)
+            .min(self.visible_history_cells.len())
+            .min(usize::from(self.viewport_area.top()));
+        let first_y = self
+            .viewport_area
+            .top()
+            .saturating_sub(u16::try_from(visible_rows).unwrap_or(u16::MAX));
+        let stored_first = self
+            .visible_history_cells
+            .len()
+            .saturating_sub(visible_rows);
+        for (row_offset, row) in self
+            .visible_history_cells
+            .iter()
+            .skip(stored_first)
+            .take(visible_rows)
+            .enumerate()
+        {
+            let y = first_y.saturating_add(u16::try_from(row_offset).unwrap_or(u16::MAX));
+            for (x, cell) in row.cells().iter().enumerate() {
+                let position = Position::new(u16::try_from(x).unwrap_or(u16::MAX), y);
+                if area.contains(position) {
+                    buffer[position] = cell.clone();
+                }
+            }
+        }
+        for (index, cell) in self.displayed_buffer().content.iter().enumerate() {
+            let position = self.displayed_buffer().pos_of(index).into();
+            if area.contains(position) {
+                buffer[position] = cell.clone();
+            }
+        }
+        buffer
+    }
+
+    pub(crate) fn render_history_selection(
+        &mut self,
+        selection: Option<SelectionRange>,
+    ) -> io::Result<()> {
+        let previous = self.rendered_history_selection;
+        if previous == selection {
+            return Ok(());
+        }
+
+        let visible_rows = usize::from(self.visible_history_rows)
+            .min(self.visible_history_cells.len())
+            .min(usize::from(self.viewport_area.top()));
+        let first_y = self
+            .viewport_area
+            .top()
+            .saturating_sub(u16::try_from(visible_rows).unwrap_or(u16::MAX));
+        let stored_first = self
+            .visible_history_cells
+            .len()
+            .saturating_sub(visible_rows);
+        let mut updates = Vec::new();
+        for (row_offset, row) in self
+            .visible_history_cells
+            .iter()
+            .skip(stored_first)
+            .take(visible_rows)
+            .enumerate()
+        {
+            let y = first_y.saturating_add(u16::try_from(row_offset).unwrap_or(u16::MAX));
+            for (x, source_cell) in row.cells().iter().enumerate() {
+                let x = u16::try_from(x).unwrap_or(u16::MAX);
+                let position = Position::new(x, y);
+                if !previous.is_some_and(|range| range.contains(position))
+                    && !selection.is_some_and(|range| range.contains(position))
+                {
+                    continue;
+                }
+                let mut cell = source_cell.clone();
+                if selection.is_some_and(|range| range.contains(position)) {
+                    cell.modifier.insert(Modifier::REVERSED);
+                }
+                updates.push((x, y, cell));
+            }
+        }
+
+        if !updates.is_empty() {
+            queue!(self.backend, SavePosition)?;
+            self.backend
+                .draw(updates.iter().map(|(x, y, cell)| (*x, *y, cell)))?;
+            queue!(self.backend, RestorePosition)?;
+            std::io::Write::flush(&mut self.backend)?;
+        }
+        self.rendered_history_selection = selection;
+        Ok(())
     }
 
     pub(crate) fn history_hyperlink_destination_at(&self, position: Position) -> Option<String> {

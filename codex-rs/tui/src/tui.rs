@@ -987,9 +987,8 @@ impl Tui {
         &mut self,
         event: MouseEvent,
     ) -> MouseSelectionAction {
-        let action = self
-            .mouse_selection
-            .handle_event(event, self.terminal.displayed_buffer());
+        let selection_buffer = self.terminal.selection_buffer();
+        let action = self.mouse_selection.handle_event(event, &selection_buffer);
         self.frame_requester.schedule_frame();
         action
     }
@@ -1260,7 +1259,8 @@ impl Tui {
                 if let Some(selection) = mouse_selection {
                     selection.highlight(frame.buffer_mut());
                 }
-            })
+            })?;
+            terminal.render_history_selection(mouse_selection)
         })?
     }
 
@@ -1378,7 +1378,8 @@ impl Tui {
                 if let Some(selection) = mouse_selection {
                     selection.highlight(frame.buffer_mut());
                 }
-            })
+            })?;
+            terminal.render_history_selection(mouse_selection)
         })?
     }
 

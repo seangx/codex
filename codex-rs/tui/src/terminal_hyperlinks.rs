@@ -9,6 +9,7 @@ use codex_terminal_detection::TerminalName;
 #[cfg(not(test))]
 use codex_terminal_detection::terminal_info;
 use ratatui::buffer::Buffer;
+use ratatui::buffer::Cell;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui::style::Modifier;
@@ -106,6 +107,41 @@ impl TerminalHyperlinkRow {
             .find(|link| link.columns.contains(&column))
             .and_then(TerminalHyperlink::terminal_destination)
     }
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct TerminalHistoryRow {
+    cells: Vec<Cell>,
+}
+
+impl TerminalHistoryRow {
+    pub(crate) fn cells(&self) -> &[Cell] {
+        &self.cells
+    }
+}
+
+/// Convert logical scrollback lines into styled physical rows for mouse selection.
+pub(crate) fn terminal_wrapped_history_rows(
+    lines: &[HyperlinkLine],
+    wrap_width: usize,
+) -> Vec<TerminalHistoryRow> {
+    let wrap_width = wrap_width.max(1);
+    let width = u16::try_from(wrap_width).unwrap_or(u16::MAX);
+    let mut rows = Vec::new();
+    for line in lines {
+        let row_count = line.width().max(1).div_ceil(wrap_width);
+        let height = u16::try_from(row_count).unwrap_or(u16::MAX);
+        let area = Rect::new(0, 0, width, height);
+        let mut buffer = Buffer::empty(area);
+        Paragraph::new(line.line.clone())
+            .wrap(Wrap { trim: false })
+            .render(area, &mut buffer);
+        for y in 0..height {
+            let cells = (0..width).map(|x| buffer[(x, y)].clone()).collect();
+            rows.push(TerminalHistoryRow { cells });
+        }
+    }
+    rows
 }
 
 /// Convert logical scrollback lines into the physical terminal rows that receive mouse clicks.

@@ -9,7 +9,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::terminal_hyperlinks::strip_osc8;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct SelectionRange {
     anchor: Position,
     focus: Position,
@@ -20,7 +20,7 @@ impl SelectionRange {
         Self { anchor, focus }
     }
 
-    fn ordered(self) -> (Position, Position) {
+    pub(crate) fn ordered(self) -> (Position, Position) {
         if (self.anchor.y, self.anchor.x) <= (self.focus.y, self.focus.x) {
             (self.anchor, self.focus)
         } else {
@@ -28,8 +28,13 @@ impl SelectionRange {
         }
     }
 
+    pub(crate) fn contains(self, position: Position) -> bool {
+        let (start, end) = self.ordered();
+        (start.y, start.x) <= (position.y, position.x) && (position.y, position.x) <= (end.y, end.x)
+    }
+
     pub(crate) fn highlight(self, buffer: &mut Buffer) {
-        let Some(selection) = self.clamped_to(buffer.area) else {
+        let Some(selection) = self.intersection_with(buffer.area) else {
             return;
         };
         let (start, end) = selection.ordered();
@@ -82,6 +87,21 @@ impl SelectionRange {
             anchor: clamp_position(self.anchor, area),
             focus: clamp_position(self.focus, area),
         })
+    }
+
+    fn intersection_with(self, area: Rect) -> Option<Self> {
+        if area.is_empty() {
+            return None;
+        }
+        let (start, end) = self.ordered();
+        let area_start = area.as_position();
+        let area_end = Position::new(
+            area.right().saturating_sub(1),
+            area.bottom().saturating_sub(1),
+        );
+        let start = position_max(start, area_start);
+        let end = position_min(end, area_end);
+        ((start.y, start.x) <= (end.y, end.x)).then(|| Self::new(start, end))
     }
 }
 
@@ -150,4 +170,20 @@ fn clamp_position(position: Position, area: Rect) -> Position {
         position.x.clamp(area.x, area.right().saturating_sub(1)),
         position.y.clamp(area.y, area.bottom().saturating_sub(1)),
     )
+}
+
+fn position_max(left: Position, right: Position) -> Position {
+    if (left.y, left.x) >= (right.y, right.x) {
+        left
+    } else {
+        right
+    }
+}
+
+fn position_min(left: Position, right: Position) -> Position {
+    if (left.y, left.x) <= (right.y, right.x) {
+        left
+    } else {
+        right
+    }
 }
