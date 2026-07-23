@@ -68,6 +68,58 @@ impl ChatWidget {
         );
     }
 
+    pub(super) fn on_dynamic_tool_call_started(&mut self, item: ThreadItem) {
+        let ThreadItem::DynamicToolCall {
+            id,
+            namespace,
+            tool,
+            arguments,
+            ..
+        } = item
+        else {
+            return;
+        };
+        self.flush_answer_stream_with_separator();
+        self.push_tool_activity(history_cell::DynamicToolCallCell::new(
+            id, namespace, tool, arguments,
+        ));
+        self.request_redraw();
+    }
+
+    pub(super) fn on_dynamic_tool_call_completed(&mut self, item: ThreadItem) {
+        let ThreadItem::DynamicToolCall {
+            id,
+            namespace,
+            tool,
+            arguments,
+            status,
+            content_items,
+            success,
+            ..
+        } = item
+        else {
+            return;
+        };
+        self.flush_answer_stream_with_separator();
+
+        if let Some(cell) = self
+            .transcript
+            .active_cell
+            .as_mut()
+            .and_then(|cell| cell.as_any_mut().downcast_mut::<ToolActivityGroupCell>())
+            .and_then(|group| group.dynamic_for_call_mut(&id))
+        {
+            cell.complete(status, content_items, success);
+        } else {
+            let mut cell = history_cell::DynamicToolCallCell::new(id, namespace, tool, arguments);
+            cell.complete(status, content_items, success);
+            self.push_tool_activity(cell);
+        }
+        self.bump_active_cell_revision();
+        self.transcript.had_work_activity = true;
+        self.request_redraw();
+    }
+
     pub(super) fn on_web_search_begin(&mut self, call_id: String) {
         self.flush_answer_stream_with_separator();
         self.push_tool_activity(history_cell::new_active_web_search_call(

@@ -212,7 +212,11 @@ impl ChatWidget {
                 agents_states,
             }),
             item @ ThreadItem::SubAgentActivity { .. } => self.on_sub_agent_activity(item),
-            ThreadItem::DynamicToolCall { .. } => {}
+            item @ ThreadItem::DynamicToolCall {
+                status: codex_app_server_protocol::DynamicToolCallStatus::InProgress,
+                ..
+            } => self.on_dynamic_tool_call_started(item),
+            item @ ThreadItem::DynamicToolCall { .. } => self.on_dynamic_tool_call_completed(item),
             ThreadItem::Sleep(_) => {}
         }
 
