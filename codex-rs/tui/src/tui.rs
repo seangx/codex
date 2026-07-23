@@ -988,9 +988,15 @@ impl Tui {
         event: MouseEvent,
     ) -> MouseSelectionAction {
         let selection_buffer = self.terminal.selection_buffer();
-        let action = self.mouse_selection.handle_event(event, &selection_buffer);
+        let action =
+            self.mouse_selection
+                .handle_event(event, &selection_buffer, std::time::Instant::now());
         self.frame_requester.schedule_frame();
         action
+    }
+
+    pub(crate) fn clear_mouse_click_sequence(&mut self) {
+        self.mouse_selection.clear_click_sequence();
     }
 
     pub(crate) fn clear_mouse_selection(&mut self) {

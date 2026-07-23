@@ -5,9 +5,14 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
+use std::time::Duration;
+use std::time::Instant;
 use unicode_width::UnicodeWidthStr;
 
 use crate::terminal_hyperlinks::strip_osc8;
+
+const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(500);
+const WORD_CONNECTORS: &str = "_-./:@~?&=%+#";
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct SelectionRange {
@@ -123,6 +128,14 @@ pub(crate) enum MouseSelectionAction {
 pub(crate) struct MouseSelectionState {
     pressed_at: Option<Position>,
     selection: Option<SelectionRange>,
+    word_anchor: Option<SelectionRange>,
+    last_click: Option<CompletedClick>,
+}
+
+#[derive(Debug)]
+struct CompletedClick {
+    position: Position,
+    completed_at: Instant,
 }
 
 impl MouseSelectionState {
@@ -131,24 +144,46 @@ impl MouseSelectionState {
     }
 
     pub(crate) fn clear(&mut self) -> bool {
-        self.pressed_at.take().is_some() || self.selection.take().is_some()
+        self.word_anchor = None;
+        self.last_click = None;
+        let had_pressed_position = self.pressed_at.take().is_some();
+        let had_selection = self.selection.take().is_some();
+        had_pressed_position || had_selection
+    }
+
+    pub(crate) fn clear_click_sequence(&mut self) {
+        self.last_click = None;
     }
 
     pub(crate) fn handle_event(
         &mut self,
         event: MouseEvent,
         displayed_buffer: &Buffer,
+        occurred_at: Instant,
     ) -> MouseSelectionAction {
         let position = symbol_start_at(displayed_buffer, Position::new(event.column, event.row));
         match event.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 self.pressed_at = Some(position);
-                self.selection = Some(SelectionRange::new(position, position));
+                let is_double_click = self.last_click.take().is_some_and(|click| {
+                    click.position == position
+                        && occurred_at.saturating_duration_since(click.completed_at)
+                            <= DOUBLE_CLICK_INTERVAL
+                });
+                self.word_anchor = is_double_click
+                    .then(|| word_range_at(displayed_buffer, position))
+                    .flatten();
+                self.selection = self
+                    .word_anchor
+                    .or_else(|| Some(SelectionRange::new(position, position)));
                 MouseSelectionAction::None
             }
             MouseEventKind::Drag(MouseButton::Left) => {
                 if let Some(anchor) = self.pressed_at {
-                    self.selection = Some(SelectionRange::new(anchor, position));
+                    self.selection = Some(self.word_anchor.map_or_else(
+                        || SelectionRange::new(anchor, position),
+                        |word| extend_word_selection(word, position),
+                    ));
                 }
                 MouseSelectionAction::None
             }
@@ -156,8 +191,21 @@ impl MouseSelectionState {
                 let Some(anchor) = self.pressed_at.take() else {
                     return MouseSelectionAction::None;
                 };
+                if self.word_anchor.take().is_some() {
+                    let action = self
+                        .selection
+                        .and_then(|selection| selection.text(displayed_buffer))
+                        .map_or(MouseSelectionAction::None, MouseSelectionAction::Copy);
+                    self.selection = None;
+                    self.last_click = None;
+                    return action;
+                }
                 if anchor == position {
                     self.selection = None;
+                    self.last_click = Some(CompletedClick {
+                        position,
+                        completed_at: occurred_at,
+                    });
                     return MouseSelectionAction::Click(event);
                 }
 
@@ -166,11 +214,81 @@ impl MouseSelectionState {
                     .text(displayed_buffer)
                     .map_or(MouseSelectionAction::None, MouseSelectionAction::Copy);
                 self.selection = None;
+                self.last_click = None;
                 action
             }
             _ => MouseSelectionAction::None,
         }
     }
+}
+
+fn word_range_at(buffer: &Buffer, position: Position) -> Option<SelectionRange> {
+    if !buffer.area.contains(position) {
+        return None;
+    }
+
+    let symbols = row_symbols(buffer, position.y);
+    let selected = symbols
+        .iter()
+        .position(|symbol| symbol.start <= position.x && position.x <= symbol.end)?;
+    if !symbols[selected].is_word {
+        return None;
+    }
+
+    let mut first = selected;
+    while first > 0 && symbols[first - 1].is_word {
+        first -= 1;
+    }
+    let mut last = selected;
+    while last + 1 < symbols.len() && symbols[last + 1].is_word {
+        last += 1;
+    }
+
+    Some(SelectionRange::new(
+        Position::new(symbols[first].start, position.y),
+        Position::new(symbols[last].end, position.y),
+    ))
+}
+
+fn extend_word_selection(word: SelectionRange, position: Position) -> SelectionRange {
+    let (start, end) = word.ordered();
+    if (position.y, position.x) < (start.y, start.x) {
+        SelectionRange::new(end, position)
+    } else if (position.y, position.x) > (end.y, end.x) {
+        SelectionRange::new(start, position)
+    } else {
+        word
+    }
+}
+
+#[derive(Debug)]
+struct RowSymbol {
+    start: u16,
+    end: u16,
+    is_word: bool,
+}
+
+fn row_symbols(buffer: &Buffer, y: u16) -> Vec<RowSymbol> {
+    let mut symbols = Vec::new();
+    let mut x = buffer.area.x;
+    while x < buffer.area.right() {
+        let symbol = strip_osc8(buffer[(x, y)].symbol());
+        let width =
+            u16::try_from(UnicodeWidthStr::width(symbol.as_str()).max(1)).unwrap_or(u16::MAX);
+        let end = x
+            .saturating_add(width)
+            .saturating_sub(1)
+            .min(buffer.area.right().saturating_sub(1));
+        symbols.push(RowSymbol {
+            start: x,
+            end,
+            is_word: symbol
+                .chars()
+                .any(|ch| ch.is_alphanumeric() || WORD_CONNECTORS.contains(ch)),
+        });
+        x = x.saturating_add(width);
+    }
+    symbols
 }
 
 fn clamp_position(position: Position, area: Rect) -> Position {

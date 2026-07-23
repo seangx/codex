@@ -6,6 +6,8 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
+use std::time::Duration;
+use std::time::Instant;
 
 use crate::mouse_selection::MouseSelectionAction;
 use crate::mouse_selection::MouseSelectionState;
@@ -35,6 +37,23 @@ fn buffer_with_lines(lines: &[&str]) -> Buffer {
     buffer
 }
 
+fn handle(
+    state: &mut MouseSelectionState,
+    event: MouseEvent,
+    buffer: &Buffer,
+) -> MouseSelectionAction {
+    state.handle_event(event, buffer, Instant::now())
+}
+
+fn handle_at(
+    state: &mut MouseSelectionState,
+    event: MouseEvent,
+    buffer: &Buffer,
+    occurred_at: Instant,
+) -> MouseSelectionAction {
+    state.handle_event(event, buffer, occurred_at)
+}
+
 #[test]
 fn drag_selects_multiline_text_in_both_directions() {
     let buffer = buffer_with_lines(&["alpha", "bravo", "charl"]);
@@ -42,21 +61,24 @@ fn drag_selects_multiline_text_in_both_directions() {
     for (start, end) in [((2, 0), (2, 2)), ((2, 2), (2, 0))] {
         let mut state = MouseSelectionState::default();
         assert_eq!(
-            state.handle_event(
+            handle(
+                &mut state,
                 mouse(MouseEventKind::Down(MouseButton::Left), start.0, start.1),
                 &buffer,
             ),
             MouseSelectionAction::None
         );
         assert_eq!(
-            state.handle_event(
+            handle(
+                &mut state,
                 mouse(MouseEventKind::Drag(MouseButton::Left), end.0, end.1),
                 &buffer,
             ),
             MouseSelectionAction::None
         );
         assert_eq!(
-            state.handle_event(
+            handle(
+                &mut state,
                 mouse(MouseEventKind::Up(MouseButton::Left), end.0, end.1),
                 &buffer,
             ),
@@ -72,12 +94,17 @@ fn copied_text_strips_osc8_annotations() {
     buffer[(1, 0)].set_symbol("y");
     let mut state = MouseSelectionState::default();
 
-    state.handle_event(
+    handle(
+        &mut state,
         mouse(MouseEventKind::Down(MouseButton::Left), 0, 0),
         &buffer,
     );
     assert_eq!(
-        state.handle_event(mouse(MouseEventKind::Up(MouseButton::Left), 1, 0), &buffer,),
+        handle(
+            &mut state,
+            mouse(MouseEventKind::Up(MouseButton::Left), 1, 0),
+            &buffer
+        ),
         MouseSelectionAction::Copy("xy".to_string())
     );
 }
@@ -88,12 +115,17 @@ fn copied_text_skips_wide_character_continuation_cells() {
     buffer.set_string(0, 0, "猫咪", ratatui::style::Style::default());
     let mut state = MouseSelectionState::default();
 
-    state.handle_event(
+    handle(
+        &mut state,
         mouse(MouseEventKind::Down(MouseButton::Left), 0, 0),
         &buffer,
     );
     assert_eq!(
-        state.handle_event(mouse(MouseEventKind::Up(MouseButton::Left), 3, 0), &buffer,),
+        handle(
+            &mut state,
+            mouse(MouseEventKind::Up(MouseButton::Left), 3, 0),
+            &buffer
+        ),
         MouseSelectionAction::Copy("猫咪".to_string())
     );
 }
@@ -104,12 +136,17 @@ fn selection_endpoints_on_wide_character_continuations_snap_to_the_character() {
     buffer.set_string(0, 0, "猫咪", ratatui::style::Style::default());
     let mut state = MouseSelectionState::default();
 
-    state.handle_event(
+    handle(
+        &mut state,
         mouse(MouseEventKind::Down(MouseButton::Left), 1, 0),
         &buffer,
     );
     assert_eq!(
-        state.handle_event(mouse(MouseEventKind::Up(MouseButton::Left), 3, 0), &buffer,),
+        handle(
+            &mut state,
+            mouse(MouseEventKind::Up(MouseButton::Left), 3, 0),
+            &buffer
+        ),
         MouseSelectionAction::Copy("猫咪".to_string())
     );
 }
@@ -119,19 +156,40 @@ fn mouse_up_copies_text_and_clears_the_selection_highlight() {
     let buffer = buffer_with_lines(&["select me"]);
     let mut state = MouseSelectionState::default();
 
-    state.handle_event(
+    handle(
+        &mut state,
         mouse(MouseEventKind::Down(MouseButton::Left), 0, 0),
         &buffer,
     );
-    state.handle_event(
+    handle(
+        &mut state,
         mouse(MouseEventKind::Drag(MouseButton::Left), 5, 0),
         &buffer,
     );
     assert!(state.selection().is_some());
     assert_eq!(
-        state.handle_event(mouse(MouseEventKind::Up(MouseButton::Left), 5, 0), &buffer),
+        handle(
+            &mut state,
+            mouse(MouseEventKind::Up(MouseButton::Left), 5, 0),
+            &buffer
+        ),
         MouseSelectionAction::Copy("select".to_string())
     );
+    assert_eq!(state.selection(), None);
+}
+
+#[test]
+fn clear_removes_an_active_mouse_selection() {
+    let buffer = buffer_with_lines(&["select me"]);
+    let mut state = MouseSelectionState::default();
+
+    handle(
+        &mut state,
+        mouse(MouseEventKind::Down(MouseButton::Left), 2, 0),
+        &buffer,
+    );
+
+    assert!(state.clear());
     assert_eq!(state.selection(), None);
 }
 
@@ -143,14 +201,212 @@ fn click_is_distinct_from_drag_selection() {
     let up = mouse(MouseEventKind::Up(MouseButton::Left), 1, 0);
 
     assert_eq!(
-        state.handle_event(down, &buffer),
+        handle(&mut state, down, &buffer),
         MouseSelectionAction::None
     );
     assert_eq!(
-        state.handle_event(up, &buffer),
+        handle(&mut state, up, &buffer),
         MouseSelectionAction::Click(up)
     );
     assert_eq!(state.selection(), None);
+}
+
+#[test]
+fn double_click_selects_and_copies_the_contiguous_word() {
+    let buffer = buffer_with_lines(&["run codex-rs/tui now"]);
+    let mut state = MouseSelectionState::default();
+    let started_at = Instant::now();
+
+    assert_eq!(
+        handle_at(
+            &mut state,
+            mouse(MouseEventKind::Down(MouseButton::Left), 8, 0),
+            &buffer,
+            started_at,
+        ),
+        MouseSelectionAction::None
+    );
+    assert_eq!(
+        handle_at(
+            &mut state,
+            mouse(MouseEventKind::Up(MouseButton::Left), 8, 0),
+            &buffer,
+            started_at + Duration::from_millis(10),
+        ),
+        MouseSelectionAction::Click(mouse(MouseEventKind::Up(MouseButton::Left), 8, 0))
+    );
+    assert_eq!(
+        handle_at(
+            &mut state,
+            mouse(MouseEventKind::Down(MouseButton::Left), 8, 0),
+            &buffer,
+            started_at + Duration::from_millis(100),
+        ),
+        MouseSelectionAction::None
+    );
+    assert_eq!(
+        state.selection(),
+        Some(SelectionRange::new(
+            Position::new(4, 0),
+            Position::new(15, 0)
+        ))
+    );
+    assert_eq!(
+        handle_at(
+            &mut state,
+            mouse(MouseEventKind::Up(MouseButton::Left), 8, 0),
+            &buffer,
+            started_at + Duration::from_millis(110),
+        ),
+        MouseSelectionAction::Copy("codex-rs/tui".to_string())
+    );
+    assert_eq!(state.selection(), None);
+}
+
+#[test]
+fn double_click_selects_a_contiguous_chinese_phrase() {
+    let mut buffer = Buffer::empty(Rect::new(0, 0, 12, 1));
+    buffer.set_string(0, 0, "选择词组 好", ratatui::style::Style::default());
+    let mut state = MouseSelectionState::default();
+    let started_at = Instant::now();
+
+    handle_at(
+        &mut state,
+        mouse(MouseEventKind::Down(MouseButton::Left), 4, 0),
+        &buffer,
+        started_at,
+    );
+    handle_at(
+        &mut state,
+        mouse(MouseEventKind::Up(MouseButton::Left), 4, 0),
+        &buffer,
+        started_at + Duration::from_millis(10),
+    );
+    handle_at(
+        &mut state,
+        mouse(MouseEventKind::Down(MouseButton::Left), 4, 0),
+        &buffer,
+        started_at + Duration::from_millis(100),
+    );
+
+    assert_eq!(
+        handle_at(
+            &mut state,
+            mouse(MouseEventKind::Up(MouseButton::Left), 4, 0),
+            &buffer,
+            started_at + Duration::from_millis(110),
+        ),
+        MouseSelectionAction::Copy("选择词组".to_string())
+    );
+}
+
+#[test]
+fn clicks_outside_the_double_click_interval_remain_single_clicks() {
+    let buffer = buffer_with_lines(&["alpha"]);
+    let mut state = MouseSelectionState::default();
+    let started_at = Instant::now();
+    let down = mouse(MouseEventKind::Down(MouseButton::Left), 2, 0);
+    let up = mouse(MouseEventKind::Up(MouseButton::Left), 2, 0);
+
+    handle_at(&mut state, down, &buffer, started_at);
+    assert_eq!(
+        handle_at(
+            &mut state,
+            up,
+            &buffer,
+            started_at + Duration::from_millis(10),
+        ),
+        MouseSelectionAction::Click(up)
+    );
+    assert_eq!(
+        handle_at(
+            &mut state,
+            down,
+            &buffer,
+            started_at + Duration::from_millis(600),
+        ),
+        MouseSelectionAction::None
+    );
+    assert_eq!(
+        state.selection(),
+        Some(SelectionRange::new(
+            Position::new(2, 0),
+            Position::new(2, 0)
+        ))
+    );
+}
+
+#[test]
+fn clearing_click_sequence_prevents_link_clicks_from_starting_a_double_click() {
+    let buffer = buffer_with_lines(&["https://openai.com"]);
+    let mut state = MouseSelectionState::default();
+    let started_at = Instant::now();
+    let down = mouse(MouseEventKind::Down(MouseButton::Left), 8, 0);
+    let up = mouse(MouseEventKind::Up(MouseButton::Left), 8, 0);
+
+    handle_at(&mut state, down, &buffer, started_at);
+    handle_at(
+        &mut state,
+        up,
+        &buffer,
+        started_at + Duration::from_millis(10),
+    );
+    state.clear_click_sequence();
+    handle_at(
+        &mut state,
+        down,
+        &buffer,
+        started_at + Duration::from_millis(100),
+    );
+
+    assert_eq!(
+        state.selection(),
+        Some(SelectionRange::new(
+            Position::new(8, 0),
+            Position::new(8, 0)
+        ))
+    );
+}
+
+#[test]
+fn double_click_word_highlight_snapshot() {
+    let buffer = buffer_with_lines(&["run codex-rs/tui now"]);
+    let mut state = MouseSelectionState::default();
+    let started_at = Instant::now();
+    let down = mouse(MouseEventKind::Down(MouseButton::Left), 8, 0);
+    let up = mouse(MouseEventKind::Up(MouseButton::Left), 8, 0);
+
+    handle_at(&mut state, down, &buffer, started_at);
+    handle_at(
+        &mut state,
+        up,
+        &buffer,
+        started_at + Duration::from_millis(10),
+    );
+    handle_at(
+        &mut state,
+        down,
+        &buffer,
+        started_at + Duration::from_millis(100),
+    );
+
+    let mut highlighted = buffer.clone();
+    state
+        .selection()
+        .expect("double-click selection")
+        .highlight(&mut highlighted);
+    let selected_cells = highlighted
+        .content
+        .iter()
+        .enumerate()
+        .filter(|(_, cell)| cell.modifier.contains(Modifier::REVERSED))
+        .map(|(index, cell)| {
+            let position = highlighted.pos_of(index);
+            (position, cell.symbol().to_string())
+        })
+        .collect::<Vec<_>>();
+
+    insta::assert_debug_snapshot!(selected_cells);
 }
 
 #[test]

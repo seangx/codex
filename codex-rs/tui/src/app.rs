@@ -1295,8 +1295,10 @@ See the Codex keymap documentation for supported actions and examples."
                     match tui.handle_mouse_selection_event(*mouse_event) {
                         MouseSelectionAction::None => {}
                         MouseSelectionAction::Click(click_event) => {
-                            if let Err(error) = tui.open_hyperlink_at(click_event) {
-                                self.chat_widget.add_error_message(error);
+                            match tui.open_hyperlink_at(click_event) {
+                                Ok(true) => tui.clear_mouse_click_sequence(),
+                                Ok(false) => {}
+                                Err(error) => self.chat_widget.add_error_message(error),
                             }
                         }
                         MouseSelectionAction::Copy(text) => {

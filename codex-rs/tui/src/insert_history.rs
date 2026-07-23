@@ -593,11 +593,13 @@ mod tests {
         state.handle_event(
             mouse(MouseEventKind::Down(MouseButton::Left), 0, 4),
             &selection_buffer,
+            std::time::Instant::now(),
         );
         assert_eq!(
             state.handle_event(
                 mouse(MouseEventKind::Up(MouseButton::Left), 6, 4),
                 &selection_buffer,
+                std::time::Instant::now(),
             ),
             MouseSelectionAction::Copy("history".to_string())
         );
