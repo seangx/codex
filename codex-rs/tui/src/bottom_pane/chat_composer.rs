@@ -1392,7 +1392,6 @@ impl ChatComposer {
         urls
     }
 
-    #[cfg(test)]
     pub(crate) fn show_footer_flash(&mut self, line: Line<'static>, duration: Duration) {
         self.footer.show_flash(line, duration);
     }

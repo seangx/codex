@@ -466,7 +466,6 @@ pub(crate) fn osc8_hyperlink(destination: &str, text: &str) -> String {
     format!("\x1b]8;;{safe_destination}\x07{text}\x1b]8;;\x07")
 }
 
-#[cfg(test)]
 pub(crate) fn strip_osc8(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut stripped = String::with_capacity(text.len());

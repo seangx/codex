@@ -259,6 +259,25 @@ impl ChatWidget {
         self.copy_last_agent_markdown_with(crate::clipboard_copy::copy_to_clipboard);
     }
 
+    pub(crate) fn copy_selected_text(&mut self, text: String) {
+        let character_count = text.chars().count();
+        match crate::clipboard_copy::copy_to_clipboard(&text) {
+            Ok(lease) => {
+                self.clipboard_lease = lease;
+                self.bottom_pane.show_footer_flash(
+                    Line::from(format!("Copied {character_count} chars to clipboard")).dim(),
+                    Duration::from_secs(2),
+                );
+            }
+            Err(error) => {
+                self.add_to_history(history_cell::new_error_event(format!(
+                    "Copy failed: {error}"
+                )));
+            }
+        }
+        self.request_redraw();
+    }
+
     /// Inner implementation with an injectable clipboard backend for testing.
     pub(super) fn copy_last_agent_markdown_with(
         &mut self,

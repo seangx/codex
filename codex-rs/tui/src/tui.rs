@@ -49,6 +49,8 @@ use crate::custom_terminal;
 use crate::custom_terminal::Terminal as CustomTerminal;
 use crate::insert_history::HistoryLineWrapPolicy;
 use crate::insert_history::InsertHistoryMode;
+use crate::mouse_selection::MouseSelectionAction;
+use crate::mouse_selection::MouseSelectionState;
 use crate::notifications::DesktopNotificationBackend;
 use crate::notifications::detect_backend;
 use crate::terminal_hyperlinks::HyperlinkLine;
@@ -199,20 +201,19 @@ mod tests {
     use url::Url;
 
     #[test]
-    fn mouse_click_capture_does_not_enable_pointer_motion_reporting() {
+    fn mouse_capture_enables_drag_but_not_idle_pointer_motion() {
         let mut enable = String::new();
         EnableMouseClickCapture
             .write_ansi(&mut enable)
             .expect("write enable sequence");
-        assert_eq!(enable, "\x1b[?1000h\x1b[?1006h");
-        assert!(!enable.contains("1002"));
+        assert_eq!(enable, "\x1b[?1000h\x1b[?1002h\x1b[?1006h");
         assert!(!enable.contains("1003"));
 
         let mut disable = String::new();
         DisableMouseClickCapture
             .write_ansi(&mut disable)
             .expect("write disable sequence");
-        assert_eq!(disable, "\x1b[?1000l\x1b[?1006l");
+        assert_eq!(disable, "\x1b[?1006l\x1b[?1002l\x1b[?1000l");
     }
 
     #[test]
@@ -378,17 +379,18 @@ pub fn set_modes() -> Result<()> {
     Ok(())
 }
 
-/// Capture button presses and wheel events without enabling pointer-movement reporting.
+/// Capture button presses, drags, releases, and wheel events without idle pointer reporting.
 ///
 /// Crossterm's `EnableMouseCapture` also enables all-motion tracking, which produces a continuous
-/// event stream that Codex does not need. Normal tracking plus SGR coordinates is enough for link
-/// activation and works across Terminal.app, Ghostty, and other xterm-compatible terminals.
+/// event stream that Codex does not need. Button-event tracking plus SGR coordinates reports
+/// motion only while a button is held, which is enough for application-owned text selection and
+/// link activation across Terminal.app, Ghostty, and other xterm-compatible terminals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct EnableMouseClickCapture;
 
 impl Command for EnableMouseClickCapture {
     fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
-        write!(f, "\x1b[?1000h\x1b[?1006h")
+        write!(f, "\x1b[?1000h\x1b[?1002h\x1b[?1006h")
     }
 
     #[cfg(windows)]
@@ -409,7 +411,7 @@ struct DisableMouseClickCapture;
 
 impl Command for DisableMouseClickCapture {
     fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
-        write!(f, "\x1b[?1000l\x1b[?1006l")
+        write!(f, "\x1b[?1006l\x1b[?1002l\x1b[?1000l")
     }
 
     #[cfg(windows)]
@@ -742,7 +744,7 @@ pub enum TuiEvent {
     Key(KeyEvent),
     /// A bracketed paste payload normalized by the app layer before it reaches the composer.
     Paste(String),
-    /// A left-button press that may activate a rendered terminal hyperlink.
+    /// A mouse event used for selection, hyperlink activation, or scrolling.
     Mouse(MouseEvent),
     /// A terminal size notification that should be handled as resize-sensitive draw work.
     ///
@@ -759,6 +761,7 @@ pub struct Tui {
     event_broker: Arc<EventBroker>,
     pub(crate) terminal: Terminal,
     pending_history_lines: Vec<PendingHistoryLines>,
+    mouse_selection: MouseSelectionState,
     ambient_pet_image_state: crate::pets::PetImageRenderState,
     pet_picker_preview_image_state: crate::pets::PetImageRenderState,
     alt_saved_viewport: Option<ratatui::layout::Rect>,
@@ -819,6 +822,7 @@ impl Tui {
             event_broker: Arc::new(EventBroker::new()),
             terminal,
             pending_history_lines: vec![],
+            mouse_selection: MouseSelectionState::default(),
             ambient_pet_image_state: crate::pets::PetImageRenderState::default(),
             pet_picker_preview_image_state: crate::pets::PetImageRenderState::default(),
             alt_saved_viewport: None,
@@ -977,6 +981,23 @@ impl Tui {
             return Ok(false);
         };
         open_hyperlink_destination(&destination).map(|()| true)
+    }
+
+    pub(crate) fn handle_mouse_selection_event(
+        &mut self,
+        event: MouseEvent,
+    ) -> MouseSelectionAction {
+        let action = self
+            .mouse_selection
+            .handle_event(event, self.terminal.displayed_buffer());
+        self.frame_requester.schedule_frame();
+        action
+    }
+
+    pub(crate) fn clear_mouse_selection(&mut self) {
+        if self.mouse_selection.clear() {
+            self.frame_requester.schedule_frame();
+        }
     }
 
     /// Enter alternate screen and expand the viewport to full terminal size, saving the current
@@ -1233,8 +1254,12 @@ impl Tui {
                 self.suspend_context.set_cursor_y(inline_area_bottom);
             }
 
+            let mouse_selection = self.mouse_selection.selection();
             terminal.draw(|frame| {
                 draw_fn(frame);
+                if let Some(selection) = mouse_selection {
+                    selection.highlight(frame.buffer_mut());
+                }
             })
         })?
     }
@@ -1347,8 +1372,12 @@ impl Tui {
                 self.suspend_context.set_cursor_y(inline_area_bottom);
             }
 
+            let mouse_selection = self.mouse_selection.selection();
             terminal.draw(|frame| {
                 draw_fn(frame);
+                if let Some(selection) = mouse_selection {
+                    selection.highlight(frame.buffer_mut());
+                }
             })
         })?
     }

@@ -60,6 +60,7 @@ use crate::model_catalog::ModelCatalog;
 use crate::model_migration::ModelMigrationOutcome;
 use crate::model_migration::migration_copy_for_models;
 use crate::model_migration::run_model_migration_prompt;
+use crate::mouse_selection::MouseSelectionAction;
 use crate::multi_agents::agent_picker_status_dot_spans;
 use crate::multi_agents::format_agent_picker_item_name;
 use crate::multi_agents::next_agent_shortcut_matches;
@@ -1288,12 +1289,23 @@ See the Codex keymap documentation for supported actions and examples."
     ) -> Result<AppRunControl> {
         if let TuiEvent::Mouse(mouse_event) = &event {
             match mouse_event.kind {
-                MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
-                    if let Err(error) = tui.open_hyperlink_at(*mouse_event) {
-                        self.chat_widget.add_error_message(error);
+                MouseEventKind::Down(crossterm::event::MouseButton::Left)
+                | MouseEventKind::Drag(crossterm::event::MouseButton::Left)
+                | MouseEventKind::Up(crossterm::event::MouseButton::Left) => {
+                    match tui.handle_mouse_selection_event(*mouse_event) {
+                        MouseSelectionAction::None => {}
+                        MouseSelectionAction::Click(click_event) => {
+                            if let Err(error) = tui.open_hyperlink_at(click_event) {
+                                self.chat_widget.add_error_message(error);
+                            }
+                        }
+                        MouseSelectionAction::Copy(text) => {
+                            self.chat_widget.copy_selected_text(text);
+                        }
                     }
                 }
                 MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                    tui.clear_mouse_selection();
                     if let Err(error) = self.handle_mouse_scroll(tui, *mouse_event) {
                         self.chat_widget.add_error_message(error.to_string());
                     }

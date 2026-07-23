@@ -1619,6 +1619,12 @@ impl BottomPane {
         self.frame_requester.schedule_frame_in(dur);
     }
 
+    pub(crate) fn show_footer_flash(&mut self, line: Line<'static>, duration: Duration) {
+        self.composer.show_footer_flash(line, duration);
+        self.request_redraw();
+        self.request_redraw_in(duration);
+    }
+
     // --- History helpers ---
 
     pub(crate) fn set_history_metadata(
