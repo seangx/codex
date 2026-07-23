@@ -675,19 +675,31 @@ where
             .enumerate()
         {
             let y = first_y.saturating_add(u16::try_from(row_offset).unwrap_or(u16::MAX));
-            for (x, source_cell) in row.cells().iter().enumerate() {
-                let x = u16::try_from(x).unwrap_or(u16::MAX);
-                let position = Position::new(x, y);
-                if !previous.is_some_and(|range| range.contains(position))
-                    && !selection.is_some_and(|range| range.contains(position))
-                {
+            let mut x = 0usize;
+            while x < row.cells().len() {
+                let source_cell = &row.cells()[x];
+                let width = display_width(source_cell.symbol()).max(1);
+                let end = x.saturating_add(width).min(row.cells().len());
+                let was_selected = (x..end).any(|column| {
+                    previous.is_some_and(|range| {
+                        range.contains(Position::new(u16::try_from(column).unwrap_or(u16::MAX), y))
+                    })
+                });
+                let is_selected = (x..end).any(|column| {
+                    selection.is_some_and(|range| {
+                        range.contains(Position::new(u16::try_from(column).unwrap_or(u16::MAX), y))
+                    })
+                });
+                if !was_selected && !is_selected {
+                    x = end;
                     continue;
                 }
                 let mut cell = source_cell.clone();
-                if selection.is_some_and(|range| range.contains(position)) {
+                if is_selected {
                     cell.modifier.insert(Modifier::REVERSED);
                 }
-                updates.push((x, y, cell));
+                updates.push((u16::try_from(x).unwrap_or(u16::MAX), y, cell));
+                x = end;
             }
         }
 

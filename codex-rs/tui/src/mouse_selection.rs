@@ -132,7 +132,7 @@ impl MouseSelectionState {
         event: MouseEvent,
         displayed_buffer: &Buffer,
     ) -> MouseSelectionAction {
-        let position = Position::new(event.column, event.row);
+        let position = symbol_start_at(displayed_buffer, Position::new(event.column, event.row));
         match event.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 self.pressed_at = Some(position);
@@ -170,6 +170,23 @@ fn clamp_position(position: Position, area: Rect) -> Position {
         position.x.clamp(area.x, area.right().saturating_sub(1)),
         position.y.clamp(area.y, area.bottom().saturating_sub(1)),
     )
+}
+
+fn symbol_start_at(buffer: &Buffer, position: Position) -> Position {
+    if !buffer.area.contains(position) {
+        return position;
+    }
+    let mut x = buffer.area.x;
+    while x < buffer.area.right() {
+        let symbol = strip_osc8(buffer[(x, position.y)].symbol());
+        let width =
+            u16::try_from(UnicodeWidthStr::width(symbol.as_str()).max(1)).unwrap_or(u16::MAX);
+        if position.x < x.saturating_add(width) {
+            return Position::new(x, position.y);
+        }
+        x = x.saturating_add(width);
+    }
+    position
 }
 
 fn position_max(left: Position, right: Position) -> Position {

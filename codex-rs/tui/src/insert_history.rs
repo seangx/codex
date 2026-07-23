@@ -629,6 +629,32 @@ mod tests {
     }
 
     #[test]
+    fn scrollback_selection_does_not_overwrite_wide_character_continuations_with_spaces() {
+        use crate::mouse_selection::SelectionRange;
+
+        let width: u16 = 20;
+        let height: u16 = 6;
+        let backend = VT100Backend::new(width, height);
+        let mut term = crate::custom_terminal::Terminal::with_options(backend).expect("terminal");
+        term.set_viewport_area(Rect::new(0, height - 1, width, 1));
+        insert_history_lines(&mut term, vec![Line::from("历史文本")])
+            .expect("insert wide history text");
+
+        let selection = SelectionRange::new(
+            ratatui::layout::Position::new(0, 4),
+            ratatui::layout::Position::new(7, 4),
+        );
+        term.render_history_selection(Some(selection))
+            .expect("highlight wide history selection");
+
+        let screen = term.backend().vt100().screen();
+        assert_eq!(screen.cell(4, 0).map(vt100::Cell::contents), Some("历"));
+        assert_eq!(screen.cell(4, 2).map(vt100::Cell::contents), Some("史"));
+        assert_eq!(screen.cell(4, 4).map(vt100::Cell::contents), Some("文"));
+        assert_eq!(screen.cell(4, 6).map(vt100::Cell::contents), Some("本"));
+    }
+
+    #[test]
     fn vt100_blockquote_line_emits_green_fg() {
         // Set up a small off-screen terminal
         let width: u16 = 40;

@@ -99,6 +99,22 @@ fn copied_text_skips_wide_character_continuation_cells() {
 }
 
 #[test]
+fn selection_endpoints_on_wide_character_continuations_snap_to_the_character() {
+    let mut buffer = Buffer::empty(Rect::new(0, 0, 4, 1));
+    buffer.set_string(0, 0, "猫咪", ratatui::style::Style::default());
+    let mut state = MouseSelectionState::default();
+
+    state.handle_event(
+        mouse(MouseEventKind::Down(MouseButton::Left), 1, 0),
+        &buffer,
+    );
+    assert_eq!(
+        state.handle_event(mouse(MouseEventKind::Up(MouseButton::Left), 3, 0), &buffer,),
+        MouseSelectionAction::Copy("猫咪".to_string())
+    );
+}
+
+#[test]
 fn click_is_distinct_from_drag_selection() {
     let buffer = buffer_with_lines(&["link"]);
     let mut state = MouseSelectionState::default();
