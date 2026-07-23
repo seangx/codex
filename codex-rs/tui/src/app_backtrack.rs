@@ -37,6 +37,7 @@ use crate::history_cell::UserHistoryCell;
 use crate::pager_overlay::Overlay;
 use crate::render::renderable::Renderable;
 use crate::tui;
+use crate::tui::MouseScrollEvent;
 use crate::tui::TuiEvent;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::Turn;
@@ -48,13 +49,13 @@ use color_eyre::eyre::bail;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
-use crossterm::event::MouseEvent;
 use crossterm::event::MouseEventKind;
 use ratatui::layout::Rect;
 use ratatui::layout::Size;
 
 const NO_PREVIOUS_MESSAGE_TO_EDIT: &str = "No previous message to edit.";
-const MOUSE_SCROLL_ROWS: usize = 3;
+const MOUSE_SCROLL_BASE_ROWS: usize = 3;
+const MOUSE_SCROLL_MAX_ROWS: usize = 60;
 const MIN_EMBEDDED_TRANSCRIPT_ROWS: u16 = 3;
 pub(crate) const SIDE_EDIT_PREVIOUS_UNAVAILABLE_MESSAGE: &str =
     "Editing previous prompts is unavailable in side conversations.";
@@ -73,6 +74,15 @@ fn embedded_transcript_areas_for(chat_widget: &ChatWidget, area: Rect) -> (Rect,
             chat_height,
         ),
     )
+}
+
+pub(crate) fn mouse_scroll_rows(ticks: u16) -> usize {
+    let ticks = usize::from(ticks.max(1));
+    let linear_rows = ticks.saturating_mul(MOUSE_SCROLL_BASE_ROWS);
+    let accelerated_rows = ticks.saturating_sub(2).saturating_mul(2);
+    linear_rows
+        .saturating_add(accelerated_rows)
+        .min(MOUSE_SCROLL_MAX_ROWS)
 }
 
 /// Aggregates all backtrack-related state used by the App.
@@ -110,13 +120,14 @@ impl App {
     pub(crate) fn handle_mouse_scroll(
         &mut self,
         tui: &mut tui::Tui,
-        event: MouseEvent,
+        event: MouseScrollEvent,
     ) -> Result<()> {
-        let scroll_up = matches!(event.kind, MouseEventKind::ScrollUp);
-        let scroll_down = matches!(event.kind, MouseEventKind::ScrollDown);
+        let scroll_up = matches!(event.mouse.kind, MouseEventKind::ScrollUp);
+        let scroll_down = matches!(event.mouse.kind, MouseEventKind::ScrollDown);
         if !scroll_up && !scroll_down {
             return Ok(());
         }
+        let rows = mouse_scroll_rows(event.ticks);
 
         if self.overlay.is_none() {
             if scroll_down || self.transcript_cells.is_empty() {
@@ -141,9 +152,9 @@ impl App {
                 full_area
             };
             if scroll_up {
-                overlay.scroll_up(scroll_area, MOUSE_SCROLL_ROWS);
+                overlay.scroll_up(scroll_area, rows);
             } else {
-                overlay.scroll_down(scroll_area, MOUSE_SCROLL_ROWS);
+                overlay.scroll_down(scroll_area, rows);
                 close_embedded =
                     overlay.is_embedded() && overlay.is_scrolled_to_bottom_in(scroll_area);
             }
@@ -153,7 +164,10 @@ impl App {
             } else {
                 KeyCode::Down
             };
-            overlay.handle_event(tui, TuiEvent::Key(KeyEvent::new(code, event.modifiers)))?;
+            overlay.handle_event(
+                tui,
+                TuiEvent::Key(KeyEvent::new(code, event.mouse.modifiers)),
+            )?;
         }
 
         if close_embedded {

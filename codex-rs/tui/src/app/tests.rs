@@ -117,7 +117,6 @@ use codex_protocol::request_permissions::RequestPermissionProfile;
 use codex_protocol::user_input::TextElement;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use crossterm::event::KeyModifiers;
-use crossterm::event::MouseEvent;
 use crossterm::event::MouseEventKind;
 use insta::assert_snapshot;
 use pretty_assertions::assert_eq;
@@ -153,11 +152,14 @@ async fn mouse_scroll_keeps_composer_while_using_clickable_embedded_transcript()
         .map(|i| plain_line_cell(format!("history-{i}")))
         .collect();
     let mut tui = crate::tui::test_support::make_test_tui()?;
-    let scroll = |kind| MouseEvent {
-        kind,
-        column: 0,
-        row: 0,
-        modifiers: KeyModifiers::NONE,
+    let scroll = |kind| crate::tui::MouseScrollEvent {
+        mouse: crossterm::event::MouseEvent {
+            kind,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        },
+        ticks: 1,
     };
 
     app.handle_mouse_scroll(&mut tui, scroll(MouseEventKind::ScrollUp))?;
@@ -187,6 +189,21 @@ async fn mouse_scroll_keeps_composer_while_using_clickable_embedded_transcript()
         "draft stays editable"
     );
     Ok(())
+}
+
+#[test]
+fn mouse_scroll_rows_accelerate_with_gesture_strength_and_are_capped() {
+    use crate::app_backtrack::mouse_scroll_rows;
+
+    assert_eq!(
+        [
+            mouse_scroll_rows(/*ticks*/ 1),
+            mouse_scroll_rows(/*ticks*/ 2),
+            mouse_scroll_rows(/*ticks*/ 4),
+            mouse_scroll_rows(/*ticks*/ u16::MAX),
+        ],
+        [3, 6, 16, 60]
+    );
 }
 
 #[tokio::test]

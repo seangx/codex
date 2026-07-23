@@ -744,8 +744,10 @@ pub enum TuiEvent {
     Key(KeyEvent),
     /// A bracketed paste payload normalized by the app layer before it reaches the composer.
     Paste(String),
-    /// A mouse event used for selection, hyperlink activation, or scrolling.
+    /// A mouse event used for selection or hyperlink activation.
     Mouse(MouseEvent),
+    /// A coalesced wheel gesture with the number of same-direction ticks retained as its strength.
+    MouseScroll(MouseScrollEvent),
     /// A terminal size notification that should be handled as resize-sensitive draw work.
     ///
     /// Resize is separate from `Draw` so the app can run feature-gated pre-render logic without
@@ -753,6 +755,15 @@ pub enum TuiEvent {
     Resize,
     /// A scheduled repaint that does not necessarily correspond to a terminal size change.
     Draw,
+}
+
+/// A terminal wheel event plus the retained strength of its coalesced gesture.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MouseScrollEvent {
+    /// The newest wheel event, whose direction is the gesture direction.
+    pub mouse: MouseEvent,
+    /// The number of buffered same-direction wheel ticks represented by this gesture.
+    pub ticks: u16,
 }
 
 pub struct Tui {

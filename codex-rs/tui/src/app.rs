@@ -1306,13 +1306,14 @@ See the Codex keymap documentation for supported actions and examples."
                         }
                     }
                 }
-                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-                    tui.clear_mouse_selection();
-                    if let Err(error) = self.handle_mouse_scroll(tui, *mouse_event) {
-                        self.chat_widget.add_error_message(error.to_string());
-                    }
-                }
                 _ => {}
+            }
+            return Ok(AppRunControl::Continue);
+        }
+        if let TuiEvent::MouseScroll(scroll_event) = &event {
+            tui.clear_mouse_selection();
+            if let Err(error) = self.handle_mouse_scroll(tui, *scroll_event) {
+                self.chat_widget.add_error_message(error.to_string());
             }
             return Ok(AppRunControl::Continue);
         }
@@ -1350,6 +1351,7 @@ See the Codex keymap documentation for supported actions and examples."
                     self.chat_widget.handle_paste(pasted);
                 }
                 TuiEvent::Mouse(_) => {}
+                TuiEvent::MouseScroll(_) => {}
                 TuiEvent::Draw | TuiEvent::Resize => {
                     if self.backtrack_render_pending {
                         self.rebuild_transcript_after_backtrack(tui)?;
