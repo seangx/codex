@@ -18,6 +18,14 @@ pub fn user_message_style() -> Style {
     user_message_style_for(default_bg())
 }
 
+/// Returns the style for the active composer.
+///
+/// The composer intentionally uses a little more contrast than committed user
+/// messages so the editable surface does not look like another transcript row.
+pub fn composer_input_style() -> Style {
+    composer_input_style_for(default_bg())
+}
+
 pub fn proposed_plan_style() -> Style {
     proposed_plan_style_for(default_bg())
 }
@@ -36,6 +44,13 @@ pub(crate) fn accent_style() -> Style {
 pub fn user_message_style_for(terminal_bg: Option<(u8, u8, u8)>) -> Style {
     match terminal_bg {
         Some(bg) => Style::default().bg(user_message_bg(bg)),
+        None => Style::default(),
+    }
+}
+
+fn composer_input_style_for(terminal_bg: Option<(u8, u8, u8)>) -> Style {
+    match terminal_bg {
+        Some(bg) => Style::default().bg(best_color(composer_input_bg_rgb(bg))),
         None => Style::default(),
     }
 }
@@ -86,6 +101,15 @@ pub(crate) fn user_message_bg_rgb(terminal_bg: (u8, u8, u8)) -> (u8, u8, u8) {
     blend(top, terminal_bg, alpha)
 }
 
+fn composer_input_bg_rgb(terminal_bg: (u8, u8, u8)) -> (u8, u8, u8) {
+    let (top, alpha) = if is_light(terminal_bg) {
+        ((0, 0, 0), 0.07)
+    } else {
+        ((255, 255, 255), 0.18)
+    };
+    blend(top, terminal_bg, alpha)
+}
+
 #[allow(clippy::disallowed_methods)]
 pub fn proposed_plan_bg(terminal_bg: (u8, u8, u8)) -> Color {
     user_message_bg(terminal_bg)
@@ -111,6 +135,20 @@ mod tests {
 
         assert_eq!(accent_style_for(Some((0, 0, 0))), expected);
         assert_eq!(accent_style_for(/*terminal_bg*/ None), expected);
+    }
+
+    #[test]
+    fn composer_input_has_more_contrast_than_committed_user_messages() {
+        assert_eq!(user_message_bg_rgb((0, 0, 0)), (31, 31, 31));
+        assert_eq!(composer_input_bg_rgb((0, 0, 0)), (46, 46, 46));
+        assert_eq!(
+            user_message_bg_rgb((255, 255, 255)),
+            (245, 245, 245)
+        );
+        assert_eq!(
+            composer_input_bg_rgb((255, 255, 255)),
+            (237, 237, 237)
+        );
     }
 
     #[test]
