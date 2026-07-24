@@ -1,13 +1,14 @@
 ---
 source: tui/src/bottom_pane/chat_composer.rs
+assertion_line: 5044
 expression: terminal.backend()
 ---
 "                                                                                                    "
-"› @src  $1_suffix                                                                                   "
-"                                                                                                    "
-"                                                                                                    "
-"                                                                                                    "
-"                                                                                                    "
-"                                                                                                    "
+"▌ @src  $1_suffix                                                                                   "
+"▌                                                                                                   "
+"▌                                                                                                   "
+"▌                                                                                                   "
+"▌                                                                                                   "
+"▌                                                                                                   "
 "                                                                                                    "
 "  loading...                                                                                        "

@@ -1,10 +1,11 @@
 ---
 source: tui/src/bottom_pane/chat_composer.rs
+assertion_line: 5044
 expression: terminal.backend()
 ---
 "                                                                        "
-"› $goog                                                                 "
-"                                                                        "
+"▌ $goog                                                                 "
+"▌                                                                       "
 "                                                                        "
 "  Google Calendar  [Plugin] Connect Google Calendar for scheduling, ava…"
 "  Google Calendar  [Skill] Find availability and plan event changes     "

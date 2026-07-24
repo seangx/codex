@@ -1,9 +1,10 @@
 ---
 source: tui/src/bottom_pane/chat_composer.rs
+assertion_line: 8934
 expression: terminal.backend()
 ---
 "                                                            "
-"› /mo                                                       "
-"                                                            "
+"▌ /mo                                                       "
+"▌                                                           "
 "                                                            "
 "  /model  choose what model and reasoning effort to use     "
