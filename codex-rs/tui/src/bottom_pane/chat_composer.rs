@@ -4685,13 +4685,24 @@ impl ChatComposer {
         }
         let style = composer_input_style();
         Block::default().style(style).render_ref(composer_rect, buf);
-        let rail_style = if self.draft.input_enabled {
+        let frame_style = if self.draft.input_enabled {
             user_message_accent_style()
         } else {
             user_message_accent_style().dim()
         };
+        if !composer_rect.is_empty() {
+            for x in composer_rect.left()..composer_rect.right() {
+                buf.set_string(x, composer_rect.top(), "─", frame_style);
+                buf.set_string(
+                    x,
+                    composer_rect.bottom().saturating_sub(1),
+                    "─",
+                    frame_style,
+                );
+            }
+        }
         for y in composer_rect.y.saturating_add(1)..composer_rect.bottom().saturating_sub(1) {
-            buf.set_string(composer_rect.x, y, "▌", rail_style);
+            buf.set_string(composer_rect.x, y, "▌", frame_style);
         }
         if !remote_images_rect.is_empty() {
             Paragraph::new(self.attachments.remote_image_lines())
@@ -5270,7 +5281,7 @@ mod tests {
     }
 
     #[test]
-    fn composer_uses_user_rail_on_terminal_background() {
+    fn composer_uses_user_frame_on_terminal_background() {
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
         let mut composer = ChatComposer::new(
@@ -5294,6 +5305,13 @@ mod tests {
         for y in composer_rect.top()..composer_rect.bottom() {
             for x in composer_rect.left()..composer_rect.right() {
                 assert!(matches!(buf[(x, y)].style().bg, None | Some(Color::Reset)));
+            }
+        }
+        for x in composer_rect.left()..composer_rect.right() {
+            for y in [composer_rect.top(), composer_rect.bottom() - 1] {
+                let border = &buf[(x, y)];
+                assert_eq!(border.symbol(), "─");
+                assert_eq!(border.style().fg, user_message_accent_style().fg);
             }
         }
         for y in textarea_rect.top()..textarea_rect.bottom() {

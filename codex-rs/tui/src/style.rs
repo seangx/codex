@@ -21,13 +21,13 @@ pub fn user_message_style() -> Style {
 
 /// Returns the style for the active composer.
 ///
-/// The editable surface keeps the terminal background; its left rail supplies
-/// the visual distinction from the transcript.
+/// The editable surface keeps the terminal background; its accent frame
+/// supplies the visual distinction from the transcript.
 pub fn composer_input_style() -> Style {
     Style::default()
 }
 
-/// Returns the accent style for the left rail on user-authored surfaces.
+/// Returns the accent style for user-authored surfaces.
 pub(crate) fn user_message_accent_style() -> Style {
     Style::default().fg(best_color(HISTORY_USER_MESSAGE_ACCENT_RGB))
 }
