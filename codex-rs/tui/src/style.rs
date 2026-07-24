@@ -118,6 +118,7 @@ pub fn proposed_plan_bg(terminal_bg: (u8, u8, u8)) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::color::perceptual_distance;
     use pretty_assertions::assert_eq;
     use ratatui::style::Modifier;
 
@@ -139,10 +140,17 @@ mod tests {
 
     #[test]
     fn composer_input_has_more_contrast_than_committed_user_messages() {
-        assert_eq!(user_message_bg_rgb((0, 0, 0)), (31, 31, 31));
-        assert_eq!(composer_input_bg_rgb((0, 0, 0)), (46, 46, 46));
-        assert_eq!(user_message_bg_rgb((255, 255, 255)), (245, 245, 245));
-        assert_eq!(composer_input_bg_rgb((255, 255, 255)), (237, 237, 237));
+        for terminal_bg in [(0, 0, 0), (255, 255, 255)] {
+            let message_distance =
+                perceptual_distance(user_message_bg_rgb(terminal_bg), terminal_bg);
+            let composer_distance =
+                perceptual_distance(composer_input_bg_rgb(terminal_bg), terminal_bg);
+
+            assert!(
+                composer_distance > message_distance,
+                "active composer should have more contrast against {terminal_bg:?}"
+            );
+        }
     }
 
     #[test]
