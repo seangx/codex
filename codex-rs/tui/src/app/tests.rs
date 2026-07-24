@@ -218,10 +218,7 @@ async fn middle_click_returns_from_embedded_and_full_transcripts_to_latest() -> 
     assert!(app.overlay.is_none());
 
     app.open_transcript_overlay(&mut tui);
-    assert!(matches!(
-        app.overlay.as_ref(),
-        Some(Overlay::Transcript(_))
-    ));
+    assert!(matches!(app.overlay.as_ref(), Some(Overlay::Transcript(_))));
     assert!(app.return_to_latest_from_transcript(&mut tui));
     assert!(app.overlay.is_none());
     Ok(())

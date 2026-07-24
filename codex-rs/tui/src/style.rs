@@ -141,14 +141,8 @@ mod tests {
     fn composer_input_has_more_contrast_than_committed_user_messages() {
         assert_eq!(user_message_bg_rgb((0, 0, 0)), (31, 31, 31));
         assert_eq!(composer_input_bg_rgb((0, 0, 0)), (46, 46, 46));
-        assert_eq!(
-            user_message_bg_rgb((255, 255, 255)),
-            (245, 245, 245)
-        );
-        assert_eq!(
-            composer_input_bg_rgb((255, 255, 255)),
-            (237, 237, 237)
-        );
+        assert_eq!(user_message_bg_rgb((255, 255, 255)), (245, 245, 245));
+        assert_eq!(composer_input_bg_rgb((255, 255, 255)), (237, 237, 237));
     }
 
     #[test]
