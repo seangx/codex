@@ -28,7 +28,7 @@ use crate::keymap::PagerKeymap;
 use crate::render::Insets;
 use crate::render::renderable::InsetRenderable;
 use crate::render::renderable::Renderable;
-use crate::style::user_message_style;
+use crate::style::user_message_accent_style;
 use crate::terminal_hyperlinks::HyperlinkLine;
 use crate::terminal_hyperlinks::mark_buffer_hyperlinks;
 use crate::terminal_hyperlinks::visible_lines_ref;
@@ -442,6 +442,14 @@ struct CellRenderable {
     content: TranscriptContent,
 }
 
+fn user_history_overlay_style(highlighted: bool) -> Style {
+    if highlighted {
+        user_message_accent_style().reversed()
+    } else {
+        Style::default()
+    }
+}
+
 impl Renderable for CellRenderable {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let hyperlink_lines = match self.content {
@@ -449,11 +457,7 @@ impl Renderable for CellRenderable {
             TranscriptContent::Compact => self.cell.display_hyperlink_lines(area.width),
         };
         let style = if self.cell.as_any().is::<UserHistoryCell>() {
-            if self.highlighted {
-                user_message_style().reversed()
-            } else {
-                user_message_style()
-            }
+            user_history_overlay_style(self.highlighted)
         } else {
             Style::default()
         };
@@ -1200,6 +1204,18 @@ mod tests {
 
     fn static_overlay(lines: Vec<Line<'static>>, title: &str) -> StaticOverlay {
         StaticOverlay::with_title(lines, title.to_string(), default_pager_keymap())
+    }
+
+    #[test]
+    fn user_history_overlay_keeps_normal_messages_clear_and_highlights_with_accent() {
+        assert_eq!(
+            user_history_overlay_style(/*highlighted*/ false),
+            Style::default()
+        );
+        assert_eq!(
+            user_history_overlay_style(/*highlighted*/ true),
+            user_message_accent_style().reversed()
+        );
     }
 
     fn pager_view(

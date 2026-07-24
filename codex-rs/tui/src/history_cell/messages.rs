@@ -106,6 +106,10 @@ fn trim_trailing_blank_lines(mut lines: Vec<Line<'static>>) -> Vec<Line<'static>
     lines
 }
 
+fn user_message_rail() -> Span<'static> {
+    Span::from("▌ ").style(user_message_accent_style())
+}
+
 impl HistoryCell for UserHistoryCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
         let message = sanitize_user_text(&self.message);
@@ -122,7 +126,7 @@ impl HistoryCell for UserHistoryCell {
 
         let style = Style::default();
         let element_style = style.fg(Color::Cyan);
-        let rail = Span::from("▌ ").style(history_user_message_accent_style());
+        let rail = user_message_rail();
 
         let wrapped_remote_images = if self.remote_image_urls.is_empty() {
             None
@@ -183,7 +187,7 @@ impl HistoryCell for UserHistoryCell {
             ));
             if wrapped_message.is_some() {
                 lines.push(Line::from(
-                    Span::from("▌").style(history_user_message_accent_style()),
+                    Span::from("▌").style(user_message_accent_style()),
                 ));
             }
         }

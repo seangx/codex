@@ -21,14 +21,14 @@ pub fn user_message_style() -> Style {
 
 /// Returns the style for the active composer.
 ///
-/// The composer intentionally uses a little more contrast than committed user
-/// messages so the editable surface does not look like another transcript row.
+/// The editable surface keeps the terminal background; its left rail supplies
+/// the visual distinction from the transcript.
 pub fn composer_input_style() -> Style {
-    composer_input_style_for(default_bg())
+    Style::default()
 }
 
-/// Returns the accent style for the left rail on committed user messages.
-pub(crate) fn history_user_message_accent_style() -> Style {
+/// Returns the accent style for the left rail on user-authored surfaces.
+pub(crate) fn user_message_accent_style() -> Style {
     Style::default().fg(best_color(HISTORY_USER_MESSAGE_ACCENT_RGB))
 }
 
@@ -50,13 +50,6 @@ pub(crate) fn accent_style() -> Style {
 pub fn user_message_style_for(terminal_bg: Option<(u8, u8, u8)>) -> Style {
     match terminal_bg {
         Some(bg) => Style::default().bg(user_message_bg(bg)),
-        None => Style::default(),
-    }
-}
-
-fn composer_input_style_for(terminal_bg: Option<(u8, u8, u8)>) -> Style {
-    match terminal_bg {
-        Some(bg) => Style::default().bg(best_color(composer_input_bg_rgb(bg))),
         None => Style::default(),
     }
 }
@@ -107,15 +100,6 @@ pub(crate) fn user_message_bg_rgb(terminal_bg: (u8, u8, u8)) -> (u8, u8, u8) {
     blend(top, terminal_bg, alpha)
 }
 
-fn composer_input_bg_rgb(terminal_bg: (u8, u8, u8)) -> (u8, u8, u8) {
-    let (top, alpha) = if is_light(terminal_bg) {
-        ((0, 0, 0), 0.07)
-    } else {
-        ((255, 255, 255), 0.18)
-    };
-    blend(top, terminal_bg, alpha)
-}
-
 #[allow(clippy::disallowed_methods)]
 pub fn proposed_plan_bg(terminal_bg: (u8, u8, u8)) -> Color {
     user_message_bg(terminal_bg)
@@ -124,7 +108,6 @@ pub fn proposed_plan_bg(terminal_bg: (u8, u8, u8)) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::color::perceptual_distance;
     use pretty_assertions::assert_eq;
     use ratatui::style::Modifier;
 
@@ -145,18 +128,8 @@ mod tests {
     }
 
     #[test]
-    fn composer_input_has_more_contrast_than_neutral_user_surfaces() {
-        for terminal_bg in [(0, 0, 0), (255, 255, 255)] {
-            let message_distance =
-                perceptual_distance(user_message_bg_rgb(terminal_bg), terminal_bg);
-            let composer_distance =
-                perceptual_distance(composer_input_bg_rgb(terminal_bg), terminal_bg);
-
-            assert!(
-                composer_distance > message_distance,
-                "active composer should have more contrast against {terminal_bg:?}"
-            );
-        }
+    fn composer_input_uses_terminal_background() {
+        assert_eq!(composer_input_style(), Style::default());
     }
 
     #[test]

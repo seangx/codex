@@ -256,6 +256,7 @@ use crate::render::RectExt;
 use crate::render::renderable::Renderable;
 use crate::slash_command::SlashCommand;
 use crate::style::composer_input_style;
+use crate::style::user_message_accent_style;
 use codex_protocol::ThreadId;
 use codex_protocol::user_input::ByteRange;
 use codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS;
@@ -4684,6 +4685,14 @@ impl ChatComposer {
         }
         let style = composer_input_style();
         Block::default().style(style).render_ref(composer_rect, buf);
+        let rail_style = if self.draft.input_enabled {
+            user_message_accent_style()
+        } else {
+            user_message_accent_style().dim()
+        };
+        for y in composer_rect.y.saturating_add(1)..composer_rect.bottom().saturating_sub(1) {
+            buf.set_string(composer_rect.x, y, "▌", rail_style);
+        }
         if !remote_images_rect.is_empty() {
             Paragraph::new(self.attachments.remote_image_lines())
                 .style(style)
@@ -4701,10 +4710,10 @@ impl ChatComposer {
                         .unwrap_or(1.0);
                     tier.prompt(charge)
                 } else {
-                    "›".bold()
+                    Span::from("▌").style(user_message_accent_style())
                 }
             } else {
-                "›".dim()
+                Span::from("▌").style(user_message_accent_style().dim())
             };
             buf.set_span(
                 textarea_rect.x - LIVE_PREFIX_COLS,
@@ -5258,6 +5267,40 @@ mod tests {
             buf[(shell_label_x as u16, footer_y)].style().fg,
             Some(Color::LightRed)
         );
+    }
+
+    #[test]
+    fn composer_uses_user_rail_on_terminal_background() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ true,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+        composer.set_text_content(
+            "first line\nsecond line".to_string(),
+            Vec::new(),
+            Vec::new(),
+        );
+
+        let area = Rect::new(0, 0, 40, 6);
+        let [composer_rect, _, textarea_rect, _] = composer.layout_areas(area);
+        let mut buf = Buffer::empty(area);
+        composer.render(area, &mut buf);
+
+        for y in composer_rect.top()..composer_rect.bottom() {
+            for x in composer_rect.left()..composer_rect.right() {
+                assert_eq!(buf[(x, y)].style().bg, None);
+            }
+        }
+        for y in textarea_rect.top()..textarea_rect.bottom() {
+            let rail = &buf[(composer_rect.x, y)];
+            assert_eq!(rail.symbol(), "▌");
+            assert_eq!(rail.style().fg, user_message_accent_style().fg);
+        }
     }
 
     fn plugin_mention_foreground_color(composer: &ChatComposer) -> Option<Color> {
