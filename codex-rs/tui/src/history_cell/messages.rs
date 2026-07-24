@@ -182,7 +182,9 @@ impl HistoryCell for UserHistoryCell {
                 rail.clone(),
             ));
             if wrapped_message.is_some() {
-                lines.push(Line::from(rail.clone()));
+                lines.push(Line::from(
+                    Span::from("▌").style(history_user_message_accent_style()),
+                ));
             }
         }
 

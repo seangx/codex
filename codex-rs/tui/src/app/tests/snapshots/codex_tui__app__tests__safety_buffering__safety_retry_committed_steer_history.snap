@@ -1,7 +1,8 @@
 ---
 source: tui/src/app/tests/safety_buffering.rs
+assertion_line: 564
 expression: rendered_retry
 ---
-› Handle the safety-buffered request
-  Keep the accepted steer
+▌ Handle the safety-buffered request
+▌ Keep the accepted steer
 • done

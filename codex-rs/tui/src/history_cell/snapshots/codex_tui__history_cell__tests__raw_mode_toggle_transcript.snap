@@ -1,11 +1,12 @@
 ---
 source: tui/src/history_cell/tests.rs
+assertion_line: 512
 expression: rendered
 ---
 rich before:
 
-› Please format this
-  for copying
+▌ Please format this
+▌ for copying
 
 • - first item
   - second item
@@ -36,8 +37,8 @@ second line
 
 rich after:
 
-› Please format this
-  for copying
+▌ Please format this
+▌ for copying
 
 • - first item
   - second item
