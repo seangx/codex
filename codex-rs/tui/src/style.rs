@@ -11,6 +11,7 @@ use ratatui::style::Style;
 use ratatui::style::Stylize;
 
 const LIGHT_BG_ACCENT_RGB: (u8, u8, u8) = (0, 95, 135);
+const HISTORY_USER_MESSAGE_TINT_RGB: (u8, u8, u8) = (0, 95, 135);
 // Decorative table rules should remain visible without competing with cell content.
 const TABLE_SEPARATOR_FG_ALPHA: f32 = 0.20;
 
@@ -24,6 +25,14 @@ pub fn user_message_style() -> Style {
 /// messages so the editable surface does not look like another transcript row.
 pub fn composer_input_style() -> Style {
     composer_input_style_for(default_bg())
+}
+
+/// Returns the blue-green tinted style for committed user messages.
+///
+/// A different hue keeps transcript messages visually distinct from the
+/// neutral-gray active composer across dark and light terminal themes.
+pub fn history_user_message_style() -> Style {
+    history_user_message_style_for(default_bg())
 }
 
 pub fn proposed_plan_style() -> Style {
@@ -51,6 +60,13 @@ pub fn user_message_style_for(terminal_bg: Option<(u8, u8, u8)>) -> Style {
 fn composer_input_style_for(terminal_bg: Option<(u8, u8, u8)>) -> Style {
     match terminal_bg {
         Some(bg) => Style::default().bg(best_color(composer_input_bg_rgb(bg))),
+        None => Style::default(),
+    }
+}
+
+fn history_user_message_style_for(terminal_bg: Option<(u8, u8, u8)>) -> Style {
+    match terminal_bg {
+        Some(bg) => Style::default().bg(best_color(history_user_message_bg_rgb(bg))),
         None => Style::default(),
     }
 }
@@ -110,6 +126,11 @@ fn composer_input_bg_rgb(terminal_bg: (u8, u8, u8)) -> (u8, u8, u8) {
     blend(top, terminal_bg, alpha)
 }
 
+fn history_user_message_bg_rgb(terminal_bg: (u8, u8, u8)) -> (u8, u8, u8) {
+    let alpha = if is_light(terminal_bg) { 0.08 } else { 0.22 };
+    blend(HISTORY_USER_MESSAGE_TINT_RGB, terminal_bg, alpha)
+}
+
 #[allow(clippy::disallowed_methods)]
 pub fn proposed_plan_bg(terminal_bg: (u8, u8, u8)) -> Color {
     user_message_bg(terminal_bg)
@@ -139,7 +160,7 @@ mod tests {
     }
 
     #[test]
-    fn composer_input_has_more_contrast_than_committed_user_messages() {
+    fn composer_input_has_more_contrast_than_neutral_user_surfaces() {
         for terminal_bg in [(0, 0, 0), (255, 255, 255)] {
             let message_distance =
                 perceptual_distance(user_message_bg_rgb(terminal_bg), terminal_bg);
@@ -149,6 +170,20 @@ mod tests {
             assert!(
                 composer_distance > message_distance,
                 "active composer should have more contrast against {terminal_bg:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn committed_user_messages_use_a_distinct_blue_green_tint() {
+        for terminal_bg in [(0, 0, 0), (255, 255, 255)] {
+            let history_bg = history_user_message_bg_rgb(terminal_bg);
+            let composer_bg = composer_input_bg_rgb(terminal_bg);
+
+            assert_ne!(history_bg, composer_bg);
+            assert!(
+                history_bg.2 > history_bg.0,
+                "history background should retain a blue-green tint against {terminal_bg:?}"
             );
         }
     }
