@@ -1288,6 +1288,13 @@ See the Codex keymap documentation for supported actions and examples."
         event: TuiEvent,
     ) -> Result<AppRunControl> {
         if let TuiEvent::Mouse(mouse_event) = &event {
+            if matches!(
+                mouse_event.kind,
+                MouseEventKind::Down(crossterm::event::MouseButton::Middle)
+            ) {
+                self.return_to_latest_from_transcript(tui);
+                return Ok(AppRunControl::Continue);
+            }
             match mouse_event.kind {
                 MouseEventKind::Down(crossterm::event::MouseButton::Left)
                 | MouseEventKind::Drag(crossterm::event::MouseButton::Left)

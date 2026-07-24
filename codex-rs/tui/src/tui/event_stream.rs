@@ -319,7 +319,8 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
             Event::Mouse(mouse_event) => match mouse_event.kind {
                 MouseEventKind::Down(MouseButton::Left)
                 | MouseEventKind::Drag(MouseButton::Left)
-                | MouseEventKind::Up(MouseButton::Left) => Some(TuiEvent::Mouse(mouse_event)),
+                | MouseEventKind::Up(MouseButton::Left)
+                | MouseEventKind::Down(MouseButton::Middle) => Some(TuiEvent::Mouse(mouse_event)),
                 MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                     Some(TuiEvent::MouseScroll(crate::tui::MouseScrollEvent {
                         mouse: mouse_event,
@@ -555,6 +556,22 @@ mod tests {
 
         assert!(matches!(stream.next().await, Some(TuiEvent::Mouse(event)) if event == drag));
         assert!(matches!(stream.next().await, Some(TuiEvent::Mouse(event)) if event == up));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn middle_mouse_down_maps_to_mouse_event() {
+        let (broker, handle, _draw_tx, draw_rx, terminal_focused) = setup();
+        let mut stream = make_stream(broker, draw_rx, terminal_focused);
+        let mouse = crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Middle),
+            column: 12,
+            row: 7,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        handle.send(Ok(Event::Mouse(mouse)));
+
+        assert!(matches!(stream.next().await, Some(TuiEvent::Mouse(event)) if event == mouse));
     }
 
     #[tokio::test(flavor = "current_thread")]

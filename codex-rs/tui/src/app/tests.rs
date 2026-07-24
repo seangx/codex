@@ -191,6 +191,52 @@ async fn mouse_scroll_keeps_composer_while_using_clickable_embedded_transcript()
     Ok(())
 }
 
+#[tokio::test]
+async fn middle_click_returns_from_embedded_and_full_transcripts_to_latest() -> Result<()> {
+    let mut app = make_test_app().await;
+    app.transcript_cells = (0..30)
+        .map(|i| plain_line_cell(format!("history-{i}")))
+        .collect();
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    let scroll_up = crate::tui::MouseScrollEvent {
+        mouse: crossterm::event::MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        },
+        ticks: 1,
+    };
+
+    app.handle_mouse_scroll(&mut tui, scroll_up)?;
+    assert!(
+        app.overlay
+            .as_ref()
+            .is_some_and(Overlay::is_embedded_transcript)
+    );
+    assert!(app.return_to_latest_from_transcript(&mut tui));
+    assert!(app.overlay.is_none());
+
+    app.open_transcript_overlay(&mut tui);
+    assert!(matches!(
+        app.overlay.as_ref(),
+        Some(Overlay::Transcript(_))
+    ));
+    assert!(app.return_to_latest_from_transcript(&mut tui));
+    assert!(app.overlay.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn middle_click_jump_is_a_noop_without_a_transcript() -> Result<()> {
+    let mut app = make_test_app().await;
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+
+    assert!(!app.return_to_latest_from_transcript(&mut tui));
+    assert!(app.overlay.is_none());
+    Ok(())
+}
+
 #[test]
 fn mouse_scroll_rows_accelerate_with_gesture_strength_and_are_capped() {
     use crate::app_backtrack::mouse_scroll_rows;

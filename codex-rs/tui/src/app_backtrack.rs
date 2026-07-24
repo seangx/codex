@@ -113,6 +113,19 @@ pub(crate) struct BacktrackSelection {
 }
 
 impl App {
+    /// Close either transcript presentation and return to the live conversation.
+    ///
+    /// Mouse-wheel scrolling uses an embedded transcript while `Ctrl+T` uses the
+    /// full-screen variant. Treat both as the same "jump to latest" destination,
+    /// while leaving unrelated overlays untouched.
+    pub(crate) fn return_to_latest_from_transcript(&mut self, tui: &mut tui::Tui) -> bool {
+        if !matches!(self.overlay.as_ref(), Some(Overlay::Transcript(_))) {
+            return false;
+        }
+        self.close_transcript_overlay(tui);
+        true
+    }
+
     fn embedded_transcript_areas(&self, size: Size) -> (Rect, Rect) {
         embedded_transcript_areas_for(&self.chat_widget, Rect::new(0, 0, size.width, size.height))
     }
