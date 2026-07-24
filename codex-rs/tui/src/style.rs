@@ -11,7 +11,8 @@ use ratatui::style::Style;
 use ratatui::style::Stylize;
 
 const LIGHT_BG_ACCENT_RGB: (u8, u8, u8) = (0, 95, 135);
-const HISTORY_USER_MESSAGE_TINT_RGB: (u8, u8, u8) = (0, 95, 135);
+const HISTORY_USER_MESSAGE_BG_RGB: (u8, u8, u8) = (63, 181, 116);
+const HISTORY_USER_MESSAGE_FG_RGB: (u8, u8, u8) = (0, 0, 0);
 // Decorative table rules should remain visible without competing with cell content.
 const TABLE_SEPARATOR_FG_ALPHA: f32 = 0.20;
 
@@ -27,10 +28,10 @@ pub fn composer_input_style() -> Style {
     composer_input_style_for(default_bg())
 }
 
-/// Returns the blue-green tinted style for committed user messages.
+/// Returns the WeChat-green style for committed user messages.
 ///
-/// A different hue keeps transcript messages visually distinct from the
-/// neutral-gray active composer across dark and light terminal themes.
+/// The strong green hue keeps transcript messages visually distinct from the
+/// neutral-gray active composer. A dark foreground preserves text contrast.
 pub fn history_user_message_style() -> Style {
     history_user_message_style_for(default_bg())
 }
@@ -65,10 +66,12 @@ fn composer_input_style_for(terminal_bg: Option<(u8, u8, u8)>) -> Style {
 }
 
 fn history_user_message_style_for(terminal_bg: Option<(u8, u8, u8)>) -> Style {
-    match terminal_bg {
-        Some(bg) => Style::default().bg(best_color(history_user_message_bg_rgb(bg))),
-        None => Style::default(),
-    }
+    let bg = terminal_bg
+        .map(history_user_message_bg_rgb)
+        .unwrap_or(HISTORY_USER_MESSAGE_BG_RGB);
+    Style::default()
+        .fg(best_color(HISTORY_USER_MESSAGE_FG_RGB))
+        .bg(best_color(bg))
 }
 
 pub fn proposed_plan_style_for(terminal_bg: Option<(u8, u8, u8)>) -> Style {
@@ -127,8 +130,11 @@ fn composer_input_bg_rgb(terminal_bg: (u8, u8, u8)) -> (u8, u8, u8) {
 }
 
 fn history_user_message_bg_rgb(terminal_bg: (u8, u8, u8)) -> (u8, u8, u8) {
-    let alpha = if is_light(terminal_bg) { 0.08 } else { 0.22 };
-    blend(HISTORY_USER_MESSAGE_TINT_RGB, terminal_bg, alpha)
+    if is_light(terminal_bg) {
+        blend(HISTORY_USER_MESSAGE_BG_RGB, terminal_bg, 0.90)
+    } else {
+        HISTORY_USER_MESSAGE_BG_RGB
+    }
 }
 
 #[allow(clippy::disallowed_methods)]
@@ -175,7 +181,7 @@ mod tests {
     }
 
     #[test]
-    fn committed_user_messages_use_a_distinct_blue_green_tint() {
+    fn committed_user_messages_use_wechat_green() {
         for terminal_bg in [(0, 0, 0), (255, 255, 255)] {
             let history_bg = history_user_message_bg_rgb(terminal_bg);
             let composer_bg = composer_input_bg_rgb(terminal_bg);
@@ -186,6 +192,10 @@ mod tests {
                 "history background should retain a blue-green tint against {terminal_bg:?}"
             );
         }
+        assert_eq!(
+            history_user_message_bg_rgb((0, 0, 0)),
+            HISTORY_USER_MESSAGE_BG_RGB
+        );
     }
 
     #[test]
