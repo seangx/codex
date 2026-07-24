@@ -2100,8 +2100,20 @@ fn user_history_cell_wraps_and_prefixes_each_line_snapshot() {
     let width: u16 = 12;
     let lines = cell.display_lines(width);
     let rendered = render_lines(&lines).join("\n");
+    let rail_count = lines
+        .iter()
+        .filter(|line| line.spans.first().is_some_and(|span| span.content == "▌ "))
+        .count();
 
     assert_eq!(render_lines(&cell.raw_lines()), ["_count_rows"]);
+    assert_eq!(rail_count, 2);
+    assert!(
+        lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .all(|span| span.style.bg.is_none()),
+        "committed user messages should not paint a full-width background"
+    );
     insta::assert_snapshot!(rendered);
 }
 

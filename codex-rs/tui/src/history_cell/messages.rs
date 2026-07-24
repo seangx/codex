@@ -120,8 +120,9 @@ impl HistoryCell for UserHistoryCell {
             )
             .max(1);
 
-        let style = history_user_message_style();
+        let style = Style::default();
         let element_style = style.fg(Color::Cyan);
+        let rail = Span::from("▌ ").style(history_user_message_accent_style());
 
         let wrapped_remote_images = if self.remote_image_urls.is_empty() {
             None
@@ -177,20 +178,16 @@ impl HistoryCell for UserHistoryCell {
         if let Some(wrapped_remote_images) = wrapped_remote_images {
             lines.extend(prefix_lines(
                 wrapped_remote_images,
-                "  ".into(),
-                "  ".into(),
+                rail.clone(),
+                rail.clone(),
             ));
             if wrapped_message.is_some() {
-                lines.push(Line::from("").style(style));
+                lines.push(Line::from(rail.clone()));
             }
         }
 
         if let Some(wrapped_message) = wrapped_message {
-            lines.extend(prefix_lines(
-                wrapped_message,
-                "› ".bold().dim(),
-                "  ".into(),
-            ));
+            lines.extend(prefix_lines(wrapped_message, rail.clone(), rail));
         }
 
         lines.push(Line::from("").style(style));
