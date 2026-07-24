@@ -80,6 +80,7 @@ use codex_thread_store::ThreadMetadataPatch;
 use codex_thread_store::ThreadPersistenceMetadata;
 use codex_thread_store::ThreadStore;
 use codex_thread_store::UpdateThreadMetadataParams;
+use codex_utils_absolute_path::test_support::PathExt;
 use core_test_support::responses;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
@@ -253,6 +254,7 @@ async fn paginated_stored_thread_routes_projected_turns_and_rejects_legacy_histo
             model_providers: Some(vec!["mock_provider".to_string()]),
             source_kinds: None,
             archived: None,
+            is_pinned: None,
             cwd: None,
             use_state_db_only: false,
             search_term: None,
@@ -467,15 +469,13 @@ async fn thread_search_occurrences_reads_paginated_projection() -> Result<()> {
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
     let thread_id = codex_protocol::ThreadId::default();
-    let state_db = codex_state::StateRuntime::init(
-        codex_home.path().to_path_buf(),
-        "mock_provider".to_string(),
-    )
-    .await?;
+    let sqlite = codex_state::SqliteConfig::new_for_testing(codex_home.path().abs());
+    let state_db =
+        codex_state::StateRuntime::init(sqlite.clone(), "mock_provider".to_string()).await?;
     let store = LocalThreadStore::new(
         LocalThreadStoreConfig {
             codex_home: codex_home.path().to_path_buf(),
-            sqlite_home: codex_home.path().to_path_buf(),
+            sqlite,
             default_model_provider_id: "mock_provider".to_string(),
         },
         Some(state_db),
@@ -885,6 +885,7 @@ async fn thread_list_includes_store_thread_without_rollout_path() -> Result<()> 
                 model_providers: Some(Vec::new()),
                 source_kinds: None,
                 archived: None,
+                is_pinned: None,
                 cwd: None,
                 use_state_db_only: false,
                 search_term: None,
@@ -1263,6 +1264,7 @@ async fn paginated_thread_name_set_is_reflected_in_read_list_and_metadata_resume
             model_providers: Some(vec!["mock_provider".to_string()]),
             source_kinds: None,
             archived: None,
+            is_pinned: None,
             cwd: None,
             use_state_db_only: true,
             search_term: None,
@@ -1445,15 +1447,13 @@ async fn paginated_history_lists_use_projected_turns_and_items() -> Result<()> {
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
     let thread_id = codex_protocol::ThreadId::default();
-    let state_db = codex_state::StateRuntime::init(
-        codex_home.path().to_path_buf(),
-        "mock_provider".to_string(),
-    )
-    .await?;
+    let sqlite = codex_state::SqliteConfig::new_for_testing(codex_home.path().abs());
+    let state_db =
+        codex_state::StateRuntime::init(sqlite.clone(), "mock_provider".to_string()).await?;
     let store = LocalThreadStore::new(
         LocalThreadStoreConfig {
             codex_home: codex_home.path().to_path_buf(),
-            sqlite_home: codex_home.path().to_path_buf(),
+            sqlite,
             default_model_provider_id: "mock_provider".to_string(),
         },
         Some(state_db),
@@ -1518,6 +1518,15 @@ async fn paginated_history_lists_use_projected_turns_and_items() -> Result<()> {
                         memory_citation: None,
                     }),
                 ),
+                paginated_completed_item(
+                    thread_id,
+                    "turn-1",
+                    CoreTurnItem::UserMessage(UserMessageItem {
+                        id: "steer-1".to_string(),
+                        client_id: Some("updated-steer".to_string()),
+                        content: Vec::new(),
+                    }),
+                ),
                 paginated_turn_completed("turn-1"),
                 paginated_turn_started("turn-2"),
                 paginated_completed_item(
@@ -1550,7 +1559,7 @@ async fn paginated_history_lists_use_projected_turns_and_items() -> Result<()> {
             },
             ThreadItem::UserMessage {
                 id: "steer-1".to_string(),
-                client_id: None,
+                client_id: Some("updated-steer".to_string()),
                 content: Vec::new(),
             },
             ThreadItem::AgentMessage {

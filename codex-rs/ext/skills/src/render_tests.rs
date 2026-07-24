@@ -181,7 +181,7 @@ fn catalog_budget_uses_capped_context_percentage_or_character_fallback() {
 }
 
 #[test]
-fn omission_marker_is_charged_to_catalog_budget() {
+fn omission_notice_follows_render_policy_and_is_charged_to_catalog_budget() {
     let catalog = SkillCatalog {
         entries: (0..20)
             .map(|index| {
@@ -194,6 +194,13 @@ fn omission_marker_is_charged_to_catalog_budget() {
             .collect(),
         warnings: Vec::new(),
     };
+    let core_fragment = available_skills_fragment(
+        &catalog,
+        /*include_skills_usage_instructions*/ false,
+        SkillCatalogRenderPolicy::CoreCompatible,
+        SkillMetadataBudget::Tokens(100),
+    )
+    .expect("core-compatible catalog should render");
     let fragment = available_skills_fragment(
         &catalog,
         /*include_skills_usage_instructions*/ false,
@@ -208,6 +215,7 @@ fn omission_marker_is_charged_to_catalog_budget() {
         .map(|line| approx_token_count(&format!("{line}\n")))
         .sum::<usize>();
 
+    assert!(!core_fragment.body().contains("additional skills omitted"));
     assert!(fragment.body().contains("additional skills omitted"));
     assert!(rendered_metadata_cost <= 100);
 }
@@ -295,22 +303,38 @@ fn catalog_emits_omission_marker_when_every_minimum_skill_line_exceeds_budget() 
         warnings: Vec::new(),
     };
 
+    let expected_report = SkillRenderReport {
+        total_count: 1,
+        included_count: 0,
+        omitted_count: 1,
+        truncated_description_chars: MAX_CATALOG_SKILL_DESCRIPTION_CHARS,
+        truncated_description_count: 1,
+    };
+    assert_eq!(
+        expected_report.warning_message(),
+        Some(
+            "Exceeded skills context budget. All skill descriptions were removed and 1 additional skill was not included in the model-visible skills list."
+                .to_string()
+        )
+    );
+    let core_render = render_available_skills(
+        &catalog,
+        SkillCatalogRenderPolicy::CoreCompatible,
+        SkillMetadataBudget::Tokens(100),
+    )
+    .expect("core-compatible report should render");
+    assert_eq!(core_render.report, expected_report);
+    assert_eq!(
+        core_render.into_fragment(/*include_skills_usage_instructions*/ false),
+        None
+    );
     let render = render_available_skills(
         &catalog,
         SkillCatalogRenderPolicy::ExtensionCompatible,
         SkillMetadataBudget::Tokens(100),
     )
     .expect("catalog should render");
-    assert_eq!(
-        render.report,
-        SkillRenderReport {
-            total_count: 1,
-            included_count: 0,
-            omitted_count: 1,
-            truncated_description_chars: MAX_CATALOG_SKILL_DESCRIPTION_CHARS,
-            truncated_description_count: 1,
-        }
-    );
+    assert_eq!(render.report, expected_report);
     let fragment = render
         .into_fragment(/*include_skills_usage_instructions*/ false)
         .expect("omission marker should fit");
@@ -356,5 +380,63 @@ fn catalog_preserves_report_when_no_fragment_fits_budget() {
         render
             .into_fragment(/*include_skills_usage_instructions*/ false)
             .is_none()
+    );
+}
+
+#[test]
+fn substantial_description_shortening_emits_warning() {
+    let catalog = SkillCatalog {
+        entries: vec![
+            entry(
+                "long-skill",
+                &"a".repeat(250),
+                /*short_description*/ None,
+            ),
+            entry("empty-skill", "", /*short_description*/ None),
+        ],
+        warnings: Vec::new(),
+    };
+    let skill_lines = catalog
+        .entries
+        .iter()
+        .map(|entry| SkillLine::new(entry, SkillCatalogRenderPolicy::ExtensionCompatible))
+        .collect::<Vec<_>>();
+    let minimum_cost = skill_lines.iter().fold(0usize, |used, line| {
+        used.saturating_add(line.minimum_cost(SkillMetadataBudget::Characters(usize::MAX)))
+    });
+    let render = render_available_skills(
+        &catalog,
+        SkillCatalogRenderPolicy::ExtensionCompatible,
+        SkillMetadataBudget::Characters(minimum_cost + 49),
+    )
+    .expect("catalog should render");
+
+    assert_eq!(
+        render.report.warning_message(),
+        Some(
+            "Skill descriptions were shortened to fit the skills context budget. Codex can still see every skill, but some descriptions are shorter. Disable unused skills or plugins to leave more room for the rest."
+                .to_string()
+        )
+    );
+}
+
+#[test]
+fn substantial_description_shortening_warning_starts_above_threshold() {
+    let report_at_threshold = SkillRenderReport {
+        total_count: 2,
+        included_count: 2,
+        omitted_count: 0,
+        truncated_description_chars: 200,
+        truncated_description_count: 2,
+    };
+    assert_eq!(report_at_threshold.warning_message(), None);
+
+    let report_above_threshold = SkillRenderReport {
+        truncated_description_chars: 201,
+        ..report_at_threshold
+    };
+    assert_eq!(
+        report_above_threshold.warning_message(),
+        Some(SKILL_DESCRIPTION_TRUNCATED_WARNING.to_string())
     );
 }

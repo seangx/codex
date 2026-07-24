@@ -58,6 +58,7 @@ use codex_thread_store::CreateThreadParams as StoreCreateThreadParams;
 use codex_thread_store::InMemoryThreadStore;
 use codex_thread_store::ThreadPersistenceMetadata;
 use codex_thread_store::ThreadStore;
+use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 use tokio::time::timeout;
@@ -176,6 +177,7 @@ async fn thread_delete_with_non_local_thread_store_does_not_create_local_persist
                 model_providers: Some(Vec::new()),
                 source_kinds: None,
                 archived: None,
+                is_pinned: None,
                 cwd: None,
                 use_state_db_only: false,
                 search_term: None,
@@ -404,7 +406,9 @@ fn assert_no_local_persistence_artifacts(codex_home: &Path) -> Result<()> {
         "non-local thread persistence should not create archived rollout sessions"
     );
     assert!(
-        !codex_state::state_db_path(codex_home).exists(),
+        !codex_state::SqliteConfig::new_for_testing(codex_home.abs())
+            .state_db_path()
+            .exists(),
         "non-local thread persistence should not create local thread sqlite"
     );
 

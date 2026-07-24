@@ -649,6 +649,8 @@ pub(crate) enum WebSearchActionKind {
 pub(crate) struct CodexCommandExecutionEventParams {
     #[serde(flatten)]
     pub(crate) base: CodexToolItemEventBase,
+    pub(crate) plugin_id: Option<String>,
+    pub(crate) script_path: Option<String>,
     pub(crate) command_execution_source: CommandExecutionSource,
     pub(crate) exit_code: Option<i32>,
     pub(crate) command_total_action_count: u64,
@@ -914,6 +916,7 @@ pub(crate) struct CodexTurnEventParams {
     pub(crate) total_tokens: Option<i64>,
     pub(crate) before_first_sampling_ms: u64,
     pub(crate) sampling_ms: u64,
+    pub(crate) compaction_ms: u64,
     pub(crate) between_sampling_overhead_ms: u64,
     pub(crate) tool_blocking_ms: u64,
     pub(crate) after_last_sampling_ms: u64,

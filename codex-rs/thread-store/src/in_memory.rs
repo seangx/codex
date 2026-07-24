@@ -50,6 +50,7 @@ fn stores() -> &'static Mutex<HashMap<String, Arc<InMemoryThreadStore>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ItemSortKey;
     use crate::ListItemsParams;
     use crate::ListTurnsParams;
     use crate::SortDirection;
@@ -90,6 +91,8 @@ mod tests {
                 cursor: None,
                 page_size: 10,
                 sort_direction: SortDirection::Asc,
+                sort_key: ItemSortKey::CreatedAtOrdinal,
+                after_updated_at_ordinal: None,
             })
             .await
             .expect_err("default list_items should be unsupported");
@@ -144,6 +147,18 @@ mod tests {
                 .expect("create thread");
         }
 
+        store
+            .update_thread_metadata(UpdateThreadMetadataParams {
+                thread_id: grandchild_thread_id,
+                patch: ThreadMetadataPatch {
+                    is_pinned: Some(true),
+                    ..Default::default()
+                },
+                include_archived: false,
+            })
+            .await
+            .expect("pin grandchild thread");
+
         let page = ThreadStore::list_threads(
             &store,
             ListThreadsParams {
@@ -154,6 +169,7 @@ mod tests {
                 allowed_sources: Vec::new(),
                 model_providers: None,
                 cwd_filters: None,
+                is_pinned: None,
                 archived: false,
                 search_term: None,
                 relation_filter: Some(ThreadRelationFilter::DirectChildrenOf(parent_thread_id)),
@@ -181,6 +197,7 @@ mod tests {
                 allowed_sources: Vec::new(),
                 model_providers: None,
                 cwd_filters: None,
+                is_pinned: None,
                 archived: false,
                 search_term: None,
                 relation_filter: Some(ThreadRelationFilter::DescendantsOf(parent_thread_id)),
@@ -196,6 +213,34 @@ mod tests {
                 .map(|item| item.thread_id)
                 .collect::<HashSet<_>>(),
             HashSet::from([child_thread_id, grandchild_thread_id])
+        );
+
+        let page = ThreadStore::list_threads(
+            &store,
+            ListThreadsParams {
+                page_size: 10,
+                cursor: None,
+                sort_key: ThreadSortKey::CreatedAt,
+                sort_direction: SortDirection::Desc,
+                allowed_sources: Vec::new(),
+                model_providers: None,
+                cwd_filters: None,
+                is_pinned: Some(true),
+                archived: false,
+                search_term: None,
+                relation_filter: Some(ThreadRelationFilter::DescendantsOf(parent_thread_id)),
+                use_state_db_only: false,
+            },
+        )
+        .await
+        .expect("list pinned descendant threads");
+
+        assert_eq!(
+            page.items
+                .into_iter()
+                .map(|item| item.thread_id)
+                .collect::<Vec<_>>(),
+            vec![grandchild_thread_id]
         );
     }
 
@@ -725,6 +770,9 @@ impl ThreadStore for InMemoryThreadStore {
                 }
                 None => {}
             }
+            if let Some(is_pinned) = params.is_pinned {
+                page.items.retain(|thread| thread.is_pinned == is_pinned);
+            }
             Ok(page)
         })
     }
@@ -808,6 +856,9 @@ fn stored_thread_from_state(
             .and_then(|metadata| metadata.advance_recency_at.or(metadata.updated_at))
             .unwrap_or_else(Utc::now),
         archived_at: None,
+        is_pinned: metadata
+            .and_then(|metadata| metadata.is_pinned)
+            .unwrap_or(false),
         cwd: metadata
             .and_then(|metadata| metadata.cwd.clone())
             .unwrap_or_default(),

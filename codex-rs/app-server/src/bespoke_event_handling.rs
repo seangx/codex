@@ -129,6 +129,8 @@ enum CommandExecutionApprovalPresentation {
 
 #[derive(Debug, PartialEq)]
 struct CommandExecutionCompletionItem {
+    plugin_id: Option<String>,
+    script_path: Option<String>,
     command: String,
     cwd: LegacyAppPathString,
     command_actions: Vec<V2ParsedCommand>,
@@ -271,6 +273,8 @@ pub(crate) async fn apply_bespoke_event_handling(
             ) {
                 Some(ThreadItem::CommandExecution {
                     id,
+                    plugin_id,
+                    script_path,
                     command,
                     cwd,
                     command_actions,
@@ -278,6 +282,8 @@ pub(crate) async fn apply_bespoke_event_handling(
                 }) => Some((
                     id,
                     CommandExecutionCompletionItem {
+                        plugin_id,
+                        script_path,
                         command,
                         cwd,
                         command_actions,
@@ -297,6 +303,8 @@ pub(crate) async fn apply_bespoke_event_handling(
                     &conversation_id,
                     assessment_turn_id.clone(),
                     target_item_id.clone(),
+                    completion_item.plugin_id.clone(),
+                    completion_item.script_path.clone(),
                     completion_item.command.clone(),
                     completion_item.cwd.clone(),
                     completion_item.command_actions.clone(),
@@ -330,11 +338,9 @@ pub(crate) async fn apply_bespoke_event_handling(
                     &conversation_id,
                     assessment_turn_id,
                     target_item_id,
-                    completion_item.command,
-                    completion_item.cwd,
+                    completion_item,
                     /*process_id*/ None,
                     CommandExecutionSource::Agent,
-                    completion_item.command_actions,
                     completion_status,
                     &outgoing,
                     &thread_state,
@@ -588,6 +594,8 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .collect::<Vec<_>>();
             let ExecApprovalRequestEvent {
                 call_id,
+                plugin_id,
+                script_path,
                 approval_id,
                 turn_id,
                 environment_id,
@@ -614,6 +622,8 @@ pub(crate) async fn apply_bespoke_event_handling(
             } else {
                 let command_string = shlex_join(&command);
                 let completion_item = CommandExecutionCompletionItem {
+                    plugin_id,
+                    script_path,
                     command: command_string,
                     cwd: cwd.clone().into(),
                     command_actions: command_actions.clone(),
@@ -640,6 +650,8 @@ pub(crate) async fn apply_bespoke_event_handling(
                     &conversation_id,
                     event_turn_id.clone(),
                     call_id.clone(),
+                    completion_item.plugin_id.clone(),
+                    completion_item.script_path.clone(),
                     completion_item.command.clone(),
                     completion_item.cwd.clone(),
                     completion_item.command_actions.clone(),
@@ -1334,6 +1346,8 @@ async fn start_command_execution_item(
     conversation_id: &ThreadId,
     turn_id: String,
     item_id: String,
+    plugin_id: Option<String>,
+    script_path: Option<String>,
     command: String,
     cwd: LegacyAppPathString,
     command_actions: Vec<V2ParsedCommand>,
@@ -1355,6 +1369,8 @@ async fn start_command_execution_item(
             started_at_ms: now_unix_timestamp_ms(),
             item: ThreadItem::CommandExecution {
                 id: item_id,
+                plugin_id,
+                script_path,
                 command,
                 cwd,
                 process_id: None,
@@ -1378,11 +1394,9 @@ async fn complete_command_execution_item(
     conversation_id: &ThreadId,
     turn_id: String,
     item_id: String,
-    command: String,
-    cwd: LegacyAppPathString,
+    completion_item: CommandExecutionCompletionItem,
     process_id: Option<String>,
     source: CommandExecutionSource,
-    command_actions: Vec<V2ParsedCommand>,
     status: CommandExecutionStatus,
     outgoing: &ThreadScopedOutgoingMessageSender,
     thread_state: &Arc<Mutex<ThreadState>>,
@@ -1399,12 +1413,14 @@ async fn complete_command_execution_item(
 
     let item = ThreadItem::CommandExecution {
         id: item_id,
-        command,
-        cwd,
+        plugin_id: completion_item.plugin_id,
+        script_path: completion_item.script_path,
+        command: completion_item.command,
+        cwd: completion_item.cwd,
         process_id,
         source,
         status,
-        command_actions,
+        command_actions: completion_item.command_actions,
         aggregated_output: None,
         exit_code: None,
         duration_ms: None,
@@ -2047,11 +2063,9 @@ async fn on_command_execution_request_approval_response(
             &conversation_id,
             event_turn_id.clone(),
             item_id.clone(),
-            completion_item.command,
-            completion_item.cwd,
+            completion_item,
             /*process_id*/ None,
             CommandExecutionSource::Agent,
-            completion_item.command_actions,
             status,
             &outgoing,
             &thread_state,
@@ -2203,6 +2217,7 @@ mod tests {
             updated_at: created_at,
             recency_at: created_at,
             archived_at: None,
+            is_pinned: false,
             cwd: test_path_buf("/tmp").abs().into(),
             cli_version: "0.0.0".to_string(),
             source: SessionSource::Cli,
@@ -2266,6 +2281,8 @@ mod tests {
 
     fn command_execution_completion_item(command: &str) -> CommandExecutionCompletionItem {
         CommandExecutionCompletionItem {
+            plugin_id: Some("sample@openai-curated".to_string()),
+            script_path: Some("scripts/run.py".to_string()),
             command: command.to_string(),
             cwd: test_path_buf("/tmp").abs().into(),
             command_actions: vec![V2ParsedCommand::Unknown {
@@ -2299,6 +2316,8 @@ mod tests {
         GuardianAssessmentEvent {
             id: format!("review-{id}"),
             target_item_id: Some(id.to_string()),
+            plugin_id: Some("sample@openai-curated".to_string()),
+            script_path: Some("scripts/run.py".to_string()),
             turn_id: turn_id.to_string(),
             started_at_ms: 1_000,
             completed_at_ms: (!matches!(status, GuardianAssessmentStatus::InProgress))
@@ -2366,6 +2385,8 @@ mod tests {
             &GuardianAssessmentEvent {
                 id: "review-1".to_string(),
                 target_item_id: Some("item-1".to_string()),
+                plugin_id: None,
+                script_path: None,
                 turn_id: String::new(),
                 started_at_ms: 1_000,
                 completed_at_ms: None,
@@ -2412,6 +2433,8 @@ mod tests {
             &GuardianAssessmentEvent {
                 id: "review-2".to_string(),
                 target_item_id: Some("item-2".to_string()),
+                plugin_id: None,
+                script_path: None,
                 turn_id: "turn-from-assessment".to_string(),
                 started_at_ms: 1_000,
                 completed_at_ms: Some(1_042),
@@ -2466,6 +2489,8 @@ mod tests {
             &GuardianAssessmentEvent {
                 id: "review-3".to_string(),
                 target_item_id: None,
+                plugin_id: None,
+                script_path: None,
                 turn_id: "turn-from-assessment".to_string(),
                 started_at_ms: 1_000,
                 completed_at_ms: Some(1_042),
@@ -2517,6 +2542,8 @@ mod tests {
             &conversation_id,
             "turn-1".to_string(),
             "cmd-1".to_string(),
+            completion_item.plugin_id.clone(),
+            completion_item.script_path.clone(),
             completion_item.command.clone(),
             completion_item.cwd.clone(),
             completion_item.command_actions.clone(),
@@ -2536,6 +2563,8 @@ mod tests {
                     payload.item,
                     ThreadItem::CommandExecution {
                         id: "cmd-1".to_string(),
+                        plugin_id: completion_item.plugin_id.clone(),
+                        script_path: completion_item.script_path.clone(),
                         command: completion_item.command.clone(),
                         cwd: completion_item.cwd.clone(),
                         process_id: None,
@@ -2555,6 +2584,8 @@ mod tests {
             &conversation_id,
             "turn-1".to_string(),
             "cmd-1".to_string(),
+            completion_item.plugin_id.clone(),
+            completion_item.script_path.clone(),
             completion_item.command.clone(),
             completion_item.cwd.clone(),
             completion_item.command_actions.clone(),
@@ -2589,6 +2620,8 @@ mod tests {
             &conversation_id,
             "turn-1".to_string(),
             "cmd-1".to_string(),
+            completion_item.plugin_id.clone(),
+            completion_item.script_path.clone(),
             completion_item.command.clone(),
             completion_item.cwd.clone(),
             completion_item.command_actions.clone(),
@@ -2603,11 +2636,9 @@ mod tests {
             &conversation_id,
             "turn-1".to_string(),
             "cmd-1".to_string(),
-            completion_item.command.clone(),
-            completion_item.cwd.clone(),
+            completion_item,
             /*process_id*/ None,
             CommandExecutionSource::Agent,
-            completion_item.command_actions.clone(),
             CommandExecutionStatus::Declined,
             &outgoing,
             &thread_state,
@@ -2617,10 +2648,19 @@ mod tests {
         let completed = recv_broadcast_notification(&mut rx).await?;
         match completed {
             ServerNotification::ItemCompleted(payload) => {
-                let ThreadItem::CommandExecution { id, status, .. } = payload.item else {
+                let ThreadItem::CommandExecution {
+                    id,
+                    plugin_id,
+                    script_path,
+                    status,
+                    ..
+                } = payload.item
+                else {
                     bail!("expected command execution completion");
                 };
                 assert_eq!(id, "cmd-1");
+                assert_eq!(plugin_id.as_deref(), Some("sample@openai-curated"));
+                assert_eq!(script_path.as_deref(), Some("scripts/run.py"));
                 assert_eq!(status, CommandExecutionStatus::Declined);
             }
             other => bail!("unexpected message: {other:?}"),
@@ -2630,11 +2670,9 @@ mod tests {
             &conversation_id,
             "turn-1".to_string(),
             "cmd-1".to_string(),
-            completion_item.command,
-            completion_item.cwd,
+            command_execution_completion_item("printf hi"),
             /*process_id*/ None,
             CommandExecutionSource::Agent,
-            completion_item.command_actions,
             CommandExecutionStatus::Declined,
             &outgoing,
             &thread_state,
@@ -2663,7 +2701,9 @@ mod tests {
             thread_id: conversation_id,
             thread: conversation,
             ..
-        } = thread_manager.start_thread(config.clone()).await?;
+        } = thread_manager
+            .start_thread(codex_core::StartThreadOptions::new(config.clone()))
+            .await?;
         let thread_state = new_thread_state();
         let thread_watch_manager = ThreadWatchManager::new();
         let (tx, mut rx) = mpsc::channel(CHANNEL_CAPACITY);
@@ -2696,10 +2736,19 @@ mod tests {
         match first {
             ServerNotification::ItemStarted(payload) => {
                 assert_eq!(payload.turn_id, "turn-guardian-approved");
-                let ThreadItem::CommandExecution { id, status, .. } = payload.item else {
+                let ThreadItem::CommandExecution {
+                    id,
+                    plugin_id,
+                    script_path,
+                    status,
+                    ..
+                } = payload.item
+                else {
                     bail!("expected command execution item");
                 };
                 assert_eq!(id, "cmd-guardian-approved");
+                assert_eq!(plugin_id.as_deref(), Some("sample@openai-curated"));
+                assert_eq!(script_path.as_deref(), Some("scripts/run.py"));
                 assert_eq!(status, CommandExecutionStatus::InProgress);
             }
             other => bail!("unexpected message: {other:?}"),
@@ -2759,10 +2808,19 @@ mod tests {
         match fourth {
             ServerNotification::ItemStarted(payload) => {
                 assert_eq!(payload.turn_id, "turn-guardian-denied");
-                let ThreadItem::CommandExecution { id, status, .. } = payload.item else {
+                let ThreadItem::CommandExecution {
+                    id,
+                    plugin_id,
+                    script_path,
+                    status,
+                    ..
+                } = payload.item
+                else {
                     bail!("expected command execution item");
                 };
                 assert_eq!(id, "cmd-guardian-denied");
+                assert_eq!(plugin_id.as_deref(), Some("sample@openai-curated"));
+                assert_eq!(script_path.as_deref(), Some("scripts/run.py"));
                 assert_eq!(status, CommandExecutionStatus::InProgress);
             }
             other => bail!("unexpected message: {other:?}"),
@@ -2806,10 +2864,19 @@ mod tests {
         let seventh = recv_broadcast_notification(&mut rx).await?;
         match seventh {
             ServerNotification::ItemCompleted(payload) => {
-                let ThreadItem::CommandExecution { id, status, .. } = payload.item else {
+                let ThreadItem::CommandExecution {
+                    id,
+                    plugin_id,
+                    script_path,
+                    status,
+                    ..
+                } = payload.item
+                else {
                     bail!("expected command execution completion");
                 };
                 assert_eq!(id, "cmd-guardian-denied");
+                assert_eq!(plugin_id.as_deref(), Some("sample@openai-curated"));
+                assert_eq!(script_path.as_deref(), Some("scripts/run.py"));
                 assert_eq!(status, CommandExecutionStatus::Declined);
             }
             other => bail!("unexpected message: {other:?}"),
@@ -3241,7 +3308,9 @@ mod tests {
             thread_id: conversation_id,
             thread: conversation,
             ..
-        } = thread_manager.start_thread(config.clone()).await?;
+        } = thread_manager
+            .start_thread(codex_core::StartThreadOptions::new(config.clone()))
+            .await?;
         let thread_state = new_thread_state();
         {
             let mut state = thread_state.lock().await;
@@ -3329,7 +3398,9 @@ mod tests {
             thread_id: conversation_id,
             thread: conversation,
             ..
-        } = thread_manager.start_thread(config).await?;
+        } = thread_manager
+            .start_thread(codex_core::StartThreadOptions::new(config))
+            .await?;
         let child_thread_id = ThreadId::new();
         let child_thread_id_string = child_thread_id.to_string();
         let thread_watch_manager = ThreadWatchManager::new();
@@ -3419,7 +3490,9 @@ mod tests {
             thread_id: conversation_id,
             thread: conversation,
             ..
-        } = thread_manager.start_thread(config).await?;
+        } = thread_manager
+            .start_thread(codex_core::StartThreadOptions::new(config))
+            .await?;
         let (tx, mut rx) = mpsc::channel(CHANNEL_CAPACITY);
         let outgoing = Arc::new(OutgoingMessageSender::new(
             tx,

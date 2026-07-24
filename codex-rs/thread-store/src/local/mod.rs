@@ -14,6 +14,7 @@ mod thread_history;
 mod thread_history_materialization;
 mod unarchive_thread;
 mod update_thread_metadata;
+mod writer_lock;
 
 #[cfg(test)]
 mod test_support;
@@ -22,6 +23,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_rollout::RolloutRecorder;
 use codex_rollout::StateDbHandle;
+use codex_state::SqliteConfig;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::path::PathBuf;
@@ -32,6 +34,7 @@ use tokio::sync::OwnedMutexGuard;
 
 use crate::AppendThreadItemsParams;
 use crate::ArchiveThreadParams;
+use crate::ArchiveThreadsParams;
 use crate::CreateThreadParams;
 use crate::DeleteThreadParams;
 use crate::DeleteThreadsParams;
@@ -57,6 +60,8 @@ use crate::ThreadStoreFuture;
 use crate::ThreadStoreResult;
 use crate::TurnPage;
 use crate::UpdateThreadMetadataParams;
+use crate::local::writer_lock::WriterLockCoordinator;
+use crate::local::writer_lock::WriterLockGuard;
 
 /// Local filesystem/SQLite-backed implementation of [`ThreadStore`].
 ///
@@ -76,6 +81,7 @@ pub struct LocalThreadStore {
     pub(super) config: LocalThreadStoreConfig,
     live_recorders: Arc<Mutex<HashMap<ThreadId, LiveRecorderEntry>>>,
     live_writer_locks: Arc<LiveWriterLocks>,
+    writer_lock_coordinator: Arc<WriterLockCoordinator>,
     state_db: Option<StateDbHandle>,
     thread_history_db: Arc<OnceCell<sqlx::SqlitePool>>,
 }
@@ -86,6 +92,7 @@ struct LiveRecorderEntry {
     // canonical SessionMeta is durable. Retain the mode captured when live persistence was opened
     // so missing SQLite rows can still be seeded.
     history_mode: ThreadHistoryMode,
+    writer_lock: Option<WriterLockGuard>,
 }
 
 #[derive(Default)]
@@ -115,7 +122,7 @@ impl LiveWriterLocks {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalThreadStoreConfig {
     pub codex_home: PathBuf,
-    pub sqlite_home: PathBuf,
+    pub sqlite: SqliteConfig,
     /// Provider used only when older local metadata does not contain one.
     pub default_model_provider_id: String,
 }
@@ -124,7 +131,7 @@ impl LocalThreadStoreConfig {
     pub fn from_config(config: &impl codex_rollout::RolloutConfigView) -> Self {
         Self {
             codex_home: config.codex_home().to_path_buf(),
-            sqlite_home: config.sqlite_home().to_path_buf(),
+            sqlite: config.sqlite_config().clone(),
             default_model_provider_id: config.model_provider_id().to_string(),
         }
     }
@@ -141,10 +148,12 @@ impl std::fmt::Debug for LocalThreadStore {
 impl LocalThreadStore {
     /// Create a local store using an already initialized state DB handle.
     pub fn new(config: LocalThreadStoreConfig, state_db: Option<StateDbHandle>) -> Self {
+        let writer_lock_coordinator = Arc::new(WriterLockCoordinator::new(&config.codex_home));
         Self {
             config,
             live_recorders: Arc::new(Mutex::new(HashMap::new())),
             live_writer_locks: Arc::new(LiveWriterLocks::default()),
+            writer_lock_coordinator,
             state_db,
             thread_history_db: Arc::new(OnceCell::new()),
         }
@@ -158,7 +167,7 @@ impl LocalThreadStore {
     async fn thread_history_db(&self) -> ThreadStoreResult<&sqlx::SqlitePool> {
         self.thread_history_db
             .get_or_try_init(|| async {
-                codex_state::open_thread_history_db(self.config.sqlite_home.as_path()).await
+                codex_state::open_thread_history_db(&self.config.sqlite).await
             })
             .await
             .map_err(|err| ThreadStoreError::Internal {
@@ -199,11 +208,48 @@ impl LocalThreadStore {
         Ok(())
     }
 
-    pub(super) async fn insert_live_recorder(
+    async fn acquire_paginated_writer_locks(
+        &self,
+        thread_ids: &[ThreadId],
+    ) -> ThreadStoreResult<Vec<WriterLockGuard>> {
+        let mut writer_locks = Vec::new();
+        for &thread_id in thread_ids {
+            if self
+                .live_recorders
+                .lock()
+                .await
+                .get(&thread_id)
+                .is_some_and(|entry| entry.writer_lock.is_some())
+            {
+                continue;
+            }
+
+            // Only a readable legacy header proves no paginated writer can own this id. Missing
+            // lazy rollouts and damaged headers must conservatively try the lock.
+            let history_mode = match read_thread::resolve_rollout_path(
+                self, thread_id, /*include_archived*/ true,
+            )
+            .await?
+            {
+                Some(rollout_path) => codex_rollout::read_session_meta_line(rollout_path.as_path())
+                    .await
+                    .ok()
+                    .map(|meta_line| meta_line.meta.history_mode),
+                None => None,
+            };
+            if !matches!(history_mode, Some(ThreadHistoryMode::Legacy)) {
+                writer_locks.push(self.writer_lock_coordinator.acquire(thread_id)?);
+            }
+        }
+        Ok(writer_locks)
+    }
+
+    async fn insert_live_recorder(
         &self,
         thread_id: ThreadId,
         recorder: RolloutRecorder,
         history_mode: ThreadHistoryMode,
+        writer_lock: Option<WriterLockGuard>,
     ) -> ThreadStoreResult<()> {
         match self.live_recorders.lock().await.entry(thread_id) {
             Entry::Occupied(entry) => Err(ThreadStoreError::InvalidRequest {
@@ -213,6 +259,7 @@ impl LocalThreadStore {
                 entry.insert(LiveRecorderEntry {
                     recorder,
                     history_mode,
+                    writer_lock,
                 });
                 Ok(())
             }
@@ -392,7 +439,24 @@ impl ThreadStore for LocalThreadStore {
     }
 
     fn archive_thread(&self, params: ArchiveThreadParams) -> ThreadStoreFuture<'_, ()> {
-        Box::pin(async move { archive_thread::archive_thread(self, params).await })
+        Box::pin(async move {
+            archive_thread::archive_threads(
+                self,
+                ArchiveThreadsParams {
+                    thread_ids: vec![params.thread_id],
+                    writer_lock_thread_ids: Vec::new(),
+                },
+            )
+            .await
+            .map(|_| ())
+        })
+    }
+
+    fn archive_threads(
+        &self,
+        params: ArchiveThreadsParams,
+    ) -> ThreadStoreFuture<'_, Vec<ThreadId>> {
+        Box::pin(async move { archive_thread::archive_threads(self, params).await })
     }
 
     fn unarchive_thread(&self, params: ArchiveThreadParams) -> ThreadStoreFuture<'_, StoredThread> {
@@ -499,7 +563,7 @@ mod tests {
         let home = TempDir::new().expect("temp dir");
         let config = test_config(home.path());
         let runtime = codex_state::StateRuntime::init(
-            config.sqlite_home.clone(),
+            config.sqlite.clone(),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -534,7 +598,7 @@ mod tests {
         let home = TempDir::new().expect("temp dir");
         let config = test_config(home.path());
         let runtime = codex_state::StateRuntime::init(
-            config.sqlite_home.clone(),
+            config.sqlite.clone(),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -569,7 +633,7 @@ mod tests {
         let home = TempDir::new().expect("temp dir");
         let config = test_config(home.path());
         let runtime = codex_state::StateRuntime::init(
-            config.sqlite_home.clone(),
+            config.sqlite.clone(),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -637,7 +701,7 @@ mod tests {
         let home = TempDir::new().expect("temp dir");
         let config = test_config(home.path());
         let runtime = codex_state::StateRuntime::init(
-            config.sqlite_home.clone(),
+            config.sqlite.clone(),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -726,7 +790,7 @@ mod tests {
         let home = TempDir::new().expect("temp dir");
         let config = test_config(home.path());
         let runtime = codex_state::StateRuntime::init(
-            config.sqlite_home.clone(),
+            config.sqlite.clone(),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -762,7 +826,7 @@ mod tests {
         let home = TempDir::new().expect("temp dir");
         let config = test_config(home.path());
         let runtime = codex_state::StateRuntime::init(
-            config.sqlite_home.clone(),
+            config.sqlite.clone(),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -802,7 +866,7 @@ mod tests {
         let home = TempDir::new().expect("temp dir");
         let config = test_config(home.path());
         let runtime = codex_state::StateRuntime::init(
-            config.sqlite_home.clone(),
+            config.sqlite.clone(),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -846,7 +910,7 @@ mod tests {
         let home = TempDir::new().expect("temp dir");
         let config = test_config(home.path());
         let runtime = codex_state::StateRuntime::init(
-            config.sqlite_home.clone(),
+            config.sqlite.clone(),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -901,7 +965,7 @@ mod tests {
         let external_home = TempDir::new().expect("external temp dir");
         let config = test_config(home.path());
         let runtime = codex_state::StateRuntime::init(
-            config.sqlite_home.clone(),
+            config.sqlite.clone(),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -954,56 +1018,77 @@ mod tests {
     async fn create_thread_rejects_missing_cwd() {
         let home = TempDir::new().expect("temp dir");
         let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
-        let thread_id = ThreadId::default();
-        let mut params = create_thread_params(thread_id);
-        params.metadata.cwd = None;
+        for history_mode in [ThreadHistoryMode::Legacy, ThreadHistoryMode::Paginated] {
+            let thread_id = ThreadId::default();
+            let mut params = create_thread_params(thread_id);
+            params.history_mode = history_mode;
+            params.metadata.cwd = None;
 
-        let err = store
-            .create_thread(params)
-            .await
-            .expect_err("local thread store should require cwd");
+            let err = store
+                .create_thread(params)
+                .await
+                .expect_err("local thread store should require cwd");
 
-        assert!(matches!(
-            err,
-            ThreadStoreError::InvalidRequest { message }
-                if message == "local thread store requires a cwd"
-        ));
+            assert!(matches!(
+                err,
+                ThreadStoreError::InvalidRequest { message }
+                    if message == "local thread store requires a cwd"
+            ));
+
+            let mut valid_params = create_thread_params(thread_id);
+            valid_params.history_mode = history_mode;
+            store
+                .create_thread(valid_params)
+                .await
+                .expect("failed initialization should release writer ownership");
+        }
     }
 
     #[tokio::test]
     async fn discard_thread_drops_unmaterialized_live_writer() {
         let home = TempDir::new().expect("temp dir");
         let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
-        let thread_id = ThreadId::default();
+        for history_mode in [ThreadHistoryMode::Legacy, ThreadHistoryMode::Paginated] {
+            let thread_id = ThreadId::default();
+            let mut params = create_thread_params(thread_id);
+            params.history_mode = history_mode;
 
-        store
-            .create_thread(create_thread_params(thread_id))
-            .await
-            .expect("create live thread");
-        let rollout_path = store
-            .live_rollout_path(thread_id)
-            .await
-            .expect("load rollout path");
-        store
-            .discard_thread(thread_id)
-            .await
-            .expect("discard live thread");
-
-        assert!(
-            !tokio::fs::try_exists(rollout_path.as_path())
+            store
+                .create_thread(params)
                 .await
-                .expect("check rollout path")
-        );
-        let err = store
-            .append_items(AppendThreadItemsParams {
-                thread_id,
-                items: vec![user_message_item("write after discard")],
-            })
-            .await
-            .expect_err("discard should remove the live thread writer");
-        assert!(
-            matches!(err, ThreadStoreError::ThreadNotFound { thread_id: missing } if missing == thread_id)
-        );
+                .expect("create live thread");
+            let rollout_path = store
+                .live_rollout_path(thread_id)
+                .await
+                .expect("load rollout path");
+            assert!(!rollout_path.exists());
+
+            let lock_path = home
+                .path()
+                .join("thread-writer-locks")
+                .join(format!("{thread_id}.lock"));
+            assert_eq!(
+                lock_path.exists(),
+                matches!(history_mode, ThreadHistoryMode::Paginated)
+            );
+            store
+                .discard_thread(thread_id)
+                .await
+                .expect("discard live thread");
+
+            assert!(!rollout_path.exists());
+            assert!(!lock_path.exists());
+            let err = store
+                .append_items(AppendThreadItemsParams {
+                    thread_id,
+                    items: vec![user_message_item("write after discard")],
+                })
+                .await
+                .expect_err("discard should remove the live thread writer");
+            assert!(
+                matches!(err, ThreadStoreError::ThreadNotFound { thread_id: missing } if missing == thread_id)
+            );
+        }
     }
 
     #[tokio::test]
