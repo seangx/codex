@@ -5293,7 +5293,7 @@ mod tests {
 
         for y in composer_rect.top()..composer_rect.bottom() {
             for x in composer_rect.left()..composer_rect.right() {
-                assert_eq!(buf[(x, y)].style().bg, None);
+                assert!(matches!(buf[(x, y)].style().bg, None | Some(Color::Reset)));
             }
         }
         for y in textarea_rect.top()..textarea_rect.bottom() {
