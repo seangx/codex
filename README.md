@@ -9,6 +9,28 @@ If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="http
 
 ---
 
+## Fork-specific changes
+
+This repository is a personal fork of [`openai/codex`](https://github.com/openai/codex) that is
+regularly synchronized with upstream. Its current customizations focus on the terminal UI:
+
+- Startup update checks are disabled.
+- Web links, local file paths, directories, and generated-image folders can be opened directly
+  from supported terminals. Directories open in the platform file manager.
+- Mouse and trackpad interaction is improved with smoother accelerated scrolling, compact
+  scrollback, application-owned text selection, wide-character support, and double-click word
+  selection. Middle-click returns to the latest message.
+- Consecutive MCP and shell activity is collapsed into compact summaries instead of filling the
+  conversation view with full transcripts.
+- Plan progress can remain pinned above the composer until the plan completes or is explicitly
+  closed.
+- The experimental `monitor_tool` is available for waiting on and reporting long-running work.
+- User messages and the active composer use distinct, lightweight visual treatments, including a
+  bordered input area.
+
+These changes are fork-only unless they are later adopted upstream. Experimental features such as
+`monitor_tool` may still change or behave unpredictably.
+
 ## Quickstart
 
 ### Installing and running Codex CLI
