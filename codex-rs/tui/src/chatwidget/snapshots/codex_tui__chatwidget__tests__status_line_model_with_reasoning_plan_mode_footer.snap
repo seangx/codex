@@ -4,7 +4,7 @@ assertion_line: 3219
 expression: normalized_backend_snapshot(terminal.backend())
 ---
 "                                                                                "
-"                                                                                "
+"────────────────────────────────────────────────────────────────────────────────"
 "▌ Ask Codex to do anything                                                      "
-"                                                                                "
+"────────────────────────────────────────────────────────────────────────────────"
 "  gpt-5.2 medium                                Plan mode (shift+tab to cycle)  "

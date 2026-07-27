@@ -1,11 +1,11 @@
 ---
 source: tui/src/bottom_pane/mod.rs
-assertion_line: 2457
+assertion_line: 2459
 expression: "render_snapshot(&pane, area)"
 ---
 • Working (0s • esc to interrupt)               
                                                 
-                                                
+────────────────────────────────────────────────
 ▌ Ask Codex to do anything                      
-                                                
+────────────────────────────────────────────────
   ? for shortcuts            100% context left

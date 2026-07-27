@@ -1,10 +1,10 @@
 ---
 source: tui/src/chatwidget/tests/side.rs
-assertion_line: 422
+assertion_line: 423
 expression: terminal.backend()
 ---
 "                                                                                "
-"                                                                                "
+"────────────────────────────────────────────────────────────────────────────────"
 "▌ Check recently modified functions for compatibility                           "
-"                                                                                "
+"────────────────────────────────────────────────────────────────────────────────"
 "  Side from main thread · main needs input · ctrl + / to switch · ctrl + c to cl"

@@ -1,6 +1,6 @@
 ---
 source: tui/src/chatwidget/tests/status_and_layout.rs
-assertion_line: 4736
+assertion_line: 4740
 expression: normalize_snapshot_paths(term.backend().vt100().screen().contents())
 ---
 
@@ -39,7 +39,7 @@ expression: normalize_snapshot_paths(term.backend().vt100().screen().contents())
 
 • Investigating rendering code (0s • esc to interrupt)
 
-
+────────────────────────────────────────────────────────────────────────────────
 ▌ Summarize recent commits
-
+────────────────────────────────────────────────────────────────────────────────
   tab to queue message                                       100% context left

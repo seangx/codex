@@ -4911,7 +4911,7 @@ mod tests {
     }
 
     #[test]
-    fn footer_hint_row_is_separated_from_composer() {
+    fn footer_hint_row_is_separated_by_composer_border() {
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
         let composer = ChatComposer::new(
@@ -4953,14 +4953,13 @@ mod tests {
 
         assert!(
             hint_row_idx > 0,
-            "expected a spacing row above the footer hints",
+            "expected the composer border above the footer hints",
         );
 
-        let spacing_row = row_to_string(hint_row_idx - 1);
-        assert_eq!(
-            spacing_row.trim(),
-            "",
-            "expected blank spacing row above hints but saw: {spacing_row:?}",
+        let border_row = row_to_string(hint_row_idx - 1);
+        assert!(
+            border_row.chars().all(|ch| ch == '─'),
+            "expected composer border above hints but saw: {border_row:?}",
         );
     }
 

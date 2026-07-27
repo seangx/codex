@@ -1,9 +1,9 @@
 ---
 source: tui/src/bottom_pane/chat_composer.rs
-assertion_line: 8832
+assertion_line: 8940
 expression: terminal.backend()
 ---
-"                                                                                                    "
+"────────────────────────────────────────────────────────────────────────────────────────────────────"
 "▌ Ask Codex to do anything                                                                          "
 "▌                                                                                                   "
 "▌                                                                                                   "
@@ -11,5 +11,5 @@ expression: terminal.backend()
 "▌                                                                                                   "
 "▌                                                                                                   "
 "▌                                                                                                   "
-"                                                                                                    "
+"────────────────────────────────────────────────────────────────────────────────────────────────────"
 "  ? for shortcuts                                                                100% context left  "

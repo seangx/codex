@@ -1,6 +1,6 @@
 ---
 source: tui/src/chatwidget/tests/guardian.rs
-assertion_line: 273
+assertion_line: 287
 expression: normalize_snapshot_paths(term.backend().vt100().screen().contents())
 ---
 
@@ -11,7 +11,7 @@ expression: normalize_snapshot_paths(term.backend().vt100().screen().contents())
 
 • Working (0s • esc to interrupt)
 
-
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ▌ Ask Codex to do anything
-
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
   gpt-5.6-sol default · /tmp/project
