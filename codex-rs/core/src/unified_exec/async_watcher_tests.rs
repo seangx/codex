@@ -161,6 +161,7 @@ async fn exit_watcher_waits_for_late_network_denial_before_classifying_end() -> 
         context.call_id,
         vec!["proof".to_string()],
         cwd,
+        ExecCommandSource::UnifiedExecStartup,
         /*process_id*/ 123,
         /*plugin_attribution*/ None,
         transcript,

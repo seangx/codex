@@ -5,6 +5,12 @@ use std::time::Duration;
 use anyhow::Context;
 use anyhow::Result;
 use codex_features::Feature;
+use codex_protocol::items::CommandExecutionStatus;
+use codex_protocol::items::TurnItem;
+use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::ExecCommandSource;
+use codex_protocol::protocol::RolloutItem;
+use codex_protocol::protocol::RolloutLine;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_function_call;
@@ -88,6 +94,49 @@ async fn monitor_output_wakes_an_idle_session() -> Result<()> {
     assert_eq!(monitor_events.len(), 1);
     assert!(monitor_events[0].contains("monitor-finished"));
     assert!(monitor_events[0].contains(r#""status":{"exited":{"exit_code":0}}"#));
+
+    test.codex.flush_rollout().await?;
+    let rollout_path = test
+        .codex
+        .rollout_path()
+        .context("monitor session should have a rollout path")?;
+    let rollout = std::fs::read_to_string(rollout_path)?;
+    let command_events = rollout
+        .lines()
+        .map(serde_json::from_str::<RolloutLine>)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter_map(|line| match line.item {
+            RolloutItem::EventMsg(EventMsg::ItemStarted(event)) => match event.item {
+                TurnItem::CommandExecution(item) if item.id == "monitor-call" => {
+                    Some(("started", item.source, item.status))
+                }
+                _ => None,
+            },
+            RolloutItem::EventMsg(EventMsg::ItemCompleted(event)) => match event.item {
+                TurnItem::CommandExecution(item) if item.id == "monitor-call" => {
+                    Some(("completed", item.source, item.status))
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        command_events,
+        vec![
+            (
+                "started",
+                ExecCommandSource::Agent,
+                CommandExecutionStatus::InProgress,
+            ),
+            (
+                "completed",
+                ExecCommandSource::Agent,
+                CommandExecutionStatus::Completed,
+            ),
+        ]
+    );
 
     Ok(())
 }

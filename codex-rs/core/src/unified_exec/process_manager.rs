@@ -328,6 +328,16 @@ fn fail_process_with_message(process: &UnifiedExecProcess, message: String) -> U
     UnifiedExecError::process_failed(process.failure_message().unwrap_or(message))
 }
 
+fn exec_command_source(request: &ExecCommandRequest) -> ExecCommandSource {
+    if request.monitor {
+        // A monitor is an agent tool invocation, not an interactive unified-exec session.
+        // Reporting it as agent work also keeps arbitrary watcher commands visible in the TUI.
+        ExecCommandSource::Agent
+    } else {
+        ExecCommandSource::UnifiedExecStartup
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn emit_failed_initial_exec_end_if_unstored(
     process_started_alive: bool,
@@ -340,7 +350,7 @@ async fn emit_failed_initial_exec_end_if_unstored(
     message: String,
     wall_time: Duration,
 ) {
-    if process_started_alive {
+    if process_started_alive && !request.monitor {
         return;
     }
 
@@ -350,6 +360,7 @@ async fn emit_failed_initial_exec_end_if_unstored(
         context.call_id.clone(),
         request.command.clone(),
         cwd,
+        exec_command_source(request),
         Some(request.process_id.to_string()),
         plugin_attribution,
         transcript,
@@ -460,10 +471,11 @@ impl UnifiedExecProcessManager {
                 .turn
                 .plugin_attribution_for_command(&request.command, &cwd)
         });
+        let source = exec_command_source(&request);
         let emitter = ToolEmitter::unified_exec(
             &request.command,
             cwd.clone(),
-            ExecCommandSource::UnifiedExecStartup,
+            source,
             Some(request.process_id.to_string()),
             plugin_attribution.clone(),
         );
@@ -491,6 +503,7 @@ impl UnifiedExecProcessManager {
                 &request.command,
                 request.hook_command.clone(),
                 cwd.clone(),
+                source,
                 plugin_attribution.clone(),
                 start,
                 request.process_id,
@@ -654,6 +667,7 @@ impl UnifiedExecProcessManager {
                 context.call_id.clone(),
                 request.command.clone(),
                 cwd.clone(),
+                source,
                 Some(process_id.to_string()),
                 plugin_attribution.clone(),
                 Arc::clone(&transcript),
@@ -672,6 +686,26 @@ impl UnifiedExecProcessManager {
                 })?;
             (None, exit_code)
         };
+
+        // The monitor tool call completes once the background process starts successfully.
+        // Subsequent output and process exit are delivered through bounded monitor events.
+        if request.monitor && response_process_id.is_some() {
+            emit_exec_end_for_unified_exec(
+                Arc::clone(&context.session),
+                Arc::clone(&context.turn),
+                context.call_id.clone(),
+                request.command.clone(),
+                cwd.clone(),
+                source,
+                Some(process_id.to_string()),
+                plugin_attribution.clone(),
+                Arc::clone(&transcript),
+                text.clone(),
+                /*exit_code*/ 0,
+                wall_time,
+            )
+            .await;
+        }
 
         let response = ExecCommandToolOutput {
             event_call_id: context.call_id.clone(),
@@ -960,6 +994,7 @@ impl UnifiedExecProcessManager {
         command: &[String],
         hook_command: String,
         cwd: PathUri,
+        source: ExecCommandSource,
         plugin_attribution: Option<PluginCommandAttribution>,
         started_at: Instant,
         process_id: i32,
@@ -996,6 +1031,13 @@ impl UnifiedExecProcessManager {
             pruned_entry.process.terminate();
         }
 
+        if monitor {
+            // Monitor events own the remaining process lifecycle. Emitting a second command
+            // completion on exit would duplicate the already-completed tool activity row.
+            drop(network_denial_monitor);
+            return;
+        }
+
         spawn_exit_watcher(
             Arc::clone(&process),
             Arc::clone(&context.session),
@@ -1003,6 +1045,7 @@ impl UnifiedExecProcessManager {
             context.call_id.clone(),
             command.to_vec(),
             cwd,
+            source,
             process_id,
             plugin_attribution,
             transcript,
