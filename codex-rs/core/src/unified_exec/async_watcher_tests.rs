@@ -10,6 +10,7 @@ use crate::unified_exec::head_tail_buffer::HeadTailBuffer;
 use crate::unified_exec::process::NoopSpawnLifecycle;
 use crate::unified_exec::process::UnifiedExecProcess;
 use codex_protocol::items::CommandExecutionStatus;
+use codex_protocol::items::ExecCommandSource;
 use codex_protocol::items::TurnItem;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
