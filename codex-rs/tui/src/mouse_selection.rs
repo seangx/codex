@@ -2,12 +2,12 @@ use crossterm::event::MouseButton;
 use crossterm::event::MouseEvent;
 use crossterm::event::MouseEventKind;
 use ratatui::buffer::Buffer;
+use ratatui::buffer::CellWidth;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use std::time::Duration;
 use std::time::Instant;
-use unicode_width::UnicodeWidthStr;
 
 use crate::terminal_hyperlinks::strip_osc8;
 
@@ -79,8 +79,9 @@ impl SelectionRange {
             let mut row = String::new();
             let mut x = row_start;
             while x <= row_end {
-                let symbol = strip_osc8(buffer[(x, y)].symbol());
-                let width = UnicodeWidthStr::width(symbol.as_str()).max(1);
+                let cell = &buffer[(x, y)];
+                let symbol = strip_osc8(cell.symbol());
+                let width = usize::from(cell.cell_width()).max(1);
                 row.push_str(&symbol);
                 x = x.saturating_add(u16::try_from(width).unwrap_or(u16::MAX));
             }
@@ -272,9 +273,9 @@ fn row_symbols(buffer: &Buffer, y: u16) -> Vec<RowSymbol> {
     let mut symbols = Vec::new();
     let mut x = buffer.area.x;
     while x < buffer.area.right() {
-        let symbol = strip_osc8(buffer[(x, y)].symbol());
-        let width =
-            u16::try_from(UnicodeWidthStr::width(symbol.as_str()).max(1)).unwrap_or(u16::MAX);
+        let cell = &buffer[(x, y)];
+        let symbol = strip_osc8(cell.symbol());
+        let width = cell.cell_width().max(1);
         let end = x
             .saturating_add(width)
             .saturating_sub(1)
@@ -304,9 +305,8 @@ fn symbol_start_at(buffer: &Buffer, position: Position) -> Position {
     }
     let mut x = buffer.area.x;
     while x < buffer.area.right() {
-        let symbol = strip_osc8(buffer[(x, position.y)].symbol());
-        let width =
-            u16::try_from(UnicodeWidthStr::width(symbol.as_str()).max(1)).unwrap_or(u16::MAX);
+        let cell = &buffer[(x, position.y)];
+        let width = cell.cell_width().max(1);
         if position.x < x.saturating_add(width) {
             return Position::new(x, position.y);
         }
@@ -319,9 +319,9 @@ fn row_content_end(buffer: &Buffer, y: u16) -> Option<u16> {
     let mut content_end = None;
     let mut x = buffer.area.x;
     while x < buffer.area.right() {
-        let symbol = strip_osc8(buffer[(x, y)].symbol());
-        let width =
-            u16::try_from(UnicodeWidthStr::width(symbol.as_str()).max(1)).unwrap_or(u16::MAX);
+        let cell = &buffer[(x, y)];
+        let symbol = strip_osc8(cell.symbol());
+        let width = cell.cell_width().max(1);
         if symbol.chars().any(|ch| !ch.is_whitespace()) {
             content_end = Some(
                 x.saturating_add(width)

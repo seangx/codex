@@ -50,46 +50,12 @@ use ratatui::layout::Size;
 use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::widgets::WidgetRef;
-use unicode_width::UnicodeWidthStr;
 
 use crate::mouse_selection::SelectionRange;
 use crate::terminal_hyperlinks::TerminalHistoryRow;
 use crate::terminal_hyperlinks::TerminalHyperlinkRow;
 
 const MAX_TRACKED_HISTORY_ROWS: usize = 4096;
-
-/// Returns the display width of a cell symbol, ignoring OSC escape sequences.
-///
-/// OSC sequences (e.g. OSC 8 hyperlinks: `\x1B]8;;URL\x07`) are terminal
-/// control sequences that don't consume display columns.  The standard
-/// `UnicodeWidthStr::width()` method incorrectly counts the printable
-/// characters inside OSC payloads (like `]`, `8`, `;`, and URL characters).
-/// This function strips them first so that only visible characters contribute
-/// to the width.
-fn display_width(s: &str) -> usize {
-    // Fast path: no escape sequences present.
-    if !s.contains('\x1B') {
-        return s.width();
-    }
-
-    // Strip OSC sequences: ESC ] ... BEL
-    let mut visible = String::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(ch) = chars.next() {
-        if ch == '\x1B' && chars.clone().next() == Some(']') {
-            // Consume the ']' and everything up to and including BEL.
-            chars.next(); // skip ']'
-            for c in chars.by_ref() {
-                if c == '\x07' {
-                    break;
-                }
-            }
-            continue;
-        }
-        visible.push(ch);
-    }
-    visible.width()
-}
 
 fn osc8_hyperlink_parts(symbol: &str) -> Option<(&str, &str)> {
     let content = symbol.strip_prefix("\x1b]8;;")?;
@@ -684,7 +650,7 @@ where
             let mut x = 0usize;
             while x < row.cells().len() && x <= content_end {
                 let source_cell = &row.cells()[x];
-                let width = display_width(source_cell.symbol()).max(1);
+                let width = usize::from(source_cell.cell_width()).max(1);
                 let end = x.saturating_add(width).min(row.cells().len());
                 let was_selected = (x..end).any(|column| {
                     previous.is_some_and(|range| {
@@ -758,8 +724,9 @@ fn history_row_content_end(cells: &[Cell]) -> Option<usize> {
     let mut content_end = None;
     let mut x = 0usize;
     while x < cells.len() {
-        let symbol = cells[x].symbol();
-        let width = display_width(symbol).max(1);
+        let cell = &cells[x];
+        let symbol = cell.symbol();
+        let width = usize::from(cell.cell_width()).max(1);
         if symbol.chars().any(|ch| !ch.is_whitespace()) {
             content_end = Some(
                 x.saturating_add(width)
@@ -1129,6 +1096,18 @@ mod tests {
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn history_row_content_end_honors_forced_cell_width() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 3, 1));
+        buffer[(0, 0)]
+            .set_symbol("ｶﾞ")
+            .set_diff_option(CellDiffOption::ForcedWidth(
+                NonZeroU16::new(2).unwrap_or(NonZeroU16::MIN),
+            ));
+
+        assert_eq!(history_row_content_end(&buffer.content), Some(1));
     }
 
     #[test]

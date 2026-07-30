@@ -3,9 +3,11 @@ use crossterm::event::MouseButton;
 use crossterm::event::MouseEvent;
 use crossterm::event::MouseEventKind;
 use ratatui::buffer::Buffer;
+use ratatui::buffer::CellDiffOption;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
+use std::num::NonZeroU16;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -106,6 +108,32 @@ fn copied_text_strips_osc8_annotations() {
             &buffer
         ),
         MouseSelectionAction::Copy("xy".to_string())
+    );
+}
+
+#[test]
+fn copied_text_honors_ratatui_forced_cell_width() {
+    let mut buffer = Buffer::empty(Rect::new(0, 0, 3, 1));
+    buffer[(0, 0)]
+        .set_symbol("ｶﾞ")
+        .set_diff_option(CellDiffOption::ForcedWidth(
+            NonZeroU16::new(2).unwrap_or(NonZeroU16::MIN),
+        ));
+    buffer[(2, 0)].set_symbol("x");
+    let mut state = MouseSelectionState::default();
+
+    handle(
+        &mut state,
+        mouse(MouseEventKind::Down(MouseButton::Left), 1, 0),
+        &buffer,
+    );
+    assert_eq!(
+        handle(
+            &mut state,
+            mouse(MouseEventKind::Up(MouseButton::Left), 2, 0),
+            &buffer
+        ),
+        MouseSelectionAction::Copy("ｶﾞx".to_string())
     );
 }
 
