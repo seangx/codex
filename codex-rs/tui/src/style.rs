@@ -8,7 +8,6 @@ use crate::terminal_palette::rgb_color;
 use crate::terminal_palette::stdout_color_level;
 use ratatui::style::Color;
 use ratatui::style::Style;
-use ratatui::style::Stylize;
 
 const LIGHT_BG_ACCENT_RGB: (u8, u8, u8) = (0, 95, 135);
 const HISTORY_USER_MESSAGE_ACCENT_RGB: (u8, u8, u8) = (63, 181, 116);
