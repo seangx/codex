@@ -92,7 +92,9 @@ fn drag_selects_multiline_text_in_both_directions() {
 #[test]
 fn copied_text_strips_osc8_annotations() {
     let mut buffer = Buffer::empty(Rect::new(0, 0, 2, 1));
-    buffer[(0, 0)].set_symbol("\x1b]8;;https://example.com\x07x\x1b]8;;\x07");
+    buffer[(0, 0)]
+        .set_symbol("\x1b]8;;https://example.com\x07x\x1b]8;;\x07")
+        .set_diff_option(CellDiffOption::ForcedWidth(NonZeroU16::MIN));
     buffer[(1, 0)].set_symbol("y");
     let mut state = MouseSelectionState::default();
 
