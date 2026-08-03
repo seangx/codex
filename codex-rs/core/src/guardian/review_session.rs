@@ -135,6 +135,7 @@ fn token_usage_delta(start: &TokenUsage, end: &TokenUsage) -> TokenUsage {
         reasoning_output_tokens: (end.reasoning_output_tokens - start.reasoning_output_tokens)
             .max(0),
         total_tokens: (end.total_tokens - start.total_tokens).max(0),
+        codex_rollout_budget_units: None,
     }
 }
 
@@ -1453,6 +1454,7 @@ mod tests {
             instructions_template: None,
             instructions_variables: None,
             approvals: None,
+            collaboration_modes: None,
             auto_review: Some(AutoReviewMessages {
                 policy: Some("Use the catalog Guardian policy.".to_string()),
                 policy_template: Some(catalog_template.to_string()),
@@ -1486,6 +1488,7 @@ mod tests {
             instructions_template: None,
             instructions_variables: None,
             approvals: None,
+            collaboration_modes: None,
             auto_review: Some(AutoReviewMessages {
                 policy: Some(String::new()),
                 policy_template: None,
@@ -1527,6 +1530,7 @@ mod tests {
             instructions_template: None,
             instructions_variables: None,
             approvals: None,
+            collaboration_modes: None,
             auto_review: Some(AutoReviewMessages {
                 policy: Some(catalog_policy.to_string()),
                 policy_template: Some(String::new()),
@@ -1681,6 +1685,7 @@ mod tests {
             output_tokens: 6,
             reasoning_output_tokens: 4,
             total_tokens: 28,
+            codex_rollout_budget_units: None,
         };
         let end = TokenUsage {
             input_tokens: 15,
@@ -1689,6 +1694,7 @@ mod tests {
             output_tokens: 10,
             reasoning_output_tokens: 2,
             total_tokens: 34,
+            codex_rollout_budget_units: None,
         };
 
         assert_eq!(
@@ -1700,6 +1706,7 @@ mod tests {
                 output_tokens: 4,
                 reasoning_output_tokens: 0,
                 total_tokens: 6,
+                codex_rollout_budget_units: None,
             }
         );
     }

@@ -456,8 +456,10 @@ impl App {
         tui: &mut tui::Tui,
         event: TuiEvent,
     ) -> Result<()> {
-        if matches!(&event, TuiEvent::Draw | TuiEvent::Resize)
-            && let Some(Overlay::Transcript(t)) = &mut self.overlay
+        if matches!(
+            &event,
+            TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_)
+        ) && let Some(Overlay::Transcript(t)) = &mut self.overlay
         {
             if t.is_embedded() {
                 let chat_widget = &self.chat_widget;

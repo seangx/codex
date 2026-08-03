@@ -13,6 +13,7 @@ use crate::tools::handlers::implicit_granted_permissions;
 use crate::tools::handlers::normalize_and_validate_additional_permissions;
 use crate::tools::handlers::parse_arguments;
 use crate::tools::handlers::parse_arguments_with_base_path;
+use crate::tools::handlers::resolve_sandbox_permissions;
 use crate::tools::handlers::resolve_tool_environment;
 use crate::tools::handlers::rewrite_function_string_argument;
 use crate::tools::handlers::updated_hook_command;
@@ -200,6 +201,8 @@ impl ExecCommandHandler {
             args.tty = false;
             args.yield_time_ms = MIN_YIELD_TIME_MS;
         }
+        let sandbox_permissions =
+            resolve_sandbox_permissions(args.sandbox_permissions, args.justification.as_deref())?;
         let hook_command = args.cmd.clone();
         // TODO(anp) wire PathUri through implicit skills instead of skipping on foreign paths
         if let Some(native_cwd) = native_cwd.as_ref() {
@@ -255,7 +258,7 @@ impl ExecCommandHandler {
             tty,
             yield_time_ms,
             max_output_tokens,
-            sandbox_permissions,
+            sandbox_permissions: _,
             additional_permissions,
             justification,
             prefix_rule,
