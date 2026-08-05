@@ -71,8 +71,9 @@ async fn completed_global_chord_reuses_the_existing_action_handler() -> Result<(
         render_bottom_popup(&app.chat_widget, /*width*/ 80)
             .replace(&test_path_display("/tmp/project"), "/tmp/project"),
         @r"
-        › Ask Codex to do anything
-
+        ────────────────────────────────────────────────────────────────────────────────
+        ▌ Ask Codex to do anything
+        ────────────────────────────────────────────────────────────────────────────────
            ctrl + x … waiting for next key    esc cancel
         "
     );
