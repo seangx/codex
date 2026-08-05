@@ -81,6 +81,35 @@ async fn start_recording_app_server(
 async fn start_recording_app_server_with_history(
     config: &Config,
     history_capabilities: HistoryCapabilities,
+    blocked_thread_list: Option<(ThreadId, oneshot::Sender<()>, oneshot::Receiver<()>)>,
+    failed_thread_name: Option<&'static str>,
+) -> Result<RecordingAppServer> {
+    start_recording_app_server_with_history_and_mode(
+        config,
+        history_capabilities,
+        crate::app_server_session::ThreadParamsMode::Embedded,
+        blocked_thread_list,
+        failed_thread_name,
+    )
+    .await
+}
+
+async fn start_recording_remote_app_server(config: &Config) -> Result<RecordingAppServer> {
+    start_recording_app_server_with_history_and_mode(
+        config,
+        HistoryCapabilities::Current,
+        crate::app_server_session::ThreadParamsMode::Remote,
+        /*blocked_thread_list*/ None,
+        /*failed_thread_name*/ None,
+    )
+    .await
+}
+
+/// Proxies a real app server while optionally rejecting modern pagination like an older server.
+async fn start_recording_app_server_with_history_and_mode(
+    config: &Config,
+    history_capabilities: HistoryCapabilities,
+    thread_params_mode: crate::app_server_session::ThreadParamsMode,
     mut blocked_thread_list: Option<(ThreadId, oneshot::Sender<()>, oneshot::Receiver<()>)>,
     failed_thread_name: Option<&'static str>,
 ) -> Result<RecordingAppServer> {
@@ -250,10 +279,7 @@ async fn start_recording_app_server_with_history(
     .await?;
 
     Ok((
-        AppServerSession::new(
-            app_server,
-            crate::app_server_session::ThreadParamsMode::Embedded,
-        ),
+        AppServerSession::new(app_server, thread_params_mode),
         requests,
         proxy,
     ))
@@ -1054,6 +1080,40 @@ async fn paginated_workflows_never_request_full_thread_history() -> Result<()> {
         .map(|params| params["includeTurns"].as_bool().unwrap_or(false))
         .collect::<Vec<_>>();
     assert_eq!(legacy_include_turns, vec![false, true]);
+
+    app_server.shutdown().await?;
+    proxy.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn remote_legacy_metadata_only_resume_skips_unbounded_thread_read() -> Result<()> {
+    let (app, _codex_home) = make_history_test_app().await?;
+    let thread_id = create_history_rollout(
+        &app.config,
+        ThreadHistoryMode::Legacy,
+        "legacy history remains attached on the remote server",
+    )?;
+    let (mut app_server, requests, proxy) = start_recording_remote_app_server(&app.config).await?;
+
+    let resumed = app_server
+        .resume_thread(
+            app.config.clone(),
+            thread_id,
+            crate::app_server_session::ResumeModelSettings::RestoreFromThread,
+        )
+        .await?;
+
+    assert_eq!(resumed.session.thread_id, thread_id);
+    assert!(resumed.turns.is_empty());
+    let resume_params = recorded_params(&requests, "thread/resume");
+    assert_eq!(resume_params.len(), 1);
+    assert_eq!(resume_params[0]["excludeTurns"], true);
+    let full_history_reads = recorded_params(&requests, "thread/read")
+        .into_iter()
+        .filter(|params| params["includeTurns"] == true)
+        .collect::<Vec<_>>();
+    assert_eq!(full_history_reads, Vec::<serde_json::Value>::new());
 
     app_server.shutdown().await?;
     proxy.await??;
