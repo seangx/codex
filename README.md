@@ -24,12 +24,10 @@ regularly synchronized with upstream. Its current customizations focus on the te
   conversation view with full transcripts.
 - Plan progress can remain pinned above the composer until the plan completes or is explicitly
   closed.
-- The experimental `monitor_tool` is available for waiting on and reporting long-running work.
 - User messages and the active composer use distinct, lightweight visual treatments, including a
   bordered input area.
 
-These changes are fork-only unless they are later adopted upstream. Experimental features such as
-`monitor_tool` may still change or behave unpredictably.
+These changes are fork-only unless they are later adopted upstream.
 
 ## Quickstart
 

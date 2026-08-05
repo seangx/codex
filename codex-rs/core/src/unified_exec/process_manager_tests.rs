@@ -361,7 +361,7 @@ async fn late_network_denial_grace_observes_cancellation_after_exit() {
 }
 
 #[tokio::test]
-async fn failed_initial_monitor_end_uses_agent_source_and_fallback_output() {
+async fn failed_initial_end_for_unstored_process_uses_fallback_output() {
     let (session, turn, rx_event) = crate::session::tests::make_session_and_context_with_rx().await;
     let context = UnifiedExecContext::new(
         Arc::clone(&session),
@@ -396,7 +396,6 @@ async fn failed_initial_monitor_end_uses_agent_source_and_fallback_output() {
         additional_permissions_preapproved: false,
         justification: None,
         prefix_rule: None,
-        monitor: true,
     };
 
     let transcript = Arc::new(tokio::sync::Mutex::new(HeadTailBuffer::default()));
@@ -436,10 +435,6 @@ async fn failed_initial_monitor_end_uses_agent_source_and_fallback_output() {
     );
     assert_eq!(item.exit_code, Some(-1));
     assert_eq!(item.process_id.as_deref(), Some("123"));
-    assert_eq!(
-        item.source,
-        codex_protocol::protocol::ExecCommandSource::Agent
-    );
     assert_eq!(
         item.aggregated_output.as_deref(),
         Some("PRE_DENIAL_MARKER\nNetwork access denied")
@@ -563,7 +558,6 @@ async fn pruning_does_not_evict_live_process_while_exited_process_is_finalizing(
                 } else {
                     now
                 },
-                monitor: false,
             },
         );
     }

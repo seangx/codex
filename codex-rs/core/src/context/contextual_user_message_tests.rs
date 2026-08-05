@@ -2,7 +2,6 @@ use super::*;
 use crate::context::ContextualUserFragment;
 use crate::context::InternalContextSource;
 use crate::context::InternalModelContextFragment;
-use crate::context::MonitorEvent;
 use crate::context::SubagentNotification;
 use codex_protocol::items::HookPromptFragment;
 use codex_protocol::items::build_hook_prompt_message;
@@ -57,14 +56,6 @@ fn detects_subagent_notification_fragment_case_insensitively() {
     assert!(SubagentNotification::matches_text(
         "<SUBAGENT_NOTIFICATION>{}</subagent_notification>"
     ));
-}
-
-#[test]
-fn detects_monitor_event_fragment() {
-    let text = MonitorEvent::running(17, vec!["changed".to_string()], 0).render();
-    assert!(is_contextual_user_fragment(&ContentItem::InputText {
-        text
-    }));
 }
 
 #[test]

@@ -1040,22 +1040,6 @@ async fn sleep_tool_follows_current_time_config() {
 }
 
 #[tokio::test]
-async fn monitor_tools_follow_the_feature_flag() {
-    let disabled = probe(|turn| {
-        set_feature(turn, Feature::UnifiedExec, /*enabled*/ true);
-    })
-    .await;
-    disabled.assert_visible_lacks(&["monitor", "monitor_stop"]);
-
-    let enabled = probe(|turn| {
-        set_feature(turn, Feature::UnifiedExec, /*enabled*/ true);
-        set_feature(turn, Feature::MonitorTool, /*enabled*/ true);
-    })
-    .await;
-    enabled.assert_visible_contains(&["monitor", "monitor_stop"]);
-}
-
-#[tokio::test]
 async fn sleep_tool_stays_direct_and_outside_code_mode() {
     for code_mode_only in [false, true] {
         let plan = probe(|turn| {
