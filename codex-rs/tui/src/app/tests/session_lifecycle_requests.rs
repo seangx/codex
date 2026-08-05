@@ -1086,8 +1086,24 @@ async fn paginated_workflows_never_request_full_thread_history() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn remote_legacy_metadata_only_resume_skips_unbounded_thread_read() -> Result<()> {
+#[test]
+fn remote_legacy_metadata_only_resume_skips_unbounded_thread_read() -> Result<()> {
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+
+    std::thread::Builder::new()
+        .name("remote-legacy-metadata-resume".to_string())
+        .stack_size(TEST_STACK_SIZE_BYTES)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(remote_legacy_metadata_only_resume_test())
+        })?
+        .join()
+        .expect("remote legacy metadata resume test thread")
+}
+
+async fn remote_legacy_metadata_only_resume_test() -> Result<()> {
     let (app, _codex_home) = make_history_test_app().await?;
     let thread_id = create_history_rollout(
         &app.config,
