@@ -10,8 +10,6 @@ use crate::bottom_pane::footer::FooterMode;
 use crate::bottom_pane::footer::GoalStatusIndicator;
 use crate::key_hint::KeyBinding;
 use crate::key_hint::ShortcutHint;
-#[cfg(test)]
-use std::time::Duration;
 
 pub(super) struct FooterState {
     pub(super) quit_shortcut_expires_at: Option<Instant>,
