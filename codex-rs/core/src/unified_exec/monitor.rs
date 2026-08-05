@@ -7,10 +7,10 @@ use tokio::time::Instant;
 use tokio::time::MissedTickBehavior;
 
 use super::process::UnifiedExecProcess;
+use crate::TurnInput;
 use crate::codex_thread::TryStartTurnIfIdleRejectionReason;
 use crate::context::ContextualUserFragment;
 use crate::context::MonitorEvent;
-use crate::session::input_queue::TurnInput;
 use crate::session::session::Session;
 
 const MONITOR_BATCH_INTERVAL: Duration = Duration::from_millis(500);
