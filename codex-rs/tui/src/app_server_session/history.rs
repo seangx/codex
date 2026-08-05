@@ -193,8 +193,10 @@ impl AppServerSession {
 
     /// Hydrates paginated threads through bounded turn and item pages.
     ///
-    /// Legacy servers expose neither paging method, so only legacy threads may
-    /// use `thread/read(includeTurns: true)` to preserve their existing history.
+    /// Legacy servers expose neither paging method, so embedded legacy threads may use
+    /// `thread/read(includeTurns: true)` to preserve their existing history. Remote legacy
+    /// threads can be arbitrarily large and cannot be loaded safely without pagination; when a
+    /// remote resume returns metadata only, keep the live attachment and omit local replay.
     pub(crate) async fn hydrate_initial_thread_history(
         &mut self,
         thread: &mut Thread,
@@ -207,9 +209,16 @@ impl AppServerSession {
             .wrap_err("invalid thread id in bounded history response")?;
         if thread.history_mode == ThreadHistoryMode::Legacy {
             if thread.turns.is_empty() {
-                thread.turns = Box::pin(self.thread_read(thread_id, /*include_turns*/ true))
-                    .await?
-                    .turns;
+                if self.uses_remote_workspace() {
+                    tracing::warn!(
+                        %thread_id,
+                        "remote legacy thread returned metadata-only history; skipping unbounded thread/read(includeTurns=true)"
+                    );
+                } else {
+                    thread.turns = Box::pin(self.thread_read(thread_id, /*include_turns*/ true))
+                        .await?
+                        .turns;
+                }
             }
             self.history_pagination.entry(thread_id).or_default();
             return Ok(());
