@@ -12,6 +12,8 @@ use serde_json::Value;
 pub struct FreeformTool {
     pub name: String,
     pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub defer_loading: Option<bool>,
     pub format: FreeformToolFormat,
 }
 
@@ -44,6 +46,8 @@ pub enum LoadableToolSpec {
     #[allow(dead_code)]
     #[serde(rename = "function")]
     Function(ResponsesApiTool),
+    #[serde(rename = "custom")]
+    Custom(FreeformTool),
     #[serde(rename = "namespace")]
     Namespace(ResponsesApiNamespace),
 }
@@ -61,9 +65,12 @@ pub fn default_namespace_description(namespace_name: &str) -> String {
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(tag = "type")]
+#[allow(clippy::large_enum_variant)]
 pub enum ResponsesApiNamespaceTool {
     #[serde(rename = "function")]
     Function(ResponsesApiTool),
+    #[serde(rename = "custom")]
+    Custom(FreeformTool),
 }
 
 pub fn dynamic_tool_to_responses_api_tool(
@@ -80,8 +87,8 @@ pub fn coalesce_loadable_tool_specs(
     let mut coalesced_specs = Vec::new();
     for spec in specs {
         match spec {
-            LoadableToolSpec::Function(tool) => {
-                coalesced_specs.push(LoadableToolSpec::Function(tool));
+            tool @ (LoadableToolSpec::Function(_) | LoadableToolSpec::Custom(_)) => {
+                coalesced_specs.push(tool);
             }
             LoadableToolSpec::Namespace(mut namespace) => {
                 if let Some(existing_namespace) =
@@ -91,7 +98,9 @@ pub fn coalesce_loadable_tool_specs(
                         {
                             Some(existing_namespace)
                         }
-                        LoadableToolSpec::Function(_) | LoadableToolSpec::Namespace(_) => None,
+                        LoadableToolSpec::Function(_)
+                        | LoadableToolSpec::Custom(_)
+                        | LoadableToolSpec::Namespace(_) => None,
                     })
                 {
                     existing_namespace.tools.append(&mut namespace.tools);

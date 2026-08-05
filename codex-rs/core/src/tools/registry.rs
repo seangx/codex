@@ -360,7 +360,7 @@ impl ToolRegistry {
     pub(crate) fn deferred_tool_namespaces(&self) -> BTreeMap<String, String> {
         let mut namespaces = BTreeMap::<String, String>::new();
         for (name, tool) in &self.tools {
-            if tool.exposure != ToolExposure::Deferred {
+            if !tool.exposure.is_deferred() {
                 continue;
             }
             let Some(namespace) = &name.namespace else {
@@ -443,11 +443,12 @@ impl ToolRegistry {
         let tool_name_flat = flat_tool_name(&tool_name);
         let call_id_owned = invocation.call_id.clone();
         let otel = invocation.turn.session_telemetry.clone();
+        let permission_profile = invocation.turn.permission_profile();
         let base_tool_result_tags = [
             (
                 "sandbox",
                 permission_profile_sandbox_tag(
-                    &invocation.turn.permission_profile,
+                    &permission_profile,
                     invocation.turn.windows_sandbox_level,
                     invocation.turn.network.is_some(),
                 ),
@@ -455,7 +456,7 @@ impl ToolRegistry {
             (
                 "sandbox_policy",
                 permission_profile_policy_tag(
-                    &invocation.turn.permission_profile,
+                    &permission_profile,
                     #[allow(deprecated)]
                     invocation.turn.cwd.as_path(),
                 ),

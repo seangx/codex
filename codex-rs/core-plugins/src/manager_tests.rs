@@ -41,8 +41,6 @@ use codex_config::RequirementsLayerEntry;
 use codex_config::compose_requirements;
 use codex_config::types::McpServerTransportConfig;
 use codex_core_skills::PluginSkillSnapshots;
-use codex_core_skills::SkillsLoadInput;
-use codex_core_skills::SkillsService;
 use codex_login::CodexAuth;
 use codex_plugin::AppDeclaration;
 use codex_plugin::PluginId;
@@ -50,6 +48,8 @@ use codex_protocol::auth::AuthMode;
 use codex_protocol::protocol::HookEventName;
 use codex_protocol::protocol::Product;
 use codex_skills::SkillConfigRules;
+use codex_skills_extension::HostSkillsLoadInput;
+use codex_skills_extension::HostSkillsService;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_absolute_path::test_support::PathBufExt;
 use pretty_assertions::assert_eq;
@@ -947,6 +947,7 @@ async fn load_plugins_loads_default_skills_and_mcp_servers() {
                     enabled: true,
                     required: false,
                     supports_parallel_tool_calls: false,
+                    omit_tools_from: None,
                     disabled_reason: None,
                     startup_timeout_sec: None,
                     tool_timeout_sec: None,
@@ -1039,6 +1040,7 @@ enabled = true
                 enabled: true,
                 required: false,
                 supports_parallel_tool_calls: false,
+                omit_tools_from: None,
                 disabled_reason: None,
                 startup_timeout_sec: None,
                 tool_timeout_sec: None,
@@ -2068,6 +2070,7 @@ async fn load_plugins_uses_manifest_configured_component_paths() {
                     enabled: true,
                     required: false,
                     supports_parallel_tool_calls: false,
+                    omit_tools_from: None,
                     disabled_reason: None,
                     startup_timeout_sec: None,
                     tool_timeout_sec: None,
@@ -2397,6 +2400,7 @@ async fn load_plugins_ignores_manifest_component_paths_without_dot_slash() {
                 enabled: true,
                 required: false,
                 supports_parallel_tool_calls: false,
+                omit_tools_from: None,
                 disabled_reason: None,
                 startup_timeout_sec: None,
                 tool_timeout_sec: None,
@@ -2649,6 +2653,7 @@ fn capability_index_filters_inactive_and_zero_capability_plugins() {
         enabled: true,
         required: false,
         supports_parallel_tool_calls: false,
+        omit_tools_from: None,
         disabled_reason: None,
         startup_timeout_sec: None,
         tool_timeout_sec: None,
@@ -2912,7 +2917,7 @@ enabled = true
         );
         write_file(&skill_path, "---\nname: search\ndescription: second\n---\n");
 
-        let skills_input = SkillsLoadInput::new(
+        let skills_input = HostSkillsLoadInput::new(
             codex_home_abs.clone(),
             plugin_outcome.effective_plugin_skill_roots(),
             config.config_layer_stack.clone(),
@@ -2920,7 +2925,7 @@ enabled = true
         )
         .with_plugin_skill_snapshots(manager.plugin_skill_snapshots_for_config(&config));
         let skills_service =
-            SkillsService::new(codex_home_abs, /*bundled_skills_enabled*/ false);
+            HostSkillsService::new(codex_home_abs, /*bundled_skills_enabled*/ false);
         let snapshot = skills_service
             .snapshot_for_config(&skills_input, /*fs*/ None)
             .await;
