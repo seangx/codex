@@ -10,6 +10,7 @@ use super::process::UnifiedExecProcess;
 use crate::codex_thread::TryStartTurnIfIdleRejectionReason;
 use crate::context::ContextualUserFragment;
 use crate::context::MonitorEvent;
+use crate::session::input_queue::TurnInput;
 use crate::session::session::Session;
 
 const MONITOR_BATCH_INTERVAL: Duration = Duration::from_millis(500);
@@ -269,11 +270,11 @@ async fn deliver_monitor_event(session: &Arc<Session>, event: MonitorEvent) {
         Ok(()) => return,
         Err(items) => items,
     };
-    match session.try_start_turn_if_idle(items).await {
+    let turn_input = items.iter().cloned().map(TurnInput::ResponseItem).collect();
+    match session.try_start_turn_if_idle(turn_input).await {
         Ok(()) => {}
         Err(err) => {
             let reason = err.reason();
-            let items = err.into_input();
             if reason == TryStartTurnIfIdleRejectionReason::Busy {
                 match session.inject_if_running(items).await {
                     Ok(()) => (),
