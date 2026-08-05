@@ -19,8 +19,6 @@ use crate::tools::handlers::GetContextRemainingHandler;
 use crate::tools::handlers::ListAvailablePluginsToInstallHandler;
 use crate::tools::handlers::ListMcpResourceTemplatesHandler;
 use crate::tools::handlers::ListMcpResourcesHandler;
-use crate::tools::handlers::MonitorHandler;
-use crate::tools::handlers::MonitorStopHandler;
 use crate::tools::handlers::NewContextWindowHandler;
 use crate::tools::handlers::PlanHandler;
 use crate::tools::handlers::ReadMcpResourceHandler;
@@ -860,7 +858,7 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistr
 
     match shell_type_for_model_and_features(&turn_context.model_info, features) {
         ConfigShellToolType::UnifiedExec => {
-            let exec_options = ExecCommandHandlerOptions {
+            registry.add(ExecCommandHandler::new(ExecCommandHandlerOptions {
                 allow_login_shell,
                 exec_permission_approvals_enabled,
                 include_environment_id,
@@ -868,13 +866,8 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistr
                     turn_context,
                     context.environments,
                 ),
-            };
-            registry.add(ExecCommandHandler::new(exec_options));
+            }));
             registry.add(WriteStdinHandler);
-            if features.enabled(Feature::MonitorTool) {
-                registry.add(MonitorHandler::new(exec_options));
-                registry.add(MonitorStopHandler);
-            }
 
             if supports_shell_command {
                 // Keep the legacy shell tool registered while unified exec is

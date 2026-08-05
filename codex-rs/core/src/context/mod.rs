@@ -16,7 +16,6 @@ mod legacy_apply_patch_exec_command_warning;
 mod legacy_model_mismatch_warning;
 mod legacy_unified_exec_process_limit_warning;
 mod model_switch_instructions;
-mod monitor_event;
 mod multi_agent_mode_instructions;
 mod network_rule_saved;
 mod permissions_instructions;
@@ -59,7 +58,6 @@ pub(crate) use legacy_apply_patch_exec_command_warning::LegacyApplyPatchExecComm
 pub(crate) use legacy_model_mismatch_warning::LegacyModelMismatchWarning;
 pub(crate) use legacy_unified_exec_process_limit_warning::LegacyUnifiedExecProcessLimitWarning;
 pub(crate) use model_switch_instructions::ModelSwitchInstructions;
-pub(crate) use monitor_event::MonitorEvent;
 pub(crate) use network_rule_saved::NetworkRuleSaved;
 pub use permissions_instructions::ApprovalPromptContext;
 pub use permissions_instructions::PermissionsInstructions;

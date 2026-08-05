@@ -8,7 +8,6 @@ use super::InternalModelContextFragment;
 use super::LegacyApplyPatchExecCommandWarning;
 use super::LegacyModelMismatchWarning;
 use super::LegacyUnifiedExecProcessLimitWarning;
-use super::MonitorEvent;
 use super::RecommendedPluginsInstructions;
 use super::SkillInstructions;
 use super::SubagentNotification;
@@ -30,7 +29,6 @@ const CONTEXTUAL_USER_FRAGMENT_MATCHERS: &[fn(&str) -> bool] = &[
     LegacyUnifiedExecProcessLimitWarning::matches_text,
     LegacyApplyPatchExecCommandWarning::matches_text,
     LegacyModelMismatchWarning::matches_text,
-    MonitorEvent::matches_text,
 ];
 
 fn is_standard_contextual_user_text(text: &str) -> bool {
