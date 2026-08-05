@@ -92,6 +92,7 @@ fn hyperlink_destination_at(buffer: &Buffer, position: Position) -> Option<Strin
 enum HyperlinkOpenTarget {
     Browser(String),
     Directory(PathBuf),
+    File(PathBuf),
 }
 
 fn hyperlink_open_target(destination: &str) -> std::result::Result<HyperlinkOpenTarget, String> {
@@ -104,6 +105,7 @@ fn hyperlink_open_target(destination: &str) -> std::result::Result<HyperlinkOpen
         if path.is_dir() {
             return Ok(HyperlinkOpenTarget::Directory(path));
         }
+        return Ok(HyperlinkOpenTarget::File(path));
     }
     Ok(HyperlinkOpenTarget::Browser(destination.to_string()))
 }
@@ -113,7 +115,26 @@ fn open_hyperlink_destination(destination: &str) -> std::result::Result<(), Stri
         HyperlinkOpenTarget::Browser(destination) => webbrowser::open(&destination)
             .map_err(|error| format!("Failed to open {destination}: {error}")),
         HyperlinkOpenTarget::Directory(path) => open_directory(&path),
+        HyperlinkOpenTarget::File(path) => reveal_file(&path),
     }
+}
+
+#[cfg(target_os = "macos")]
+fn reveal_file(path: &Path) -> std::result::Result<(), String> {
+    open_path_with_command("open", &["-R"], path)
+}
+
+#[cfg(target_os = "windows")]
+fn reveal_file(path: &Path) -> std::result::Result<(), String> {
+    open_path_with_command("explorer.exe", &["/select,"], path)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn reveal_file(path: &Path) -> std::result::Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("Local file has no parent directory: {}", path.display()))?;
+    open_directory(parent)
 }
 
 #[cfg(target_os = "macos")]
@@ -141,7 +162,17 @@ fn open_directory(path: &Path) -> std::result::Result<(), String> {
 
 #[cfg(any(unix, target_os = "windows"))]
 fn open_directory_with_command(command: &str, path: &Path) -> std::result::Result<(), String> {
+    open_path_with_command(command, &[], path)
+}
+
+#[cfg(any(unix, target_os = "windows"))]
+fn open_path_with_command(
+    command: &str,
+    args: &[&str],
+    path: &Path,
+) -> std::result::Result<(), String> {
     let status = std::process::Command::new(command)
+        .args(args)
         .arg(path)
         .status()
         .map_err(|error| format!("Failed to run {command} for {}: {error}", path.display()))?;
@@ -149,7 +180,7 @@ fn open_directory_with_command(command: &str, path: &Path) -> std::result::Resul
         Ok(())
     } else {
         Err(format!(
-            "{command} failed to open {} with {status}",
+            "{command} failed to open or reveal {} with {status}",
             path.display()
         ))
     }
@@ -234,7 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn hyperlink_open_target_routes_directories_away_from_the_browser() {
+    fn hyperlink_open_target_distinguishes_browser_directories_and_files() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let directory_url = Url::from_directory_path(directory.path()).expect("directory URL");
         assert_eq!(
@@ -249,7 +280,7 @@ mod tests {
         let html_url = Url::from_file_path(&html_path).expect("HTML file URL");
         assert_eq!(
             hyperlink_open_target(html_url.as_str()),
-            Ok(HyperlinkOpenTarget::Browser(html_url.to_string()))
+            Ok(HyperlinkOpenTarget::File(html_path))
         );
         assert_eq!(
             hyperlink_open_target("https://example.com"),
