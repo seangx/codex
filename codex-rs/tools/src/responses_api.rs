@@ -1,12 +1,16 @@
 use crate::JsonSchema;
 use crate::ToolDefinition;
 use crate::ToolName;
+use crate::parse_agent_plugin_mcp_tool;
 use crate::parse_dynamic_tool;
 use crate::parse_mcp_tool;
+use codex_protocol::DEFAULT_FUNCTION_NAMESPACE;
 use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
+
+const MAX_SERIALIZED_MCP_TOOL_BYTES: usize = 8_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FreeformTool {
@@ -46,8 +50,6 @@ pub enum LoadableToolSpec {
     #[allow(dead_code)]
     #[serde(rename = "function")]
     Function(ResponsesApiTool),
-    #[serde(rename = "custom")]
-    Custom(FreeformTool),
     #[serde(rename = "namespace")]
     Namespace(ResponsesApiNamespace),
 }
@@ -60,7 +62,11 @@ pub struct ResponsesApiNamespace {
 }
 
 pub fn default_namespace_description(namespace_name: &str) -> String {
-    format!("Tools in the {namespace_name} namespace.")
+    if namespace_name == DEFAULT_FUNCTION_NAMESPACE {
+        String::new()
+    } else {
+        format!("Tools in the {namespace_name} namespace.")
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -87,8 +93,8 @@ pub fn coalesce_loadable_tool_specs(
     let mut coalesced_specs = Vec::new();
     for spec in specs {
         match spec {
-            tool @ (LoadableToolSpec::Function(_) | LoadableToolSpec::Custom(_)) => {
-                coalesced_specs.push(tool);
+            LoadableToolSpec::Function(tool) => {
+                coalesced_specs.push(LoadableToolSpec::Function(tool));
             }
             LoadableToolSpec::Namespace(mut namespace) => {
                 if let Some(existing_namespace) =
@@ -98,9 +104,7 @@ pub fn coalesce_loadable_tool_specs(
                         {
                             Some(existing_namespace)
                         }
-                        LoadableToolSpec::Function(_)
-                        | LoadableToolSpec::Custom(_)
-                        | LoadableToolSpec::Namespace(_) => None,
+                        LoadableToolSpec::Function(_) | LoadableToolSpec::Namespace(_) => None,
                     })
                 {
                     existing_namespace.tools.append(&mut namespace.tools);
@@ -120,6 +124,23 @@ pub fn mcp_tool_to_responses_api_tool(
     Ok(tool_definition_to_responses_api_tool(
         parse_mcp_tool(tool)?.renamed(tool_name.name.clone()),
     ))
+}
+
+pub fn agent_plugin_mcp_tool_to_responses_api_tool(
+    tool_name: &ToolName,
+    tool: &rmcp::model::Tool,
+) -> Result<ResponsesApiTool, serde_json::Error> {
+    let mut tool = tool_definition_to_responses_api_tool(
+        parse_agent_plugin_mcp_tool(tool)?.renamed(tool_name.name.clone()),
+    );
+    if serde_json::to_vec(&tool)?.len() > MAX_SERIALIZED_MCP_TOOL_BYTES {
+        tool.parameters = JsonSchema::object(
+            Default::default(),
+            /*required*/ None,
+            Some(true.into()),
+        );
+    }
+    Ok(tool)
 }
 
 pub fn mcp_tool_to_deferred_responses_api_tool(
