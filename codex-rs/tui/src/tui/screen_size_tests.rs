@@ -1,8 +1,12 @@
 use std::time::Duration;
 
+use crossterm::event::KeyModifiers;
+use crossterm::event::MouseEvent;
+use crossterm::event::MouseEventKind;
 use pretty_assertions::assert_eq;
 use ratatui::layout::Size;
 
+use crate::tui::MouseScrollEvent;
 use crate::tui::TuiEvent;
 
 #[tokio::test]
@@ -50,6 +54,39 @@ async fn standalone_resize_draw_rechecks_settled_screen_size_once() {
         tui.terminal.size().expect("terminal size")
     );
     assert!(tui.screen_size.pending_recheck_at.is_none());
+}
+
+#[tokio::test]
+async fn mouse_events_use_cached_size_for_pre_render() {
+    let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+    let cached = Size::new(/*width*/ 120, /*height*/ 40);
+    tui.terminal.last_known_screen_size = cached;
+    let mouse = MouseEvent {
+        kind: MouseEventKind::Moved,
+        column: 10,
+        row: 5,
+        modifiers: KeyModifiers::NONE,
+    };
+
+    assert_eq!(
+        tui.screen_size_for_event(&TuiEvent::Mouse(mouse))
+            .expect("mouse size"),
+        cached
+    );
+    assert_eq!(tui.take_event_screen_size().expect("draw size"), cached);
+
+    assert_eq!(
+        tui.screen_size_for_event(&TuiEvent::MouseScroll(MouseScrollEvent {
+            mouse: MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                ..mouse
+            },
+            ticks: 3,
+        }))
+        .expect("scroll size"),
+        cached
+    );
+    assert_eq!(tui.take_event_screen_size().expect("draw size"), cached);
 }
 
 #[tokio::test]
