@@ -570,6 +570,9 @@
             "image_generation": {
               "type": "boolean"
             },
+            "image_resize_notice": {
+              "type": "boolean"
+            },
             "imagegenext": {
               "type": "boolean"
             },
@@ -751,6 +754,9 @@
               "type": "boolean"
             },
             "unified_exec_zsh_fork": {
+              "type": "boolean"
+            },
+            "unified_image_budget": {
               "type": "boolean"
             },
             "use_agent_identity": {
@@ -5198,6 +5204,9 @@
         "image_generation": {
           "type": "boolean"
         },
+        "image_resize_notice": {
+          "type": "boolean"
+        },
         "imagegenext": {
           "type": "boolean"
         },
@@ -5379,6 +5388,9 @@
           "type": "boolean"
         },
         "unified_exec_zsh_fork": {
+          "type": "boolean"
+        },
+        "unified_image_budget": {
           "type": "boolean"
         },
         "use_agent_identity": {

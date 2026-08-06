@@ -9877,6 +9877,13 @@
         "model": {
           "type": "string"
         },
+        "modelSpecialty": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "serviceTiers": {
           "default": [],
           "items": {
@@ -17530,6 +17537,13 @@
             },
             "status": {
               "type": "string"
+            },
+            "transparentBackground": {
+              "default": null,
+              "type": [
+                "boolean",
+                "null"
+              ]
             },
             "type": {
               "enum": [

@@ -222,6 +222,10 @@ pub enum Feature {
     ExternalMigration,
     /// Enable extension-backed image generation.
     ImageGeneration,
+    /// Tell the model when a prompt image was resized and include its dimensions.
+    ImageResizeNotice,
+    /// Apply one shared pixel and token budget to every image, regardless of legacy detail hints.
+    UnifiedImageBudget,
     /// Removed compatibility flag for always-on centralized image preparation.
     ResizeAllImages,
     /// Removed compatibility flag for always-on response item IDs.
@@ -1267,6 +1271,18 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "image_generation",
         stage: Stage::Stable,
         default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::ImageResizeNotice,
+        key: "image_resize_notice",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::UnifiedImageBudget,
+        key: "unified_image_budget",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::ResizeAllImages,

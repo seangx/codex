@@ -1,6 +1,7 @@
 use crate::agent::exceeds_thread_spawn_depth_limit;
 use crate::agent::next_thread_spawn_depth;
 use crate::environment_selection::TurnEnvironmentSnapshot;
+use crate::image_preparation::unified_image_budget_enabled;
 use crate::mcp_tool_exposure::append_mcp_tools;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
@@ -342,19 +343,54 @@ pub(crate) fn finalize_tool_router(
         })
     {
         if registry.remove(&tool_search_name).is_some() {
-            registry.record_collision(tool_search_name);
+            registry.record_collision(tool_search_name.clone());
+        }
+        // Special model tools own the namespace matching their wire identity, so
+        // regular namespace tools cannot advertise that same model-visible surface.
+        let conflicting_tool_names = registry
+            .entries()
+            .filter_map(|tool| {
+                let ToolSpec::Namespace(namespace) = tool.runtime.spec() else {
+                    return None;
+                };
+                (namespace.name == tool_search_name.name).then(|| tool.runtime.tool_name())
+            })
+            .collect::<Vec<_>>();
+        for tool_name in conflicting_tool_names {
+            if registry.remove(&tool_name).is_some() {
+                registry.record_collision(tool_name);
+            }
         }
         append_tool_search_executor(turn_context, &mut registry, tool_search_handler_cache);
     }
 
     let code_mode_tool_names = register_code_mode_executors(turn_context, &mut registry);
 
-    if turn_context.config.tool_registry.error_on_tool_collisions
-        && let Some(tool_name) = registry.first_collision()
-    {
-        let namespace = tool_name.namespace.as_deref().unwrap_or("functions");
-        let name = format!("{namespace}.{}", tool_name.name);
-        return Err(CodexErrorDetails::ToolCollision(name).into());
+    if turn_context.config.tool_registry.error_on_tool_collisions {
+        if let Some(tool_name) = registry.first_collision() {
+            let namespace = tool_name.namespace.as_deref().unwrap_or("functions");
+            let name = format!("{namespace}.{}", tool_name.name);
+            return Err(CodexErrorDetails::ToolCollision(name).into());
+        }
+
+        let mut namespace_descriptions = BTreeMap::new();
+        for tool in registry.entries() {
+            let ToolSpec::Namespace(namespace) = tool.runtime.spec() else {
+                continue;
+            };
+            if namespace.description.trim().is_empty() {
+                continue;
+            }
+            match namespace_descriptions.entry(namespace.name) {
+                Entry::Vacant(entry) => {
+                    entry.insert(namespace.description);
+                }
+                Entry::Occupied(entry) if entry.get() != &namespace.description => {
+                    return Err(CodexErrorDetails::ToolCollision(entry.key().clone()).into());
+                }
+                Entry::Occupied(_) => {}
+            }
+        }
     }
 
     let model_visible_specs =
@@ -695,6 +731,12 @@ fn register_code_mode_executors(
             &namespace_descriptions,
             default_exec_yield_time_ms,
             tool_mode == ToolMode::CodeModeOnly,
+            if unified_image_budget_enabled(&turn_context.config.features, &turn_context.model_info)
+            {
+                codex_code_mode::ImageDetailVisibility::Hidden
+            } else {
+                codex_code_mode::ImageDetailVisibility::Visible
+            },
         ),
         code_mode_nested_tool_specs,
     );
@@ -801,6 +843,10 @@ fn add_core_tool_sources(context: &CoreToolPlanContext<'_>, registry: &mut ToolR
             if turn_context.config.features.enabled(Feature::ViewImage) {
                 registry.add(ViewImageHandler::new(ViewImageToolOptions {
                     can_request_original_image_detail: can_request_original_image_detail(
+                        &turn_context.model_info,
+                    ),
+                    unified_image_budget: unified_image_budget_enabled(
+                        &turn_context.config.features,
                         &turn_context.model_info,
                     ),
                     include_environment_id,
@@ -997,6 +1043,10 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
         let include_environment_id = matches!(environment_mode, ToolEnvironmentMode::Multiple);
         registry.add(ViewImageHandler::new(ViewImageToolOptions {
             can_request_original_image_detail: can_request_original_image_detail(
+                &turn_context.model_info,
+            ),
+            unified_image_budget: unified_image_budget_enabled(
+                &turn_context.config.features,
                 &turn_context.model_info,
             ),
             include_environment_id,

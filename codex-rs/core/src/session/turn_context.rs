@@ -3,7 +3,6 @@ use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::shell_snapshot::ShellSnapshotFile;
 use codex_core_plugins::PluginCommandAttribution;
 use codex_core_plugins::TrustedPluginRoots;
-use codex_core_skills::HostSkillsSnapshot;
 use codex_file_system::FileSystemSandboxContext;
 use codex_model_provider::SharedModelProvider;
 use codex_protocol::SessionId;
@@ -15,6 +14,7 @@ use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_sandboxing::policy_transforms::effective_permission_profile;
+use codex_skills_extension::HostSkillsSnapshot;
 use codex_utils_path_uri::PathUri;
 use futures::FutureExt;
 use futures::future::BoxFuture;
@@ -79,6 +79,25 @@ impl TurnEnvironment {
 
     pub(crate) fn workspace_roots(&self) -> &[PathUri] {
         &self.workspace_roots
+    }
+
+    pub(crate) fn permission_profile(&self) -> &PermissionProfile {
+        self.config.permission_profile.permission_profile()
+    }
+
+    pub(crate) fn active_permission_profile(&self) -> Option<ActivePermissionProfile> {
+        self.config.permission_profile.active_permission_profile()
+    }
+
+    pub(crate) fn permission_profile_with_workspace_roots(&self) -> PermissionProfile {
+        let workspace_roots = self
+            .workspace_roots()
+            .iter()
+            .filter_map(|workspace_root| workspace_root.to_abs_path().ok())
+            .collect::<Vec<_>>();
+        self.permission_profile()
+            .clone()
+            .materialize_project_roots_with_workspace_roots(&workspace_roots)
     }
 
     pub(crate) fn selection(&self) -> TurnEnvironmentSelection {
@@ -333,7 +352,7 @@ impl TurnContext {
         environment: &TurnEnvironment,
     ) -> FileSystemSandboxContext {
         let permissions = effective_permission_profile(
-            self.config.permissions.permission_profile(),
+            environment.permission_profile(),
             additional_permissions.as_ref(),
         );
         FileSystemSandboxContext {
