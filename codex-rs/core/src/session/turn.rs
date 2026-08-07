@@ -880,18 +880,14 @@ async fn build_extension_turn_input_items(
         return Some(Vec::new());
     }
 
-    let environments = turn_context
+    let environments = step_context
         .environments
         .turn_environments()
         .enumerate()
-        .filter_map(|(index, environment)| {
-            // TODO(anp): Migrate extension turn-input environments to PathUri so foreign cwd
-            // values are not omitted from extension context.
-            Some(TurnInputEnvironment {
-                environment_id: environment.environment_id.clone(),
-                cwd: environment.cwd().to_abs_path().ok()?.into_path_buf(),
-                is_primary: index == 0,
-            })
+        .map(|(index, environment)| TurnInputEnvironment {
+            environment_id: environment.environment_id.clone(),
+            cwd: environment.cwd().clone(),
+            is_primary: index == 0,
         })
         .collect::<Vec<_>>();
 
@@ -1475,7 +1471,7 @@ pub(crate) async fn built_tools(
     sess: &Session,
     turn_context: &TurnContext,
     environments: &TurnEnvironmentSnapshot,
-    mcp: &codex_mcp::McpBinding,
+    mcp: &Arc<codex_mcp::McpBinding>,
     step_store: &ExtensionData,
     prepared_recommendations: PreparedToolRecommendations,
 ) -> CodexResult<Arc<ToolRouter>> {

@@ -5581,6 +5581,7 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
         "11111111-1111-4111-8111-111111111111".to_string(),
         auth_manager,
         models_manager,
+        model_info,
         Arc::new(ExecPolicyManager::default()),
         tx_event,
         agent_status_tx,
@@ -5749,6 +5750,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         .then(|| Arc::new(crate::state::ExecutedToolCallRecorder::default()));
     let services = SessionServices {
         mcp_runtime,
+        mcp_handler_cache: Default::default(),
         unified_exec_manager: UnifiedExecProcessManager::new(
             config.background_terminal_max_timeout,
         ),
@@ -5825,7 +5827,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         executed_tool_calls,
         code_mode_service: crate::tools::code_mode::CodeModeService::new(
             Arc::new(codex_code_mode::DisabledCodeModeSessionProvider),
-            &config.features,
+            &config.code_mode,
         ),
         tool_search_handler_cache: Default::default(),
         turn_environments: Arc::clone(&turn_environments),
@@ -5995,6 +5997,7 @@ async fn make_session_with_config_and_rx(
         "11111111-1111-4111-8111-111111111111".to_string(),
         auth_manager,
         models_manager,
+        model_info,
         Arc::new(ExecPolicyManager::default()),
         tx_event,
         agent_status_tx,
@@ -6108,6 +6111,7 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
         "11111111-1111-4111-8111-111111111111".to_string(),
         auth_manager,
         models_manager,
+        model_info,
         Arc::new(ExecPolicyManager::default()),
         tx_event,
         agent_status_tx,
@@ -7965,6 +7969,7 @@ where
         .then(|| Arc::new(crate::state::ExecutedToolCallRecorder::default()));
     let services = SessionServices {
         mcp_runtime,
+        mcp_handler_cache: Default::default(),
         unified_exec_manager: UnifiedExecProcessManager::new(
             config.background_terminal_max_timeout,
         ),
@@ -8041,7 +8046,7 @@ where
         executed_tool_calls,
         code_mode_service: crate::tools::code_mode::CodeModeService::new(
             Arc::new(codex_code_mode::DisabledCodeModeSessionProvider),
-            &config.features,
+            &config.code_mode,
         ),
         tool_search_handler_cache: Default::default(),
         turn_environments: Arc::clone(&turn_environments),
@@ -8180,6 +8185,18 @@ async fn refresh_mcp_servers_uses_latest_state_for_existing_turns() {
         .capture_step_context(next_turn, &CancellationToken::new())
         .await
         .expect("a fresh cancellation token cannot be cancelled");
+    assert!(
+        !Arc::ptr_eq(&old_step.mcp, &new_step.mcp),
+        "publishing a new MCP runtime must invalidate cached bindings"
+    );
+    let refreshed_old_step = session
+        .capture_step_context(Arc::clone(&turn_context), &CancellationToken::new())
+        .await
+        .expect("capture an existing turn after its MCP runtime is republished");
+    assert!(
+        Arc::ptr_eq(&new_step.mcp, &refreshed_old_step.mcp),
+        "existing turns should reuse the newly published immutable MCP binding"
+    );
     let rematerialized_old = session
         .mcp_runtime_for_step(
             &turn_context,
@@ -8217,12 +8234,17 @@ async fn refresh_mcp_servers_uses_latest_state_for_existing_turns() {
 async fn refreshed_mcp_binding_captures_current_approval_authority() {
     let (session, old_turn) = make_session_and_context().await;
     let session = Arc::new(session);
+    let old_turn = Arc::new(old_turn);
     let previous_policy = old_turn.approval_policy();
     assert_ne!(previous_policy, AskForApproval::Never);
     assert_eq!(
         old_turn.config.permissions.approval_policy.value(),
         previous_policy
     );
+    let old_step = session
+        .capture_step_context(Arc::clone(&old_turn), &CancellationToken::new())
+        .await
+        .expect("capture initial sampling step");
 
     session
         .update_settings(SessionSettingsUpdate {
@@ -8241,6 +8263,18 @@ async fn refreshed_mcp_binding_captures_current_approval_authority() {
         .current_binding()
         .await
         .expect("refreshed runtime should be available");
+    assert!(
+        !Arc::ptr_eq(&old_step.mcp, &binding),
+        "changed approval authority must invalidate the cached MCP binding"
+    );
+    let refreshed_step = session
+        .capture_step_context(Arc::clone(&old_turn), &CancellationToken::new())
+        .await
+        .expect("capture existing turn after its approval authority changes");
+    assert!(
+        Arc::ptr_eq(&binding, &refreshed_step.mcp),
+        "existing turns must use the MCP binding with current approval authority"
+    );
     let config = binding.config();
     assert_eq!(
         (
@@ -9265,10 +9299,7 @@ async fn build_initial_context_adds_multi_agent_v2_subagent_usage_hint_as_develo
         Arc::get_mut(&mut turn_context).expect("thread settings should not be shared");
     turn_context_mut.session_source = session_source;
     let config = Arc::make_mut(&mut turn_context_mut.config);
-    config.token_budget = Some(crate::config::TokenBudgetConfig {
-        mode: codex_features::TokenBudgetMode::Name,
-        ..crate::config::TokenBudgetConfig::default()
-    });
+    config.token_budget = Some(crate::config::TokenBudgetConfig::default());
     config
         .features
         .enable(Feature::TokenBudget)

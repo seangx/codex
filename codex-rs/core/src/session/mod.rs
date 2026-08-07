@@ -729,6 +729,7 @@ impl Session {
             installation_id,
             auth_manager.clone(),
             models_manager.clone(),
+            model_info,
             exec_policy,
             tx_event.clone(),
             agent_status_tx.clone(),
@@ -3142,7 +3143,7 @@ impl Session {
             self.as_ref(),
             turn_context.as_ref(),
             &environments,
-            mcp.as_ref(),
+            &mcp,
             &extension_data,
             prepared_recommendations,
         )
@@ -3541,18 +3542,11 @@ impl Session {
                         .join("\n");
                     (!text.is_empty()).then_some(text)
                 });
-            developer_sections.push(
+            separate_developer_sections.push(
                 crate::context::TokenBudgetContext::new(
-                    self.thread_id(),
                     session_source
                         .get_agent_path()
                         .unwrap_or_else(codex_protocol::AgentPath::root),
-                    turn_context
-                        .config
-                        .token_budget
-                        .as_ref()
-                        .map(|config| config.mode)
-                        .unwrap_or_default(),
                     auto_compact_window_ids.first_window_id,
                     auto_compact_window_ids.previous_window_id,
                     auto_compact_window_ids.window_id,
