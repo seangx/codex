@@ -63,7 +63,7 @@ impl ToolOrchestrator {
     {
         let network_approval = match begin_network_approval(
             &tool_ctx.session,
-            &tool_ctx.turn.sub_id,
+            &tool_ctx.step_context.turn.sub_id,
             managed_network_active,
             tool.network_approval_spec(req, tool_ctx),
         )
@@ -75,7 +75,7 @@ impl ToolOrchestrator {
 
         let attempt_tool_ctx = ToolCtx {
             session: tool_ctx.session.clone(),
-            turn: tool_ctx.turn.clone(),
+            step_context: Arc::clone(&tool_ctx.step_context),
             call_id: tool_ctx.call_id.clone(),
             tool_name: tool_ctx.tool_name.clone(),
         };
@@ -151,8 +151,14 @@ impl ToolOrchestrator {
 
         let environment = tool.turn_environment(req);
         let workspace_roots = environment.workspace_roots();
+        let executor_managed_process_sandbox = tool.uses_executor_managed_process_sandbox(req);
         let permission_profile = environment.permission_profile();
-        let permissions = environment.permission_profile_with_workspace_roots();
+        let permissions = if executor_managed_process_sandbox {
+            // Executor-native roots remain symbolic until the executor applies its own sandbox.
+            permission_profile.clone()
+        } else {
+            environment.permission_profile_with_workspace_roots()
+        };
         let file_system_sandbox_policy = permissions.file_system_sandbox_policy();
         let requirement = tool.exec_approval_requirement(req).unwrap_or_else(|| {
             default_exec_approval_requirement(approval_policy, &file_system_sandbox_policy)
@@ -166,7 +172,7 @@ impl ToolOrchestrator {
                             ToolError::Rejected(format!("could not prepare approval action: {err}"))
                         })?;
                     let approval_ctx = ApprovalContext {
-                        turn: Arc::clone(&tool_ctx.turn),
+                        step_context: Arc::clone(&tool_ctx.step_context),
                         call_id: tool_ctx.call_id.clone(),
                         tool_name: tool_ctx.tool_name.clone(),
                         strict_auto_review,
@@ -198,7 +204,7 @@ impl ToolOrchestrator {
                         ToolError::Rejected(format!("could not prepare approval action: {err}"))
                     })?;
                 let approval_ctx = ApprovalContext {
-                    turn: Arc::clone(&tool_ctx.turn),
+                    step_context: Arc::clone(&tool_ctx.step_context),
                     call_id: tool_ctx.call_id.clone(),
                     tool_name: tool_ctx.tool_name.clone(),
                     strict_auto_review,
@@ -230,7 +236,7 @@ impl ToolOrchestrator {
                 managed_network_active,
             ),
         };
-        let initial_sandbox = if sandbox_requested {
+        let initial_sandbox = if sandbox_requested && !executor_managed_process_sandbox {
             self.sandbox.select_initial(
                 &permissions,
                 sandbox_preference,
@@ -394,7 +400,7 @@ impl ToolOrchestrator {
                             ToolError::Rejected(format!("could not prepare approval action: {err}"))
                         })?;
                     let approval_ctx = ApprovalContext {
-                        turn: Arc::clone(&tool_ctx.turn),
+                        step_context: Arc::clone(&tool_ctx.step_context),
                         call_id: tool_ctx.call_id.clone(),
                         tool_name: tool_ctx.tool_name.clone(),
                         strict_auto_review,
@@ -415,7 +421,8 @@ impl ToolOrchestrator {
                         sandbox_preference,
                         managed_network_active,
                     );
-                let retry_sandbox = if retry_sandbox_requested {
+                let retry_sandbox = if retry_sandbox_requested && !executor_managed_process_sandbox
+                {
                     self.sandbox.select_initial(
                         &permissions,
                         sandbox_preference,
