@@ -434,6 +434,9 @@
             "apply_patch_freeform": {
               "type": "boolean"
             },
+            "apply_patch_preserve_line_endings": {
+              "type": "boolean"
+            },
             "apply_patch_streaming_events": {
               "type": "boolean"
             },
@@ -1191,6 +1194,18 @@
         "ignore_large_untracked_files": {
           "description": "Legacy no-op setting retained for compatibility.",
           "format": "int64",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "GoalsToml": {
+      "additionalProperties": false,
+      "properties": {
+        "max_goal_token_budget": {
+          "description": "Maximum token budget allowed for a goal and default budget for new goals.",
+          "format": "uint64",
+          "minimum": 1.0,
           "type": "integer"
         }
       },
@@ -5102,6 +5117,9 @@
         "apply_patch_freeform": {
           "type": "boolean"
         },
+        "apply_patch_preserve_line_endings": {
+          "type": "boolean"
+        },
         "apply_patch_streaming_events": {
           "type": "boolean"
         },
@@ -5515,6 +5533,14 @@
       "default": null,
       "description": "Compatibility-only settings retained so legacy `ghost_snapshot` config still loads."
     },
+    "goals": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/GoalsToml"
+        }
+      ],
+      "description": "Goal-related settings."
+    },
     "hide_agent_reasoning": {
       "default": false,
       "description": "When set to `true`, `AgentReasoning` events will be hidden from the UI/output. Defaults to `false`.",
@@ -5792,6 +5818,13 @@
       ],
       "default": null,
       "description": "Experimental / do not use. Realtime websocket session selection. `version` controls v1/v2 and `type` controls conversational/transcription."
+    },
+    "responses_api_metadata": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Bounded, product-owned metadata attached to every Responses API request.",
+      "type": "object"
     },
     "review_model": {
       "description": "Review model override used by the `/review` feature.",
