@@ -462,8 +462,12 @@ impl McpConnectionSet {
                     &configured_config,
                     &runtime_context,
                     environment.as_ref(),
-                    &client_elicitation_capability,
-                    &client_mcp_extensions,
+                    (&client_elicitation_capability, &client_mcp_extensions),
+                    Some((
+                        &connection_identity,
+                        protocol_mode,
+                        server.is_agent_plugin(),
+                    )),
                 )
             } else {
                 None
@@ -489,7 +493,6 @@ impl McpConnectionSet {
                 catalog_item_limit,
             );
             let defer_startup = allow_deferred_startup
-                && !configured_config.required
                 && !tool_plugin_provenance.is_selected_plugin_mcp_server(&server_name)
                 && async_managed_client
                     .tool_catalog_cache_context
@@ -561,6 +564,7 @@ impl McpConnectionSet {
                                     bearer_token_env_var,
                                     http_headers,
                                     env_http_headers,
+                                    ..
                                 } => {
                                     match determine_streamable_http_auth_status_from_credentials(
                                         configured_config

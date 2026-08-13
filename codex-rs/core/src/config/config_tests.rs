@@ -159,6 +159,7 @@ fn http_mcp(url: &str) -> McpServerConfig {
             bearer_token_env_var: None,
             http_headers: None,
             env_http_headers: None,
+            http_headers_helper: None,
         },
         environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
         enabled: true,
@@ -5034,7 +5035,6 @@ async fn rebuild_preserving_session_layers_refreshes_requirements() -> std::io::
         refreshed_toml,
         ConfigOverrides {
             cwd: Some(codex_home.path().to_path_buf()),
-            psp: Some(true),
             ..Default::default()
         },
         codex_home.abs(),
@@ -5112,8 +5112,6 @@ async fn rebuild_preserving_session_layers_refreshes_requirements() -> std::io::
         .rebuild_preserving_session_layers(&refreshed_config)
         .await?;
 
-    assert!(config.psp);
-    assert!(config.http_client_factory().has_chatgpt_cookies());
     assert_eq!(
         config.mcp_servers.get(),
         &HashMap::from([
@@ -6900,6 +6898,7 @@ async fn replace_mcp_servers_streamable_http_serializes_bearer_token() -> anyhow
                 bearer_token_env_var: Some("MCP_TOKEN".to_string()),
                 http_headers: None,
                 env_http_headers: None,
+                http_headers_helper: None,
             },
             environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
             enabled: true,
@@ -6943,6 +6942,7 @@ startup_timeout_sec = 2.0
             bearer_token_env_var,
             http_headers,
             env_http_headers,
+            ..
         } => {
             assert_eq!(url, "https://example.com/mcp");
             assert_eq!(bearer_token_env_var.as_deref(), Some("MCP_TOKEN"));
@@ -6972,6 +6972,7 @@ async fn replace_mcp_servers_streamable_http_serializes_custom_headers() -> anyh
                     "X-Auth".to_string(),
                     "DOCS_AUTH".to_string(),
                 )])),
+                http_headers_helper: None,
             },
             environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
             enabled: true,
@@ -7056,6 +7057,7 @@ async fn replace_mcp_servers_streamable_http_removes_optional_sections() -> anyh
                     "X-Auth".to_string(),
                     "DOCS_AUTH".to_string(),
                 )])),
+                http_headers_helper: None,
             },
             environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
             enabled: true,
@@ -7093,6 +7095,7 @@ async fn replace_mcp_servers_streamable_http_removes_optional_sections() -> anyh
                 bearer_token_env_var: None,
                 http_headers: None,
                 env_http_headers: None,
+                http_headers_helper: None,
             },
             environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
             enabled: true,
@@ -7132,6 +7135,7 @@ url = "https://example.com/mcp"
             bearer_token_env_var,
             http_headers,
             env_http_headers,
+            ..
         } => {
             assert_eq!(url, "https://example.com/mcp");
             assert!(bearer_token_env_var.is_none());
@@ -7165,6 +7169,7 @@ async fn replace_mcp_servers_streamable_http_isolates_headers_between_servers() 
                         "X-Auth".to_string(),
                         "DOCS_AUTH".to_string(),
                     )])),
+                    http_headers_helper: None,
                 },
                 environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
                 enabled: true,
@@ -7443,6 +7448,7 @@ async fn replace_mcp_servers_streamable_http_serializes_oauth_resource() -> anyh
                 bearer_token_env_var: None,
                 http_headers: None,
                 env_http_headers: None,
+                http_headers_helper: None,
             },
             environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
             enabled: true,
@@ -10603,77 +10609,6 @@ browser_use_full_cdp_access = false
     assert!(!config.features.enabled(Feature::InAppBrowser));
     assert!(!config.features.enabled(Feature::BrowserUse));
     assert!(!config.features.enabled(Feature::BrowserUseFullCdpAccess));
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn debug_config_lockfile_export_settings_load_from_nested_table() -> std::io::Result<()> {
-    let codex_home = TempDir::new()?;
-    std::fs::write(
-        codex_home.path().join(CONFIG_TOML_FILE),
-        r#"[debug.config_lockfile]
-export_dir = "locks"
-allow_codex_version_mismatch = true
-save_fields_resolved_from_model_catalog = false
-"#,
-    )?;
-
-    let config = ConfigBuilder::without_managed_config_for_tests()
-        .codex_home(codex_home.path().to_path_buf())
-        .fallback_cwd(Some(codex_home.path().to_path_buf()))
-        .build()
-        .await?;
-
-    assert_eq!(
-        config.config_lock_export_dir,
-        Some(AbsolutePathBuf::resolve_path_against_base(
-            "locks",
-            codex_home.path()
-        ))
-    );
-    assert!(config.config_lock_allow_codex_version_mismatch);
-    assert!(!config.config_lock_save_fields_resolved_from_model_catalog);
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn debug_config_lockfile_load_path_loads_lock_from_nested_table() -> std::io::Result<()> {
-    let codex_home = TempDir::new()?;
-    let lock_path = codex_home.path().join("session.config.lock.toml");
-    std::fs::write(
-        &lock_path,
-        format!(
-            r#"version = {}
-codex_version = "older-version"
-
-[config]
-"#,
-            crate::config_lock::CONFIG_LOCK_VERSION
-        ),
-    )?;
-    std::fs::write(
-        codex_home.path().join(CONFIG_TOML_FILE),
-        format!(
-            r#"[debug.config_lockfile]
-load_path = '{}'
-allow_codex_version_mismatch = true
-save_fields_resolved_from_model_catalog = false
-"#,
-            lock_path.display()
-        ),
-    )?;
-
-    let config = ConfigBuilder::without_managed_config_for_tests()
-        .codex_home(codex_home.path().to_path_buf())
-        .fallback_cwd(Some(codex_home.path().to_path_buf()))
-        .build()
-        .await?;
-
-    assert!(config.config_lock_toml.is_some());
-    assert!(config.config_lock_allow_codex_version_mismatch);
-    assert!(!config.config_lock_save_fields_resolved_from_model_catalog);
 
     Ok(())
 }

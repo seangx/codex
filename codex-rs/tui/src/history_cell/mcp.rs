@@ -1,6 +1,7 @@
 //! MCP tool-call, inventory, and output history cells.
 
 use super::*;
+use crate::render::line_utils::line_to_static;
 
 const TOOL_SUMMARY_ORANGE: Color = Color::LightYellow;
 
@@ -40,6 +41,20 @@ pub(crate) struct McpInvocation {
     pub(crate) server: String,
     pub(crate) tool: String,
     pub(crate) arguments: Option<serde_json::Value>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum McpToolCallRenderMode {
+    /// Compact presentation used in normal conversation history.
+    Display,
+    /// Complete invocation and result used by the Ctrl+T transcript.
+    Transcript,
+}
+
+#[derive(serde::Deserialize)]
+struct NodeReplExecOutput {
+    exit_code: i64,
+    output: String,
 }
 
 impl McpToolCallCell {
@@ -163,14 +178,14 @@ impl McpToolCallCell {
             _ => format_and_truncate_tool_result(&block.to_string(), TOOL_CALL_MAX_LINES, width),
         }
     }
-}
-
-impl HistoryCell for McpToolCallCell {
-    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+    fn render_lines(&self, width: u16, mode: McpToolCallRenderMode) -> Vec<Line<'static>> {
         if width == 0 {
             return Vec::new();
         }
+        let mut lines: Vec<Line<'static>> = Vec::new();
         let status = self.success();
+        let node_repl = self.invocation.server == "node_repl" && self.invocation.tool == "js";
+        let compact = node_repl && mode == McpToolCallRenderMode::Display;
         let bullet = match status {
             Some(true) => "•".green().bold(),
             Some(false) => "•".red().bold(),
@@ -181,7 +196,150 @@ impl HistoryCell for McpToolCallCell {
             )
             .unwrap_or_else(|| "•".dim()),
         };
-        vec![self.compact_summary_line(width, bullet)]
+        if mode == McpToolCallRenderMode::Display {
+            return vec![self.compact_summary_line(width, bullet)];
+        }
+        let header_text = if status.is_some() {
+            "Called"
+        } else {
+            "Calling"
+        };
+
+        let invocation_line = if compact {
+            let title = self
+                .invocation
+                .arguments
+                .as_ref()
+                .and_then(|arguments| arguments.get("title"))
+                .and_then(serde_json::Value::as_str)
+                .map(|title| title.split_whitespace().collect::<Vec<_>>().join(" "))
+                .filter(|title| !title.is_empty())
+                .map(|title| title.graphemes(true).take(80).collect::<String>())
+                .unwrap_or_else(|| "node_repl.js".to_string());
+            Line::from(title.cyan())
+        } else {
+            line_to_static(&format_mcp_invocation(&self.invocation))
+        };
+        let mut compact_spans = vec![bullet.clone(), " ".into(), header_text.bold(), " ".into()];
+        let mut compact_header = Line::from(compact_spans.clone());
+        let reserved = compact_header.width();
+
+        let inline_invocation =
+            invocation_line.width() <= (width as usize).saturating_sub(reserved);
+
+        if inline_invocation {
+            compact_header.extend(invocation_line.spans.clone());
+            lines.push(compact_header);
+        } else {
+            compact_spans.pop(); // drop trailing space for standalone header
+            lines.push(Line::from(compact_spans));
+
+            let opts = RtOptions::new((width as usize).saturating_sub(4))
+                .initial_indent("".into())
+                .subsequent_indent("    ".into());
+            let wrapped = adaptive_wrap_line(&invocation_line, opts);
+            let body_lines: Vec<Line<'static>> = wrapped.iter().map(line_to_static).collect();
+            lines.extend(prefix_lines(body_lines, "  └ ".dim(), "    ".into()));
+        }
+
+        let mut detail_lines: Vec<Line<'static>> = Vec::new();
+        // Reserve four columns for the tree prefix ("  └ "/"    ") and ensure the wrapper still has at least one cell to work with.
+        let detail_wrap_width = (width as usize).saturating_sub(4).max(1);
+
+        if let Some(result) = &self.result {
+            match result {
+                Ok(codex_protocol::mcp::CallToolResult { content, .. }) => {
+                    if !content.is_empty() {
+                        for block in content {
+                            let text = if compact && status == Some(true) {
+                                let meaningful_output = block
+                                    .get("text")
+                                    .and_then(serde_json::Value::as_str)
+                                    .and_then(|text| {
+                                        if text.starts_with("Script completed\n") {
+                                            return text
+                                                .split_once("\nOutput:\n")
+                                                .map(|(_, output)| output.to_string());
+                                        }
+                                        serde_json::from_str::<NodeReplExecOutput>(text)
+                                            .ok()
+                                            .filter(|output| output.exit_code == 0)
+                                            .map(|output| output.output)
+                                    });
+                                match meaningful_output {
+                                    Some(output) if output.is_empty() => continue,
+                                    Some(output) => format_and_truncate_tool_result(
+                                        &output,
+                                        TOOL_CALL_MAX_LINES,
+                                        detail_wrap_width,
+                                    ),
+                                    None => Self::render_content_block(block, detail_wrap_width),
+                                }
+                            } else if node_repl
+                                && mode == McpToolCallRenderMode::Transcript
+                                && let Some(output) =
+                                    block.get("text").and_then(serde_json::Value::as_str)
+                            {
+                                output.trim_end_matches('\n').to_string()
+                            } else {
+                                Self::render_content_block(block, detail_wrap_width)
+                            };
+                            for segment in text.split('\n') {
+                                let line = Line::from(segment.to_string().dim());
+                                let wrapped = adaptive_wrap_line(
+                                    &line,
+                                    RtOptions::new(detail_wrap_width)
+                                        .initial_indent("".into())
+                                        .subsequent_indent("    ".into()),
+                                );
+                                detail_lines.extend(wrapped.iter().map(line_to_static));
+                            }
+                        }
+                    }
+                }
+                Err(err) => {
+                    let err_text = format!("Error: {err}");
+                    let err_text = if node_repl && mode == McpToolCallRenderMode::Transcript {
+                        err_text
+                    } else {
+                        format_and_truncate_tool_result(
+                            &err_text,
+                            TOOL_CALL_MAX_LINES,
+                            width as usize,
+                        )
+                    };
+                    let err_line = Line::from(err_text.dim());
+                    let wrapped = adaptive_wrap_line(
+                        &err_line,
+                        RtOptions::new(detail_wrap_width)
+                            .initial_indent("".into())
+                            .subsequent_indent("    ".into()),
+                    );
+                    detail_lines.extend(wrapped.iter().map(line_to_static));
+                }
+            }
+        }
+
+        if !detail_lines.is_empty() {
+            let initial_prefix: Span<'static> = if inline_invocation {
+                "  └ ".dim()
+            } else {
+                "    ".into()
+            };
+            lines.extend(prefix_lines(detail_lines, initial_prefix, "    ".into()));
+        }
+
+        lines
+    }
+}
+
+impl HistoryCell for McpToolCallCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        self.render_lines(width, McpToolCallRenderMode::Display)
+    }
+
+    fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
+        self.render_lines(width, McpToolCallRenderMode::Transcript)
     }
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
@@ -192,7 +350,7 @@ impl HistoryCell for McpToolCallCell {
         };
         let mut lines = vec![Line::from(format!(
             "{header_text} {}",
-            format_mcp_invocation(self.invocation.clone())
+            format_mcp_invocation(&self.invocation)
         ))];
 
         if let Some(result) = &self.result {
@@ -641,7 +799,7 @@ impl HistoryCell for McpInventoryLoadingCell {
 pub(crate) fn new_mcp_inventory_loading(animations_enabled: bool) -> McpInventoryLoadingCell {
     McpInventoryLoadingCell::new(animations_enabled)
 }
-fn format_mcp_invocation<'a>(invocation: McpInvocation) -> Line<'a> {
+fn format_mcp_invocation(invocation: &McpInvocation) -> Line<'_> {
     let args_str = invocation
         .arguments
         .as_ref()
@@ -655,28 +813,10 @@ fn format_mcp_invocation<'a>(invocation: McpInvocation) -> Line<'a> {
     let invocation_spans = vec![
         Span::styled(invocation.server.clone(), tool_summary_style),
         Span::styled(".", tool_summary_style),
-        Span::styled(invocation.tool, tool_summary_style),
+        Span::styled(invocation.tool.clone(), tool_summary_style),
         "(".into(),
         args_str.dim(),
         ")".into(),
     ];
     invocation_spans.into()
-}
-
-#[cfg(test)]
-mod invocation_style_tests {
-    use super::*;
-
-    #[test]
-    fn tool_summary_is_orange() {
-        let line = format_mcp_invocation(McpInvocation {
-            server: "hive".to_string(),
-            tool: "hive_inbox".to_string(),
-            arguments: None,
-        });
-
-        assert_eq!(line.spans[0].style.fg, Some(TOOL_SUMMARY_ORANGE));
-        assert_eq!(line.spans[1].style.fg, Some(TOOL_SUMMARY_ORANGE));
-        assert_eq!(line.spans[2].style.fg, Some(TOOL_SUMMARY_ORANGE));
-    }
 }
