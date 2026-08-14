@@ -8,6 +8,8 @@ use codex_config::ConfigLayerEntry;
 use codex_config::ConfigLayerSource;
 use codex_config::ConfigLayerStack;
 use codex_config::ConfigRequirementsToml;
+use codex_exec_server::CapabilityRootDiscovery;
+use codex_exec_server::ExecutorCapabilityDiscoverySnapshot;
 use codex_exec_server::LOCAL_FS;
 use codex_extension_api::ConversationHistory;
 use codex_extension_api::ExtensionData;
@@ -169,6 +171,7 @@ async fn installed_extension_uses_host_service_snapshot() -> TestResult {
         name: "demo".to_string(),
         description: "Demo skill.".to_string(),
         short_description: None,
+        model: None,
         interface: None,
         dependencies: None,
         policy: None,
@@ -250,6 +253,7 @@ async fn host_world_state_records_catalog_metrics_on_publish_and_change() -> Tes
         name: "demo".to_string(),
         description: "Demo skill.".to_string(),
         short_description: None,
+        model: None,
         interface: None,
         dependencies: None,
         policy: None,
@@ -314,6 +318,7 @@ async fn host_world_state_records_catalog_metrics_on_publish_and_change() -> Tes
         name: "other".to_string(),
         description: "Other skill.".to_string(),
         short_description: None,
+        model: None,
         interface: None,
         dependencies: None,
         policy: None,
@@ -366,6 +371,7 @@ async fn persisted_host_snapshot_deduplicates_warning_after_reinitialization() -
         name: "demo".to_string(),
         description: "Demo skill.".to_string(),
         short_description: None,
+        model: None,
         interface: None,
         dependencies: None,
         policy: None,
@@ -1124,6 +1130,45 @@ async fn selected_executor_catalog_follows_step_availability_and_reuses_its_cach
         .ok_or("restored skills should render")?;
     assert!(restored_fragment.body().contains("lint-fix"));
     assert_eq!(1, list_calls.load(Ordering::Relaxed));
+
+    let failed_discovery = ExecutorCapabilityDiscoverySnapshot::new(
+        &selected_roots,
+        vec![Err("exec-server transport disconnected".to_string())],
+        Default::default(),
+    );
+    let recovered_discovery = ExecutorCapabilityDiscoverySnapshot::new(
+        &selected_roots,
+        vec![Ok(Arc::new(CapabilityRootDiscovery {
+            id: "lint-fix".to_string(),
+            path: PathUri::parse("file:///skills/lint-fix")?,
+            plugin: None,
+            skills: Vec::new(),
+            namespace_manifests: Vec::new(),
+            warnings: Vec::new(),
+            error: None,
+        }))],
+        Default::default(),
+    );
+    for (turn_id, discovery, expected_list_calls) in [
+        ("failed-discovery", &failed_discovery, 2),
+        ("recovered-discovery", &recovered_discovery, 3),
+        ("cached-discovery", &recovered_discovery, 3),
+    ] {
+        registry.context_contributors()[0]
+            .contribute_world_state(WorldStateContributionInput {
+                thread_id: codex_protocol::ThreadId::new(),
+                turn_id,
+                environments: &[],
+                ready_selected_capability_roots: &selected_roots,
+                executor_capability_discovery: Some(discovery),
+                extension_metrics: None,
+                session_store: &session_store,
+                thread_store: &thread_store,
+                turn_store: &ExtensionData::new(turn_id),
+            })
+            .await;
+        assert_eq!(expected_list_calls, list_calls.load(Ordering::Relaxed));
+    }
 
     let mut listing_disabled_config = config.clone();
     listing_disabled_config.include_instructions = false;

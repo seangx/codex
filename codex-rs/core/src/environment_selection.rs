@@ -16,6 +16,7 @@ use codex_protocol::capabilities::CapabilityRootLocation;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
+use codex_protocol::protocol::EnvironmentConfig;
 use codex_protocol::protocol::EnvironmentConnectionEvent;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
@@ -27,7 +28,6 @@ use futures::future::BoxFuture;
 use futures::future::Shared;
 use tokio_util::task::AbortOnDropHandle;
 
-use crate::environment_config::EnvironmentConfig;
 use crate::session::turn_context::ShellSnapshotTask;
 use crate::session::turn_context::TurnEnvironment;
 use crate::session::turn_context::TurnEnvironmentConfig;
@@ -249,6 +249,38 @@ impl ThreadEnvironments {
         for task in removed_connection_tasks {
             task.abort();
         }
+    }
+
+    pub(crate) fn selections(&self) -> Vec<TurnEnvironmentSelection> {
+        self.environments
+            .load()
+            .iter()
+            .map(|environment| environment.selection.clone())
+            .collect()
+    }
+
+    pub(crate) fn primary_workspace_roots(&self) -> Vec<AbsolutePathBuf> {
+        self.environments
+            .load()
+            .first()
+            .map_or_else(Vec::new, |environment| {
+                Self::primary_workspace_roots_for(std::slice::from_ref(&environment.selection))
+            })
+    }
+
+    pub(crate) fn primary_workspace_roots_for(
+        selections: &[TurnEnvironmentSelection],
+    ) -> Vec<AbsolutePathBuf> {
+        selections
+            .first()
+            .map(|selection| {
+                selection
+                    .workspace_roots
+                    .iter()
+                    .filter_map(|workspace_root| workspace_root.to_abs_path().ok())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     pub(crate) fn update_environment_configs(&self, config: &TurnEnvironmentConfig) {
@@ -474,10 +506,8 @@ impl TurnEnvironmentState {
         match resolved {
             Some(Ok(environment)) => {
                 let mut turn_environment = TurnEnvironment::new(
-                    starting.selection.environment_id,
+                    starting.selection,
                     environment.environment,
-                    starting.selection.cwd,
-                    starting.selection.workspace_roots,
                     environment.shell,
                     starting.config,
                 );
@@ -546,7 +576,7 @@ impl TurnEnvironmentSnapshot {
         self.turn_environments()
             .map(|environment| {
                 (
-                    environment.environment_id.clone(),
+                    environment.selection.environment_id.clone(),
                     Some(Arc::clone(&environment.environment)),
                 )
             })
@@ -900,6 +930,7 @@ url = "ws://127.0.0.1:8765"
             resolved
                 .primary()
                 .expect("primary environment")
+                .selection
                 .environment_id,
             "local"
         );
@@ -1312,10 +1343,8 @@ url = "ws://127.0.0.1:8765"
                 .expect("inherited environment"),
         );
         let inherited = TurnEnvironment::new(
-            selection.environment_id.clone(),
+            selection.clone(),
             Arc::clone(&inherited_environment),
-            selection.cwd.clone(),
-            Vec::new(),
             /*shell*/ None,
             test_environment_config(),
         );
@@ -1463,10 +1492,12 @@ url = "ws://127.0.0.1:8765"
         );
         let remote = TurnEnvironmentSnapshot {
             environments: vec![TurnEnvironmentState::Ready(TurnEnvironment::new(
-                REMOTE_ENVIRONMENT_ID.to_string(),
+                TurnEnvironmentSelection {
+                    environment_id: REMOTE_ENVIRONMENT_ID.to_string(),
+                    cwd: remote_cwd_uri.clone(),
+                    workspace_roots: Vec::new(),
+                },
                 remote_environment.clone(),
-                remote_cwd_uri.clone(),
-                Vec::new(),
                 /*shell*/ None,
                 test_environment_config(),
             ))],
@@ -1474,10 +1505,12 @@ url = "ws://127.0.0.1:8765"
         let multiple = TurnEnvironmentSnapshot {
             environments: vec![
                 TurnEnvironmentState::Ready(TurnEnvironment::new(
-                    REMOTE_ENVIRONMENT_ID.to_string(),
+                    TurnEnvironmentSelection {
+                        environment_id: REMOTE_ENVIRONMENT_ID.to_string(),
+                        cwd: remote_cwd_uri,
+                        workspace_roots: Vec::new(),
+                    },
                     remote_environment,
-                    remote_cwd_uri,
-                    Vec::new(),
                     /*shell*/ None,
                     test_environment_config(),
                 )),

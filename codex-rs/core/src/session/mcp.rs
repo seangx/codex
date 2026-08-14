@@ -392,7 +392,7 @@ impl Session {
                     sandbox.windows_sandbox_private_desktop =
                         config.permissions.windows_sandbox_private_desktop;
                     sandbox.use_legacy_landlock = config.features.use_legacy_landlock();
-                    (environment.environment_id.clone(), sandbox)
+                    (environment.selection.environment_id.clone(), sandbox)
                 })
                 .collect::<HashMap<_, _>>()
         } else {
@@ -422,11 +422,14 @@ impl Session {
             })
             .cloned()
             .collect::<Vec<_>>();
-        Some(Arc::new(
-            cache
-                .snapshot(&selected_capability_roots, &sandbox_contexts)
-                .await,
-        ))
+        let discovery = cache
+            .snapshot(&selected_capability_roots, &sandbox_contexts)
+            .await;
+        if cache.take_recovered_discovery() {
+            // Root selection is unchanged, but recovered manifests can change MCP servers.
+            self.mark_mcp_runtime_dirty();
+        }
+        Some(Arc::new(discovery))
     }
 
     pub(crate) async fn resolve_selected_capability_roots_for_step(

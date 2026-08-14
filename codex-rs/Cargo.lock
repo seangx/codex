@@ -2463,6 +2463,7 @@ dependencies = [
  "http 1.4.0",
  "rand 0.9.3",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -2746,6 +2747,7 @@ dependencies = [
  "codex-app-server-protocol",
  "codex-apply-patch",
  "codex-async-utils",
+ "codex-client",
  "codex-code-mode",
  "codex-config",
  "codex-connectors",
@@ -3028,6 +3030,7 @@ dependencies = [
  "pretty_assertions",
  "prost",
  "rcgen",
+ "rustix 1.1.4",
  "rustls",
  "serde",
  "serde_json",
@@ -3293,6 +3296,26 @@ dependencies = [
  "codex-core",
  "codex-extension-api",
  "codex-protocol",
+]
+
+[[package]]
+name = "codex-guardian-v2"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "codex-api",
+ "codex-extension-api",
+ "codex-http-client",
+ "codex-login",
+ "codex-model-provider",
+ "codex-model-provider-info",
+ "codex-protocol",
+ "core_test_support",
+ "http 1.4.0",
+ "pretty_assertions",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

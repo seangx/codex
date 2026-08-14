@@ -42,10 +42,8 @@ pub(crate) struct TurnEnvironmentConfig {
 
 #[derive(Clone)]
 pub(crate) struct TurnEnvironment {
-    pub(crate) environment_id: String,
+    pub(crate) selection: TurnEnvironmentSelection,
     pub(crate) environment: Arc<Environment>,
-    cwd: PathUri,
-    workspace_roots: Vec<PathUri>,
     pub(crate) shell: Option<shell::Shell>,
     pub(crate) config: TurnEnvironmentConfig,
     pub(crate) shell_snapshot: ShellSnapshotTask,
@@ -53,18 +51,14 @@ pub(crate) struct TurnEnvironment {
 
 impl TurnEnvironment {
     pub(crate) fn new(
-        environment_id: String,
+        selection: TurnEnvironmentSelection,
         environment: Arc<Environment>,
-        cwd: PathUri,
-        workspace_roots: Vec<PathUri>,
         shell: Option<shell::Shell>,
         config: TurnEnvironmentConfig,
     ) -> Self {
         Self {
-            environment_id,
+            selection,
             environment,
-            cwd,
-            workspace_roots,
             shell,
             config,
             shell_snapshot: futures::future::ready(None).boxed().shared(),
@@ -72,7 +66,7 @@ impl TurnEnvironment {
     }
 
     pub(crate) fn shell_snapshot(&self, cwd: &AbsolutePathBuf) -> Option<AbsolutePathBuf> {
-        if self.cwd != PathUri::from_abs_path(cwd) {
+        if self.selection.cwd != PathUri::from_abs_path(cwd) {
             return None;
         }
         self.shell_snapshot
@@ -82,11 +76,11 @@ impl TurnEnvironment {
     }
 
     pub(crate) fn cwd(&self) -> &PathUri {
-        &self.cwd
+        &self.selection.cwd
     }
 
     pub(crate) fn workspace_roots(&self) -> &[PathUri] {
-        &self.workspace_roots
+        &self.selection.workspace_roots
     }
 
     pub(crate) fn permission_profile(&self) -> &PermissionProfile {
@@ -109,21 +103,17 @@ impl TurnEnvironment {
     }
 
     pub(crate) fn selection(&self) -> TurnEnvironmentSelection {
-        TurnEnvironmentSelection {
-            environment_id: self.environment_id.clone(),
-            cwd: self.cwd.clone(),
-            workspace_roots: self.workspace_roots.clone(),
-        }
+        self.selection.clone()
     }
 }
 
 impl std::fmt::Debug for TurnEnvironment {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TurnEnvironment")
-            .field("environment_id", &self.environment_id)
+            .field("environment_id", &self.selection.environment_id)
             .field("environment", &self.environment)
-            .field("cwd", &self.cwd)
-            .field("workspace_roots", &self.workspace_roots)
+            .field("cwd", &self.selection.cwd)
+            .field("workspace_roots", &self.selection.workspace_roots)
             .field("shell", &self.shell)
             .field("config", &self.config)
             .finish_non_exhaustive()
@@ -508,6 +498,7 @@ fn local_time_context() -> (String, String) {
 impl Session {
     /// Don't expand the number of mutated arguments on config. We are in the process of getting rid of it.
     pub(crate) fn build_per_turn_config(
+        &self,
         session_configuration: &SessionConfiguration,
         cwd: AbsolutePathBuf,
     ) -> Config {
@@ -516,7 +507,7 @@ impl Session {
         let mut per_turn_config = (*config).clone();
         per_turn_config.cwd = cwd;
         per_turn_config.permissions.approval_policy = session_configuration.approval_policy.clone();
-        let workspace_roots = session_configuration.primary_workspace_roots();
+        let workspace_roots = self.services.turn_environments.primary_workspace_roots();
         per_turn_config.workspace_roots = workspace_roots.clone();
         per_turn_config
             .permissions
@@ -552,10 +543,11 @@ impl Session {
     }
 
     pub(crate) fn build_effective_session_config(
+        &self,
         session_configuration: &SessionConfiguration,
     ) -> Config {
         let mut config =
-            Self::build_per_turn_config(session_configuration, session_configuration.cwd().clone());
+            self.build_per_turn_config(session_configuration, session_configuration.cwd().clone());
         config.model = Some(session_configuration.collaboration_mode.model().to_string());
         config
     }
@@ -686,24 +678,22 @@ impl Session {
         let notify_config_contributors = !self.services.extensions.config_contributors().is_empty();
         let update_result: CodexResult<_> = {
             let mut state = self.state.lock().await;
-            match state.session_configuration.clone().apply(&updates) {
+            match self.apply_session_settings(&state.session_configuration, &updates) {
                 Ok(next) => {
-                    let mcp_inputs_changed = state.session_configuration.mcp_inputs_differ(&next);
+                    let mcp_inputs_changed =
+                        self.mcp_inputs_differ(&state.session_configuration, &next, &updates);
                     let previous_permission_profile =
                         state.session_configuration.permission_profile();
                     let next_permission_profile = next.permission_profile();
                     let permission_profile_changed =
                         previous_permission_profile != next_permission_profile;
-                    let previous_config = notify_config_contributors.then(|| {
-                        Self::build_effective_session_config(&state.session_configuration)
-                    });
-                    let new_config = notify_config_contributors
-                        .then(|| Self::build_effective_session_config(&next));
+                    let previous_config = notify_config_contributors
+                        .then(|| self.build_effective_session_config(&state.session_configuration));
                     let environment_config = next.turn_environment_config();
-                    if updates.environments.is_some() {
+                    if let Some(environments) = &updates.environments {
                         self.services
                             .turn_environments
-                            .update_selections(next.environment_selections(), &environment_config);
+                            .update_selections(&environments.environments, &environment_config);
                     } else if state.session_configuration.turn_environment_config()
                         != environment_config
                     {
@@ -715,6 +705,8 @@ impl Session {
                         self.mark_mcp_runtime_dirty();
                     }
                     state.session_configuration = next.clone();
+                    let new_config = notify_config_contributors
+                        .then(|| self.build_effective_session_config(&state.session_configuration));
                     Ok((
                         next,
                         mcp_inputs_changed,
@@ -814,7 +806,7 @@ impl Session {
             .as_ref()
             .and_then(|turn_environment| turn_environment.cwd().to_abs_path().ok())
             .unwrap_or_else(|| session_configuration.cwd().clone());
-        let per_turn_config = Self::build_per_turn_config(&session_configuration, cwd.clone());
+        let per_turn_config = self.build_per_turn_config(&session_configuration, cwd.clone());
         let model_info = self
             .services
             .models_manager
