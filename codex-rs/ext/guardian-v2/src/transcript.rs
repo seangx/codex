@@ -1,45 +1,132 @@
 use std::collections::HashMap;
+use std::collections::VecDeque;
 
 use codex_extension_api::ResponseItem;
+pub(crate) use codex_features::GuardianV2TranscriptSource as TranscriptSource;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::FunctionCallOutputContentItem;
+use codex_protocol::models::ImageDetail;
 use codex_protocol::models::ReasoningItemContent;
 use codex_protocol::models::ReasoningItemReasoningSummary;
 use codex_protocol::models::plaintext_agent_message_content;
+use codex_protocol::protocol::TruncationPolicy;
 
-// Provisional approximation of an 80k-token transcript budget.
-const MAX_TRANSCRIPT_BYTES: usize = 320 * 1024;
+pub(crate) const MAX_MESSAGE_ENTRY_TOKENS: usize = 2_000;
+pub(crate) const MAX_TOOL_ENTRY_TOKENS: usize = 1_000;
+pub(crate) const MAX_MESSAGE_TRANSCRIPT_TOKENS: usize = 10_000;
+pub(crate) const MAX_TOOL_TRANSCRIPT_TOKENS: usize = 10_000;
+pub(crate) const MAX_RECENT_NON_USER_ENTRIES: usize = 40;
+const MAX_TRANSCRIPT_IMAGES: usize = 4;
+const MAX_TRANSCRIPT_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 const MANUAL_APPROVAL_DEVELOPER_PREFIX: &str =
     "The user has manually approved a specific action that was previously `Rejected`.";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum TranscriptSource {
-    ToolCalls,
-    ToolOutputs,
-    Reasoning,
+enum TranscriptEntryKind {
+    User,
+    Message,
+    Tool,
+}
+
+struct TranscriptEntry {
+    kind: TranscriptEntryKind,
+    text: String,
+    tokens: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TranscriptConfig {
     pub(crate) sources: Vec<TranscriptSource>,
+    pub(crate) include_images: bool,
+    pub(crate) max_message_entry_tokens: usize,
+    pub(crate) max_tool_entry_tokens: usize,
+    pub(crate) max_message_transcript_tokens: usize,
+    pub(crate) max_tool_transcript_tokens: usize,
+    pub(crate) max_recent_non_user_entries: usize,
 }
 
 impl Default for TranscriptConfig {
     fn default() -> Self {
         Self {
-            sources: vec![
-                TranscriptSource::ToolCalls,
-                TranscriptSource::ToolOutputs,
-                TranscriptSource::Reasoning,
-            ],
+            sources: vec![TranscriptSource::ToolCalls, TranscriptSource::ToolOutputs],
+            include_images: false,
+            max_message_entry_tokens: MAX_MESSAGE_ENTRY_TOKENS,
+            max_tool_entry_tokens: MAX_TOOL_ENTRY_TOKENS,
+            max_message_transcript_tokens: MAX_MESSAGE_TRANSCRIPT_TOKENS,
+            max_tool_transcript_tokens: MAX_TOOL_TRANSCRIPT_TOKENS,
+            max_recent_non_user_entries: MAX_RECENT_NON_USER_ENTRIES,
         }
     }
 }
 
 impl TranscriptConfig {
-    pub(crate) fn build<'a>(&self, items: impl IntoIterator<Item = &'a ResponseItem>) -> String {
-        let mut transcript = String::new();
+    pub(crate) fn images<'a>(
+        &self,
+        items: impl IntoIterator<Item = &'a ResponseItem>,
+    ) -> Vec<ContentItem> {
+        if !self.include_images {
+            return Vec::new();
+        }
+
+        let mut images = VecDeque::new();
+        let mut image_bytes = 0usize;
+        let mut include_image = |image_url: &str, detail: Option<ImageDetail>| {
+            if image_url.len() > MAX_TRANSCRIPT_IMAGE_BYTES {
+                return;
+            }
+            while images.len() >= MAX_TRANSCRIPT_IMAGES
+                || image_bytes + image_url.len() > MAX_TRANSCRIPT_IMAGE_BYTES
+            {
+                let Some(ContentItem::InputImage { image_url, .. }) = images.pop_front() else {
+                    break;
+                };
+                image_bytes -= image_url.len();
+            }
+            image_bytes += image_url.len();
+            images.push_back(ContentItem::InputImage {
+                image_url: image_url.to_owned(),
+                detail,
+            });
+        };
+
+        for item in items {
+            match item {
+                ResponseItem::Message { role, content, .. }
+                    if matches!(role.as_str(), "user" | "assistant") =>
+                {
+                    for item in content {
+                        if let ContentItem::InputImage { image_url, detail } = item {
+                            include_image(image_url, *detail);
+                        }
+                    }
+                }
+                ResponseItem::FunctionCallOutput { output, .. }
+                | ResponseItem::CustomToolCallOutput { output, .. }
+                    if self.sources.contains(&TranscriptSource::ToolOutputs) =>
+                {
+                    if let Some(content) = output.content_items() {
+                        for item in content {
+                            if let FunctionCallOutputContentItem::InputImage { image_url, detail } =
+                                item
+                            {
+                                include_image(image_url, *detail);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        images.into_iter().collect()
+    }
+
+    pub(crate) fn build<'a>(
+        &self,
+        items: impl IntoIterator<Item = &'a ResponseItem>,
+    ) -> Vec<String> {
+        let mut entries = Vec::new();
         let mut tool_names_by_call_id = HashMap::new();
-        let mut entry_number = 0;
 
         for item in items {
             let (role, text) = match item {
@@ -172,20 +259,125 @@ impl TranscriptConfig {
             if text.trim().is_empty() {
                 continue;
             }
-            entry_number += 1;
-            transcript.push_str(&format!("[{entry_number}] {role}: {text}\n"));
 
-            if transcript.len() > MAX_TRANSCRIPT_BYTES {
-                let mut first_retained_byte = transcript.len() - MAX_TRANSCRIPT_BYTES;
-                while !transcript.is_char_boundary(first_retained_byte) {
-                    first_retained_byte += 1;
+            let kind = match role.as_str() {
+                "user" => TranscriptEntryKind::User,
+                role if role.starts_with("tool ") => TranscriptEntryKind::Tool,
+                _ => TranscriptEntryKind::Message,
+            };
+            let token_cap = match kind {
+                TranscriptEntryKind::Tool => self.max_tool_entry_tokens,
+                TranscriptEntryKind::User | TranscriptEntryKind::Message => {
+                    self.max_message_entry_tokens
                 }
-                transcript.drain(..first_retained_byte);
+            };
+            let text = truncate_entry(&text, token_cap);
+            let entry_number = entries.len() + 1;
+            let text = format!("[{entry_number}] {role}: {text}\n");
+            let tokens = TruncationPolicy::Bytes(text.len()).token_budget();
+            entries.push(TranscriptEntry { kind, text, tokens });
+        }
+
+        let mut included = vec![false; entries.len()];
+        let mut message_tokens = 0;
+        let mut tool_tokens = 0;
+        let user_indices = entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| (entry.kind == TranscriptEntryKind::User).then_some(index))
+            .collect::<Vec<_>>();
+
+        if let Some(&first_user_index) = user_indices.first() {
+            included[first_user_index] = true;
+            message_tokens += entries[first_user_index].tokens;
+        }
+
+        if let Some(&latest_user_index) = user_indices.last()
+            && !included[latest_user_index]
+            && message_tokens + entries[latest_user_index].tokens
+                <= self.max_message_transcript_tokens
+        {
+            included[latest_user_index] = true;
+            message_tokens += entries[latest_user_index].tokens;
+        }
+
+        for &index in user_indices.iter().rev() {
+            if included[index]
+                || message_tokens + entries[index].tokens > self.max_message_transcript_tokens
+            {
+                continue;
+            }
+
+            included[index] = true;
+            message_tokens += entries[index].tokens;
+        }
+
+        let mut retained_non_user_entries = 0;
+        for (index, entry) in entries.iter().enumerate().rev() {
+            if entry.kind == TranscriptEntryKind::User
+                || retained_non_user_entries >= self.max_recent_non_user_entries
+            {
+                continue;
+            }
+
+            let fits_budget = match entry.kind {
+                TranscriptEntryKind::Tool => {
+                    tool_tokens + entry.tokens <= self.max_tool_transcript_tokens
+                }
+                TranscriptEntryKind::Message => {
+                    message_tokens + entry.tokens <= self.max_message_transcript_tokens
+                }
+                TranscriptEntryKind::User => unreachable!("user entries were selected separately"),
+            };
+            if !fits_budget {
+                continue;
+            }
+
+            included[index] = true;
+            retained_non_user_entries += 1;
+            match entry.kind {
+                TranscriptEntryKind::Tool => tool_tokens += entry.tokens,
+                TranscriptEntryKind::Message => message_tokens += entry.tokens,
+                TranscriptEntryKind::User => unreachable!("user entries were selected separately"),
             }
         }
 
-        transcript
+        entries
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, entry)| included[index].then_some(entry.text))
+            .collect()
     }
+}
+
+pub(crate) fn truncate_entry(text: &str, max_tokens: usize) -> String {
+    let max_bytes = TruncationPolicy::Tokens(max_tokens).byte_budget();
+    if text.len() <= max_bytes {
+        return text.to_owned();
+    }
+
+    let omitted_tokens =
+        TruncationPolicy::Bytes(text.len().saturating_sub(max_bytes)).token_budget();
+    let marker = format!("<truncated omitted_approx_tokens=\"{omitted_tokens}\" />");
+    if max_bytes <= marker.len() {
+        return marker;
+    }
+
+    let available_bytes = max_bytes - marker.len();
+    let prefix_bytes = available_bytes / 2;
+    let suffix_bytes = available_bytes - prefix_bytes;
+
+    let mut prefix_end = prefix_bytes;
+    while !text.is_char_boundary(prefix_end) {
+        prefix_end -= 1;
+    }
+
+    let mut suffix_start = text.len() - suffix_bytes;
+    while !text.is_char_boundary(suffix_start) {
+        suffix_start += 1;
+    }
+
+    format!("{}{marker}{}", &text[..prefix_end], &text[suffix_start..])
 }
 
 #[cfg(test)]

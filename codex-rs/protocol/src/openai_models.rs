@@ -33,6 +33,12 @@ use crate::config_types::ServiceTier;
 use crate::config_types::Verbosity;
 use crate::protocol::MultiAgentVersion;
 
+#[path = "openai_models/guardian_v2.rs"]
+mod guardian_v2;
+
+pub use guardian_v2::GuardianV2ModelConfig;
+pub use guardian_v2::GuardianV2TranscriptModelConfig;
+
 const PERSONALITY_PLACEHOLDER: &str = "{{ personality }}";
 /// Backend model-catalog specialty identifying cybersecurity-focused models.
 pub const MODEL_SPECIALTY_CYBER: &str = "cyber";
@@ -420,7 +426,6 @@ pub struct ModelInfo {
     #[serde(default)]
     pub web_search_tool_type: WebSearchToolType,
     pub truncation_policy: TruncationPolicyConfig,
-    pub supports_parallel_tool_calls: bool,
     #[serde(default)]
     pub supports_image_detail_original: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -532,8 +537,11 @@ pub struct ModelMessages {
     pub collaboration_modes: Option<CollaborationModeMessages>,
     pub auto_review: Option<AutoReviewMessages>,
     pub permissions: Option<PermissionMessages>,
+    pub multi_agent: Option<MultiAgentMessages>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_budget: Option<ModelTokenBudgetConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guardian_v2: Option<GuardianV2ModelConfig>,
 }
 
 /// Model-owned defaults for the context-window token-budget feature.
@@ -571,6 +579,24 @@ pub struct PermissionMessages {
     pub danger_full_access: Option<String>,
     pub workspace_write: Option<String>,
     pub read_only: Option<String>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq, Eq, TS, JsonSchema)]
+pub struct MultiAgentMessages {
+    pub role: Option<MultiAgentRoleMessages>,
+    pub mode: Option<MultiAgentModeMessages>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, TS, JsonSchema)]
+pub struct MultiAgentRoleMessages {
+    pub root: Option<String>,
+    pub subagent: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, TS, JsonSchema)]
+pub struct MultiAgentModeMessages {
+    pub explicit: Option<String>,
+    pub hint_text: Option<String>,
 }
 
 impl ModelMessages {
@@ -738,7 +764,9 @@ where
                     collaboration_modes: None,
                     auto_review: None,
                     permissions: None,
+                    multi_agent: None,
                     token_budget: None,
+                    guardian_v2: None,
                 });
                 messages.instructions_template = Some(base_instructions);
             }
@@ -883,7 +911,6 @@ mod tests {
             apply_patch_tool_type: None,
             web_search_tool_type: WebSearchToolType::Text,
             truncation_policy: TruncationPolicyConfig::bytes(/*limit*/ 10_000),
-            supports_parallel_tool_calls: false,
             supports_image_detail_original: false,
             context_window: None,
             max_context_window: None,
@@ -927,7 +954,9 @@ mod tests {
                 collaboration_modes: None,
                 auto_review: None,
                 permissions: None,
+                multi_agent: None,
                 token_budget: None,
+                guardian_v2: None,
             }
         );
     }
@@ -1021,6 +1050,28 @@ mod tests {
     }
 
     #[test]
+    fn multi_agent_messages_preserve_missing_and_empty_values() {
+        let messages: ModelMessages = from_str(
+            r#"{"instructions_template":null,"instructions_variables":null,"multi_agent":{"role":{"root":"","subagent":"subagent base"},"mode":{"explicit":"explicit mode","hint_text":""}}}"#,
+        )
+        .expect("multi-agent messages should deserialize");
+
+        assert_eq!(
+            messages.multi_agent,
+            Some(MultiAgentMessages {
+                role: Some(MultiAgentRoleMessages {
+                    root: Some(String::new()),
+                    subagent: Some("subagent base".to_string()),
+                }),
+                mode: Some(MultiAgentModeMessages {
+                    explicit: Some("explicit mode".to_string()),
+                    hint_text: Some(String::new()),
+                }),
+            })
+        );
+    }
+
+    #[test]
     fn collaboration_mode_messages_preserve_missing_and_empty_values() {
         let messages: ModelMessages = from_str(
             r#"{
@@ -1045,7 +1096,9 @@ mod tests {
                 }),
                 auto_review: None,
                 permissions: None,
+                multi_agent: None,
                 token_budget: None,
+                guardian_v2: None,
             }
         );
     }
@@ -1125,7 +1178,9 @@ mod tests {
             collaboration_modes: None,
             auto_review: None,
             permissions: None,
+            multi_agent: None,
             token_budget: None,
+            guardian_v2: None,
         }));
 
         let instructions = model.get_model_instructions(Some(Personality::Friendly));
@@ -1146,7 +1201,9 @@ mod tests {
             collaboration_modes: None,
             auto_review: None,
             permissions: None,
+            multi_agent: None,
             token_budget: None,
+            guardian_v2: None,
         }));
         assert_eq!(
             model.get_model_instructions(Some(Personality::Pragmatic)),
@@ -1168,7 +1225,9 @@ mod tests {
             collaboration_modes: None,
             auto_review: None,
             permissions: None,
+            multi_agent: None,
             token_budget: None,
+            guardian_v2: None,
         }));
         assert_eq!(
             model_no_personality.get_model_instructions(Some(Personality::Friendly)),
@@ -1201,7 +1260,9 @@ mod tests {
             collaboration_modes: None,
             auto_review: None,
             permissions: None,
+            multi_agent: None,
             token_budget: None,
+            guardian_v2: None,
         }));
 
         let instructions = model.get_model_instructions(Some(Personality::Friendly));
@@ -1240,7 +1301,9 @@ mod tests {
                 collaboration_modes: None,
                 auto_review: None,
                 permissions: None,
+                multi_agent: None,
                 token_budget: None,
+                guardian_v2: None,
             })
         );
         assert_eq!(
@@ -1290,7 +1353,9 @@ mod tests {
                 collaboration_modes: None,
                 auto_review: None,
                 permissions: None,
+                multi_agent: None,
                 token_budget: None,
+                guardian_v2: None,
             }))],
         };
 
@@ -1326,7 +1391,19 @@ mod tests {
                 workspace_write: Some("workspace".to_string()),
                 read_only: None,
             }),
+            multi_agent: None,
             token_budget: None,
+            guardian_v2: Some(GuardianV2ModelConfig {
+                classifier_instructions: Some("Guardian classification".to_string()),
+                review_threshold_basis_points: Some(7_500),
+                reasoning_effort: Some(ReasoningEffort::Minimal),
+                transcript: Some(GuardianV2TranscriptModelConfig {
+                    sources: Some(vec!["reasoning".to_string()]),
+                    max_tool_entry_tokens: Some(500),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
         };
         let mut value = serde_json::to_value(ModelsResponse {
             models: vec![test_model(Some(messages.clone()))],
@@ -1347,7 +1424,9 @@ mod tests {
             collaboration_modes: None,
             auto_review: None,
             permissions: None,
+            multi_agent: None,
             token_budget: None,
+            guardian_v2: None,
         };
         let mut value = serde_json::to_value(ModelsResponse {
             models: vec![test_model(Some(canonical_messages.clone()))],
@@ -1455,7 +1534,6 @@ mod tests {
                 "mode": "bytes",
                 "limit": 10000
             },
-            "supports_parallel_tool_calls": false,
             "supports_image_detail_original": false,
             "context_window": null,
             "auto_compact_token_limit": null,

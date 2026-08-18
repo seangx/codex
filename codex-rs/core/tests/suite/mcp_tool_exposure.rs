@@ -18,6 +18,7 @@ use codex_mcp::McpResourceClient;
 use codex_protocol::capabilities::CapabilityRootLocation;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::models::PermissionProfileSnapshot;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
@@ -478,6 +479,12 @@ async fn root_reconciliation_reuses_pending_apps_startup() -> Result<()> {
             &selection,
             EnvironmentConfig {
                 allow_login_shell: false,
+                permission_profile: PermissionProfileSnapshot::legacy(
+                    test.config.permissions.permission_profile().clone(),
+                ),
+                shell_environment_policy: Default::default(),
+                exec_policy: None,
+                network_policy: None,
                 selected_capability_roots: vec![SelectedCapabilityRoot {
                     id: "calendar-root".to_string(),
                     location: CapabilityRootLocation::Environment {

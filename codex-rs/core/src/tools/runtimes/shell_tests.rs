@@ -1,9 +1,11 @@
 use super::*;
 use crate::config::PermissionProfileSnapshot;
-use crate::session::turn_context::TurnEnvironmentConfig;
+use crate::environment_selection::EnvironmentConfigOrigin;
 use crate::tools::approvals::ApprovalCacheKey;
 use codex_exec_server::Environment;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::protocol::EnvironmentConfig;
+use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_utils_path_uri::PathUri;
 use pretty_assertions::assert_eq;
@@ -20,16 +22,20 @@ async fn approval_key_uses_path_uri_and_includes_environment_id() {
                 environment_id: "remote".to_string(),
                 cwd: PathUri::from_abs_path(&cwd),
                 workspace_roots: Vec::new(),
+                config: EnvironmentConfigState::Ready(EnvironmentConfig {
+                    allow_login_shell: true,
+                    permission_profile: PermissionProfileSnapshot::legacy(
+                        PermissionProfile::read_only(),
+                    ),
+                    shell_environment_policy: Default::default(),
+                    exec_policy: None,
+                    network_policy: None,
+                    selected_capability_roots: Vec::new(),
+                }),
             },
+            EnvironmentConfigOrigin::Thread,
             Arc::new(Environment::default_for_tests()),
             /*shell*/ None,
-            TurnEnvironmentConfig {
-                allow_login_shell: true,
-                permission_profile: PermissionProfileSnapshot::legacy(
-                    PermissionProfile::read_only(),
-                ),
-                selected_capability_roots: None,
-            },
         ),
         shell_type: None,
         hook_command: "echo hello".to_string(),

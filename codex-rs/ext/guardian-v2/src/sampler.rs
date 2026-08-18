@@ -1,21 +1,27 @@
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
 use codex_api::ApiError;
 use codex_api::Reasoning;
+use codex_api::ReasoningContext;
 use codex_api::ResponseEvent;
 use codex_api::ResponsesApiRequest;
 use codex_api::ResponsesWebsocketClient;
 use codex_api::ResponsesWebsocketConnection;
 use codex_api::ResponsesWsRequest;
+use codex_api::TransportError;
 use codex_api::build_session_headers;
 use codex_api::create_text_param_for_request;
 use codex_http_client::HttpClientFactory;
 use codex_login::AgentIdentityAuthPolicy;
 use codex_login::CodexAuth;
+use codex_login::UnauthorizedRecovery;
 use codex_login::default_client::add_originator_header;
 use codex_login::default_client::default_headers;
 use codex_model_provider::AgentIdentitySessionFallback;
@@ -27,15 +33,18 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::SessionSource;
 use http::HeaderValue;
+use http::StatusCode;
 use serde_json::Value;
 use thiserror::Error;
 use tokio::sync::OwnedSemaphorePermit;
 use tokio::sync::Semaphore;
+use tokio::sync::oneshot;
 
-const MODEL: &str = "gpt-5.6-luna";
+pub(crate) const MODEL: &str = "gpt-5.6-luna";
 const MAX_OUTPUT_BYTES: usize = 8 * 1024;
 const INITIAL_WEBSOCKET_CONNECTIONS: usize = 2;
-const MAX_WEBSOCKET_CONNECTIONS: usize = 8;
+const MAX_WEBSOCKET_CONNECTIONS: usize = 16;
+const MAX_SAMPLING_RETRIES: usize = 2;
 const MAX_WEBSOCKET_AGE: Duration = Duration::from_secs(55 * 60);
 const RESPONSES_WEBSOCKETS_BETA: &str = "responses_websockets=2026-02-06";
 const RESPONSES_LITE_METADATA_KEY: &str =
@@ -59,14 +68,22 @@ pub struct LunaSamplerConfig {
     pub originator: Option<String>,
     /// Optional inference service tier.
     pub service_tier: Option<String>,
+    /// Luna model's host-resolved encrypted-compaction compatibility hash.
+    pub luna_compaction_hash: Option<String>,
 }
 
 /// One tool-less structured Luna request over an already-open connection.
 pub struct LunaSamplingRequest {
     /// Trusted instructions describing the requested classification.
     pub instructions: String,
-    /// Untrusted input that the model should classify.
-    pub input: String,
+    /// Ordered untrusted input entries that the model should classify.
+    pub input: Vec<String>,
+    /// Optional bounded screenshots accompanying the transcript.
+    pub images: Vec<ContentItem>,
+    /// Opaque parent compaction to reuse only for compatible model configurations.
+    pub parent_compaction: Option<ResponseItem>,
+    /// Current parent model's encrypted-compaction compatibility hash.
+    pub parent_compaction_hash: Option<String>,
     /// Strict JSON schema constraining the model response.
     pub output_schema: Value,
     /// Reasoning budget explicitly selected for this request.
@@ -93,6 +110,9 @@ pub enum LunaSamplerError {
     /// The response exceeded the bounded output limit.
     #[error("Luna response exceeded the output limit")]
     OutputTooLarge,
+    /// A newer classification replaced this request when the pool was full.
+    #[error("Luna request was superseded by a newer classification")]
+    Superseded,
 }
 
 struct PooledConnection {
@@ -115,11 +135,17 @@ impl ConnectionLease {
     }
 }
 
+struct ActiveRequest {
+    supersede: oneshot::Sender<()>,
+    scored: Arc<AtomicBool>,
+}
+
 /// A bounded pool of authenticated Responses WebSockets dedicated to Luna sampling.
 pub struct LunaSampler {
     config: LunaSamplerConfig,
     idle_connections: Arc<Mutex<Vec<PooledConnection>>>,
     capacity: Arc<Semaphore>,
+    active_requests: Mutex<VecDeque<ActiveRequest>>,
 }
 
 impl LunaSampler {
@@ -129,11 +155,11 @@ impl LunaSampler {
             config,
             idle_connections: Arc::new(Mutex::new(Vec::with_capacity(MAX_WEBSOCKET_CONNECTIONS))),
             capacity: Arc::new(Semaphore::new(MAX_WEBSOCKET_CONNECTIONS)),
+            active_requests: Mutex::new(VecDeque::with_capacity(MAX_WEBSOCKET_CONNECTIONS)),
         };
-        for index in 0..INITIAL_WEBSOCKET_CONNECTIONS {
+        for _ in 0..INITIAL_WEBSOCKET_CONNECTIONS {
             let connection = match sampler.open_connection().await {
                 Ok(connection) => connection,
-                Err(error) if index == 0 => return Err(error),
                 Err(_) => break,
             };
             sampler
@@ -170,6 +196,10 @@ impl LunaSampler {
         headers.insert(
             "openai-beta",
             HeaderValue::from_static(RESPONSES_WEBSOCKETS_BETA),
+        );
+        headers.insert(
+            "x-openai-internal-codex-responses-lite",
+            HeaderValue::from_static("true"),
         );
         if let Some(originator) = self.config.originator.as_deref() {
             add_originator_header(&mut headers, originator);
@@ -250,6 +280,63 @@ impl LunaSampler {
         })
     }
 
+    async fn retry_after_failure(
+        &self,
+        error: &LunaSamplerError,
+        auth_recovery: &mut Option<UnauthorizedRecovery>,
+        retries: &mut usize,
+    ) -> bool {
+        let retryable = match error {
+            LunaSamplerError::ConnectionTimeout
+            | LunaSamplerError::Api(
+                ApiError::Retryable { .. } | ApiError::Stream(_) | ApiError::ServerOverloaded,
+            )
+            | LunaSamplerError::Api(ApiError::Transport(
+                TransportError::RetryLimit
+                | TransportError::Timeout
+                | TransportError::Connection(_)
+                | TransportError::Network(_),
+            )) => true,
+            LunaSamplerError::Api(ApiError::Transport(TransportError::Http { status, .. }))
+            | LunaSamplerError::Api(ApiError::Api { status, .. }) => {
+                if *status == StatusCode::UNAUTHORIZED {
+                    let Some(recovery) = auth_recovery.as_mut() else {
+                        return false;
+                    };
+                    if !recovery.has_next() || recovery.next().await.is_err() {
+                        return false;
+                    }
+                    self.idle_connections
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clear();
+                    return true;
+                } else {
+                    status.is_server_error() || *status == StatusCode::TOO_MANY_REQUESTS
+                }
+            }
+            LunaSamplerError::Provider(_)
+            | LunaSamplerError::MissingOutput
+            | LunaSamplerError::OutputTooLarge
+            | LunaSamplerError::Superseded
+            | LunaSamplerError::Api(
+                ApiError::Transport(TransportError::Build(_))
+                | ApiError::ContextWindowExceeded
+                | ApiError::QuotaExceeded
+                | ApiError::UsageNotIncluded
+                | ApiError::RateLimit(_)
+                | ApiError::InvalidRequest { .. }
+                | ApiError::MisalignmentPolicyViolation { .. }
+                | ApiError::CyberPolicy { .. },
+            ) => false,
+        };
+        if retryable && *retries < MAX_SAMPLING_RETRIES {
+            *retries += 1;
+            return true;
+        }
+        false
+    }
+
     /// Sends one structured, tool-less request on an exclusively leased WebSocket.
     pub async fn sample(&self, request: LunaSamplingRequest) -> Result<String, LunaSamplerError> {
         let metadata = HashMap::from([
@@ -258,41 +345,61 @@ impl LunaSampler {
             ("turn_id".to_owned(), request.turn_id),
             (RESPONSES_LITE_METADATA_KEY.to_owned(), "true".to_owned()),
         ]);
+        let mut input = vec![
+            ResponseItem::AdditionalTools {
+                id: None,
+                role: "developer".to_owned(),
+                tools: Vec::new(),
+            },
+            ResponseItem::Message {
+                id: None,
+                role: "developer".to_owned(),
+                content: vec![ContentItem::InputText {
+                    text: request.instructions,
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            },
+        ];
+        if request
+            .parent_compaction_hash
+            .as_deref()
+            .zip(self.config.luna_compaction_hash.as_deref())
+            .is_some_and(|(parent_hash, luna_hash)| {
+                !parent_hash.is_empty() && parent_hash == luna_hash
+            })
+            && let Some(parent_compaction) = request.parent_compaction
+        {
+            input.push(parent_compaction);
+        }
+        input.push(ResponseItem::Message {
+            id: None,
+            role: "user".to_owned(),
+            content: request
+                .input
+                .into_iter()
+                .map(|text| ContentItem::InputText { text })
+                .chain(request.images.into_iter().map(|mut image| {
+                    if let ContentItem::InputImage { detail, .. } = &mut image {
+                        *detail = None;
+                    }
+                    image
+                }))
+                .collect(),
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        });
         let request = ResponsesApiRequest {
             model: MODEL.to_owned(),
             instructions: String::new(),
-            input: vec![
-                ResponseItem::AdditionalTools {
-                    id: None,
-                    role: "developer".to_owned(),
-                    tools: Vec::new(),
-                },
-                ResponseItem::Message {
-                    id: None,
-                    role: "developer".to_owned(),
-                    content: vec![ContentItem::InputText {
-                        text: request.instructions,
-                    }],
-                    phase: None,
-                    internal_chat_message_metadata_passthrough: None,
-                },
-                ResponseItem::Message {
-                    id: None,
-                    role: "user".to_owned(),
-                    content: vec![ContentItem::InputText {
-                        text: request.input,
-                    }],
-                    phase: None,
-                    internal_chat_message_metadata_passthrough: None,
-                },
-            ],
+            input,
             tools: None,
             tool_choice: "none".to_owned(),
             parallel_tool_calls: false,
             reasoning: Some(Reasoning {
                 effort: Some(request.reasoning_effort),
                 summary: None,
-                context: None,
+                context: Some(ReasoningContext::AllTurns),
             }),
             store: false,
             stream: true,
@@ -307,10 +414,52 @@ impl LunaSampler {
             ),
             client_metadata: Some(metadata),
         };
-        let mut retried = false;
+        let (supersede, mut superseded) = oneshot::channel();
+        let scored = Arc::new(AtomicBool::new(false));
+        {
+            let mut active_requests = self
+                .active_requests
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            active_requests.retain(|request| !request.supersede.is_closed());
+            if active_requests.len() == MAX_WEBSOCKET_CONNECTIONS {
+                let oldest_scored = active_requests
+                    .iter()
+                    .position(|request| request.scored.load(Ordering::Relaxed))
+                    .unwrap_or(0);
+                if let Some(oldest) = active_requests.remove(oldest_scored) {
+                    let _ = oldest.supersede.send(());
+                }
+            }
+            active_requests.push_back(ActiveRequest {
+                supersede,
+                scored: Arc::clone(&scored),
+            });
+        }
+        let mut retries = 0;
+        let mut auth_recovery = self
+            .config
+            .provider
+            .auth_manager()
+            .map(|manager| manager.unauthorized_recovery());
         'retry: loop {
-            let lease = self.lease_connection().await?;
-            let mut stream = lease
+            let lease = match tokio::select! {
+                biased;
+                _ = &mut superseded => return Err(LunaSamplerError::Superseded),
+                lease = self.lease_connection() => lease,
+            } {
+                Ok(lease) => lease,
+                Err(error) => {
+                    if self
+                        .retry_after_failure(&error, &mut auth_recovery, &mut retries)
+                        .await
+                    {
+                        continue;
+                    }
+                    return Err(error);
+                }
+            };
+            let mut stream = match lease
                 .connection
                 .connection
                 .stream_request(
@@ -319,48 +468,49 @@ impl LunaSampler {
                     /*turn_state*/ None,
                 )
                 .await
-                .map_err(LunaSamplerError::Api)?;
+            {
+                Ok(stream) => stream,
+                Err(error) => {
+                    let error = LunaSamplerError::Api(error);
+                    if self
+                        .retry_after_failure(&error, &mut auth_recovery, &mut retries)
+                        .await
+                    {
+                        continue;
+                    }
+                    return Err(error);
+                }
+            };
 
             let mut output = String::new();
             let mut deltas = String::new();
-            while let Some(event) = stream.rx_event.recv().await {
+            while let Some(event) = tokio::select! {
+                biased;
+                _ = &mut superseded => {
+                    return if scored.load(Ordering::Relaxed) && !output.is_empty() {
+                        Ok(output)
+                    } else {
+                        Err(LunaSamplerError::Superseded)
+                    };
+                }
+                event = stream.rx_event.recv() => event,
+            } {
                 let event = match event {
                     Ok(event) => event,
-                    Err(error)
-                        if !retried
-                            && matches!(
-                                error,
-                                ApiError::Retryable { .. } | ApiError::Stream(_)
-                            ) =>
-                    {
-                        retried = true;
-                        continue 'retry;
+                    Err(error) => {
+                        let error = LunaSamplerError::Api(error);
+                        if self
+                            .retry_after_failure(&error, &mut auth_recovery, &mut retries)
+                            .await
+                        {
+                            continue 'retry;
+                        }
+                        return Err(error);
                     }
-                    Err(error) => return Err(LunaSamplerError::Api(error)),
                 };
                 match event {
                     ResponseEvent::OutputTextDelta(delta) => {
                         deltas.push_str(&delta);
-                        if deltas.len() > MAX_OUTPUT_BYTES {
-                            return Err(LunaSamplerError::OutputTooLarge);
-                        }
-
-                        if serde_json::from_str::<serde_json::Map<String, Value>>(&deltas).is_ok() {
-                            let mut remaining_events = stream.rx_event;
-                            tokio::spawn(async move {
-                                while let Some(event) = remaining_events.recv().await {
-                                    match event {
-                                        Ok(ResponseEvent::Completed { .. }) => {
-                                            lease.reuse();
-                                            break;
-                                        }
-                                        Err(_) => break,
-                                        _ => {}
-                                    }
-                                }
-                            });
-                            return Ok(deltas);
-                        }
                     }
                     ResponseEvent::OutputItemDone(ResponseItem::Message {
                         role, content, ..
@@ -385,6 +535,33 @@ impl LunaSampler {
                 }
                 if output.len() > MAX_OUTPUT_BYTES || deltas.len() > MAX_OUTPUT_BYTES {
                     return Err(LunaSamplerError::OutputTooLarge);
+                }
+                if !output.is_empty() {
+                    if serde_json::from_str::<serde_json::Map<String, Value>>(&output).is_ok() {
+                        scored.store(true, Ordering::Relaxed);
+                    }
+                    continue;
+                }
+                if serde_json::from_str::<serde_json::Map<String, Value>>(&deltas).is_ok() {
+                    scored.store(true, Ordering::Relaxed);
+                    let mut remaining_events = stream.rx_event;
+                    tokio::spawn(async move {
+                        while let Some(event) = tokio::select! {
+                            biased;
+                            _ = &mut superseded => None,
+                            event = remaining_events.recv() => event,
+                        } {
+                            match event {
+                                Ok(ResponseEvent::Completed { .. }) => {
+                                    lease.reuse();
+                                    break;
+                                }
+                                Err(_) => break,
+                                _ => {}
+                            }
+                        }
+                    });
+                    return Ok(deltas);
                 }
             }
             return Err(LunaSamplerError::MissingOutput);

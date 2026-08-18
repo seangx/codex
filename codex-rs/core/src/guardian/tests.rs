@@ -628,7 +628,7 @@ async fn build_guardian_prompt_includes_parent_turn_denied_reads() -> anyhow::Re
     let TurnEnvironmentState::Ready(environment) = &mut turn.environments.environments[0] else {
         panic!("parent environment should be ready");
     };
-    environment.config.permission_profile =
+    environment.config_mut().permission_profile =
         PermissionProfileSnapshot::legacy(environment_permission_profile);
     environment.selection.workspace_roots = vec![
         PathUri::from_abs_path(&workspace_root),
@@ -1121,10 +1121,12 @@ fn guardian_approval_request_to_json_renders_mcp_tool_call_shape() -> serde_json
 async fn build_guardian_prompt_items_explains_node_repl_review_scope() -> anyhow::Result<()> {
     let (session, mut turn) =
         guardian_test_session_and_turn_with_base_url("http://localhost").await;
-    Arc::get_mut(&mut turn)
-        .expect("turn should be uniquely owned")
-        .model_info
-        .node_repl_auto_review_required = true;
+    Arc::make_mut(
+        &mut Arc::get_mut(&mut turn)
+            .expect("turn should be uniquely owned")
+            .model_info,
+    )
+    .node_repl_auto_review_required = true;
     seed_guardian_parent_history(&session, &turn).await;
     let context = GuardianReviewContext::from(&turn);
 
@@ -1205,7 +1207,7 @@ async fn build_guardian_prompt_items_keeps_other_requests_generic() -> anyhow::R
 
 #[test]
 fn guardian_approval_request_to_json_renders_network_access_trigger() -> serde_json::Result<()> {
-    let cwd = test_path_buf("/repo").abs();
+    let cwd = PathUri::parse("file:///C:/repo").expect("valid Windows path URI");
     let action = GuardianApprovalRequest::NetworkAccess {
         id: "network-1".to_string(),
         turn_id: "turn-1".to_string(),
@@ -1217,7 +1219,7 @@ fn guardian_approval_request_to_json_renders_network_access_trigger() -> serde_j
             call_id: "call-1".to_string(),
             tool_name: "shell".to_string(),
             command: vec!["curl".to_string(), "https://example.com".to_string()],
-            cwd: cwd.clone(),
+            cwd,
             sandbox_permissions: crate::sandboxing::SandboxPermissions::UseDefault,
             additional_permissions: None,
             justification: Some("Fetch the release metadata.".to_string()),
@@ -1237,7 +1239,7 @@ fn guardian_approval_request_to_json_renders_network_access_trigger() -> serde_j
                 "callId": "call-1",
                 "toolName": "shell",
                 "command": ["curl", "https://example.com"],
-                "cwd": cwd.to_string_lossy().to_string(),
+                "cwd": "C:\\repo",
                 "sandboxPermissions": "use_default",
                 "justification": "Fetch the release metadata.",
             },
@@ -1251,7 +1253,7 @@ fn guardian_approval_request_to_json_renders_network_access_trigger() -> serde_j
 async fn build_guardian_prompt_items_explains_network_access_review_scope() -> anyhow::Result<()> {
     let (session, turn) = guardian_test_session_and_turn_with_base_url("http://localhost").await;
     seed_guardian_parent_history(&session, &turn).await;
-    let cwd = test_path_buf("/repo").abs();
+    let cwd = PathUri::from_abs_path(&test_path_buf("/repo").abs());
 
     let prompt = build_guardian_prompt_items(
         session.as_ref(),
@@ -1380,7 +1382,7 @@ fn guardian_request_target_item_id_omits_network_access_trigger_call_id() {
             call_id: "call-1".to_string(),
             tool_name: "shell".to_string(),
             command: vec!["curl".to_string(), "https://example.com".to_string()],
-            cwd: test_path_buf("/repo").abs(),
+            cwd: PathUri::from_abs_path(&test_path_buf("/repo").abs()),
             sandbox_permissions: crate::sandboxing::SandboxPermissions::UseDefault,
             additional_permissions: None,
             justification: None,
@@ -1700,7 +1702,7 @@ async fn guardian_request_model_for_auto_review(
     match catalog {
         GuardianTestCatalog::Bundled => {}
         GuardianTestCatalog::ParentOnly => {
-            let parent_model = turn.model_info.clone();
+            let parent_model = turn.model_info.as_ref().clone();
             let auth_manager = Arc::clone(&session.services.auth_manager);
             let models_manager = StaticModelsManager::new(
                 Some(auth_manager),
@@ -1714,10 +1716,12 @@ async fn guardian_request_model_for_auto_review(
                 .models_manager = Arc::new(models_manager);
         }
     }
-    Arc::get_mut(&mut turn)
-        .expect("turn should be unique")
-        .model_info
-        .auto_review_model_override = auto_review_model_override;
+    Arc::make_mut(
+        &mut Arc::get_mut(&mut turn)
+            .expect("turn should be unique")
+            .model_info,
+    )
+    .auto_review_model_override = auto_review_model_override;
     let parent_model = turn.model_info.slug.clone();
     let preferred_model = turn.provider.approval_review_preferred_model().to_string();
     let parent_turn_id = turn.sub_id.clone();
@@ -1942,7 +1946,8 @@ async fn guardian_review_request_layout_matches_model_visible_request_snapshot()
     session.services.skills_service.clear_cache();
     turn.config = Arc::clone(&config);
     turn.provider = create_model_provider(config.model_provider.clone(), turn.auth_manager.clone());
-    turn.model_info.auto_review_model_override = Some("codex-auto-review".to_string());
+    Arc::make_mut(&mut turn.model_info).auto_review_model_override =
+        Some("codex-auto-review".to_string());
     let session = Arc::new(session);
     let turn = Arc::new(turn);
     seed_guardian_parent_history(&session, &turn).await;
@@ -2186,7 +2191,8 @@ async fn guardian_reuses_prompt_cache_key_and_appends_prior_reviews() -> anyhow:
         .enable(Feature::GuardianReuseParentCompaction)
         .expect("Guardian parent-compaction reuse should be configurable");
     let turn_mut = Arc::get_mut(&mut turn).expect("turn should be unique");
-    turn_mut.model_info.auto_review_model_override = Some("codex-auto-review".to_string());
+    Arc::make_mut(&mut turn_mut.model_info).auto_review_model_override =
+        Some("codex-auto-review".to_string());
     turn_mut.config = Arc::new(config);
     seed_guardian_parent_history(&session, &turn).await;
 
@@ -2981,6 +2987,72 @@ async fn guardian_review_does_not_retry_valid_denial() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn escalated_retry_bypasses_extension_approval_and_runs_guardian() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    struct AutoApprovingReviewContributor;
+
+    impl codex_extension_api::ApprovalReviewContributor for AutoApprovingReviewContributor {
+        fn contribute<'a>(
+            &'a self,
+            _session_store: &'a codex_extension_api::ExtensionData,
+            _thread_store: &'a codex_extension_api::ExtensionData,
+            _prompt: &'a str,
+        ) -> codex_extension_api::ExtensionFuture<'a, Option<ReviewDecision>> {
+            Box::pin(async move { Some(ReviewDecision::Approved) })
+        }
+    }
+
+    let server = start_mock_server().await;
+    let denial = serde_json::json!({
+        "risk_level": "high",
+        "user_authorization": "unknown",
+        "outcome": "deny",
+        "rationale": "The original attempt was blocked by the sandbox.",
+    })
+    .to_string();
+    let request_log = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-escalated-retry"),
+            ev_assistant_message("msg-escalated-retry", &denial),
+            ev_completed("resp-escalated-retry"),
+        ]),
+    )
+    .await;
+
+    let (mut session, turn) = guardian_test_session_and_turn(&server).await;
+    let mut extensions = codex_extension_api::ExtensionRegistryBuilder::<Config>::new();
+    extensions.approval_review_contributor(Arc::new(AutoApprovingReviewContributor));
+    Arc::get_mut(&mut session)
+        .expect("session should be uniquely owned")
+        .services
+        .extensions = Arc::new(extensions.build());
+    seed_guardian_parent_history(&session, &turn).await;
+
+    let retry_reason = "The sandbox blocked the original command.";
+    let decision = review_approval_request(
+        &session,
+        &turn,
+        "review-escalated-retry".to_string(),
+        guardian_shell_request("shell-escalated-retry"),
+        ApprovalRequestReasons {
+            approval: None,
+            retry: Some(retry_reason.to_string()),
+        },
+    )
+    .await;
+
+    assert!(matches!(decision, ReviewDecision::Denied { .. }));
+    assert!(
+        request_log
+            .single_request()
+            .body_contains_text(retry_reason)
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn guardian_ephemeral_retry_preserves_parallel_trunk_and_fork_history() -> anyhow::Result<()>
 {
@@ -3321,7 +3393,7 @@ async fn guardian_review_session_config_clears_context_overrides_for_distinct_ef
 async fn guardian_review_session_config_preserves_context_overrides_for_same_effective_model() {
     let server = start_mock_server().await;
     let (mut session, mut turn) = guardian_test_session_and_turn(&server).await;
-    let parent_model = turn.model_info.clone();
+    let parent_model = turn.model_info.as_ref().clone();
     let auth_manager = Arc::clone(&session.services.auth_manager);
     Arc::get_mut(&mut session)
         .expect("session should be unique")
@@ -3445,7 +3517,7 @@ async fn guardian_review_session_config_uses_live_network_proxy_state() {
 }
 
 #[tokio::test]
-async fn guardian_review_session_config_disables_mcp_apps_plugins_and_memories() {
+async fn guardian_review_session_config_disables_mcp_apps_plugins_memories_and_guardian_v2() {
     let mut parent_config = test_config().await;
     let server: McpServerConfig =
         toml::from_str("command = \"docs-server\"").expect("deserialize MCP server");
@@ -3461,6 +3533,10 @@ async fn guardian_review_session_config_disables_mcp_apps_plugins_and_memories()
         .features
         .enable(Feature::Plugins)
         .expect("plugins feature is configurable");
+    parent_config
+        .features
+        .enable(Feature::GuardianV2)
+        .expect("guardian v2 feature is configurable");
     parent_config.include_apps_instructions = true;
     parent_config.memories.use_memories = true;
     parent_config.memories.dedicated_tools = true;
@@ -3477,6 +3553,7 @@ async fn guardian_review_session_config_disables_mcp_apps_plugins_and_memories()
     assert!(guardian_config.mcp_servers.get().is_empty());
     assert!(!guardian_config.features.enabled(Feature::Apps));
     assert!(!guardian_config.features.enabled(Feature::Plugins));
+    assert!(!guardian_config.features.enabled(Feature::GuardianV2));
     assert!(!guardian_config.include_apps_instructions);
     assert!(!guardian_config.memories.use_memories);
     assert!(!guardian_config.memories.dedicated_tools);

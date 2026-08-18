@@ -81,6 +81,27 @@ impl ToolActivityGroupCell {
         })
     }
 
+    pub(crate) fn is_active(&self) -> bool {
+        self.summary().active
+    }
+
+    pub(crate) fn should_flush(&self) -> bool {
+        !self.is_active()
+            && self.cells.iter().any(|cell| {
+                cell.as_any()
+                    .downcast_ref::<ExecCell>()
+                    .is_some_and(ExecCell::should_flush)
+                    || cell
+                        .as_any()
+                        .downcast_ref::<McpToolCallCell>()
+                        .is_some_and(|tool| tool.success() == Some(false))
+                    || cell
+                        .as_any()
+                        .downcast_ref::<DynamicToolCallCell>()
+                        .is_some_and(DynamicToolCallCell::failed)
+            })
+    }
+
     pub(crate) fn mark_failed(&mut self) {
         for cell in &mut self.cells {
             if let Some(exec) = cell.as_any_mut().downcast_mut::<ExecCell>() {

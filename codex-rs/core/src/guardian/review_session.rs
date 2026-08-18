@@ -21,6 +21,7 @@ use codex_protocol::models::BaseInstructionsProvenance;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ImageDetail;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::models::PermissionProfileSnapshot;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::InputModality;
@@ -28,6 +29,7 @@ use codex_protocol::openai_models::ModelMessages;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::CodexErrorInfo;
+use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
@@ -75,6 +77,7 @@ use super::ApprovalRequestReasons;
 use super::GUARDIAN_REVIEWER_NAME;
 use super::GuardianApprovalRequest;
 use super::GuardianReviewContext;
+#[cfg(test)]
 use super::prompt::BUNDLED_GUARDIAN_POLICY;
 use super::prompt::BUNDLED_GUARDIAN_POLICY_TEMPLATE;
 use super::prompt::GuardianPromptMode;
@@ -1049,8 +1052,27 @@ async fn run_review_on_session(
         .total_token_usage()
         .await
         .unwrap_or_default();
-    let guardian_permission_profile = params.spawn_config.permissions.permission_profile().clone();
-    let parent_turn_environments = params.parent_context.environments().to_selections();
+    let guardian_permission_snapshot = params
+        .spawn_config
+        .permissions
+        .permission_profile_state()
+        .snapshot();
+    // Guardian must receive read-only permissions for every inherited environment.
+    let parent_turn_environments = params
+        .parent_context
+        .environments()
+        .turn_environments()
+        .map(|environment| {
+            let mut selection = environment.selection();
+            let mut config = environment.config().clone();
+            config.permission_profile =
+                PermissionProfileSnapshot::legacy(read_only_guardian_permission_profile(
+                    config.permission_profile.permission_profile(),
+                ));
+            selection.config = EnvironmentConfigState::Ready(config);
+            selection
+        })
+        .collect();
     // TODO(anp): Migrate guardian review thread settings to a PathUri fallback cwd so foreign
     // parent environments do not fall back to the host-native config cwd.
     let parent_turn_legacy_fallback_cwd = params
@@ -1070,7 +1092,7 @@ async fn run_review_on_session(
                 )),
                 approval_policy: Some(AskForApproval::Never),
                 sandbox_policy: None,
-                permission_profile: Some(guardian_permission_profile),
+                permission_profile: Some(guardian_permission_snapshot.permission_profile().clone()),
                 summary: Some(params.reasoning_summary),
                 personality: params.personality,
                 collaboration_mode: Some(codex_protocol::config_types::CollaborationMode {
@@ -1274,6 +1296,16 @@ fn event_matches_turn(event: &Event, expected_turn_id: &str) -> bool {
     }
 }
 
+fn read_only_guardian_permission_profile(
+    permission_profile: &PermissionProfile,
+) -> PermissionProfile {
+    permission_profile
+        .intersect_with_read_only()
+        .unwrap_or(PermissionProfile::External {
+            network: codex_protocol::permissions::NetworkSandboxPolicy::Restricted,
+        })
+}
+
 pub(crate) fn build_guardian_review_session_config(
     parent_config: &Config,
     live_network_config: Option<codex_network_proxy::NetworkProxyConfig>,
@@ -1290,11 +1322,7 @@ pub(crate) fn build_guardian_review_session_config(
     guardian_config.memories.use_memories = false;
     guardian_config.memories.dedicated_tools = false;
     let catalog_auto_review = model_messages.and_then(|messages| messages.auto_review.as_ref());
-    let tenant_policy_config = parent_config
-        .guardian_policy_config
-        .as_deref()
-        .or_else(|| catalog_auto_review.and_then(|messages| messages.policy.as_deref()))
-        .unwrap_or(BUNDLED_GUARDIAN_POLICY);
+    let tenant_policy_config = parent_config.resolve_guardian_policy(model_messages);
     let policy_template = catalog_auto_review
         .and_then(|messages| messages.policy_template.as_deref())
         .unwrap_or(BUNDLED_GUARDIAN_POLICY_TEMPLATE);
@@ -1306,13 +1334,8 @@ pub(crate) fn build_guardian_review_session_config(
     guardian_config.notify = None;
     guardian_config.developer_instructions = None;
     guardian_config.permissions.approval_policy = Constrained::allow_only(AskForApproval::Never);
-    let guardian_permission_profile = parent_config
-        .permissions
-        .permission_profile()
-        .intersect_with_read_only()
-        .unwrap_or(PermissionProfile::External {
-            network: codex_protocol::permissions::NetworkSandboxPolicy::Restricted,
-        });
+    let guardian_permission_profile =
+        read_only_guardian_permission_profile(parent_config.permissions.permission_profile());
     guardian_config
         .permissions
         .set_permission_profile(guardian_permission_profile)
@@ -1344,6 +1367,7 @@ pub(crate) fn build_guardian_review_session_config(
     for feature in [
         Feature::Collab,
         Feature::MultiAgentV2,
+        Feature::GuardianV2,
         Feature::CodexHooks,
         Feature::Apps,
         Feature::Plugins,
@@ -1810,7 +1834,9 @@ mod tests {
                 policy_template: Some(catalog_template.to_string()),
             }),
             permissions: None,
+            multi_agent: None,
             token_budget: None,
+            guardian_v2: None,
         };
 
         let guardian_config = build_guardian_review_session_config(
@@ -1844,7 +1870,9 @@ mod tests {
                 policy_template: None,
             }),
             permissions: None,
+            multi_agent: None,
             token_budget: None,
+            guardian_v2: None,
         };
 
         let guardian_config = build_guardian_review_session_config(
@@ -1886,7 +1914,9 @@ mod tests {
                 policy_template: Some(String::new()),
             }),
             permissions: None,
+            multi_agent: None,
             token_budget: None,
+            guardian_v2: None,
         };
 
         let guardian_config = build_guardian_review_session_config(

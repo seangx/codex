@@ -15,13 +15,14 @@
 //! recomputed. `ChatWidget` is responsible for producing a key that changes when the active cell
 //! mutates in place or when its transcript output is time-dependent.
 
+mod scrolling;
+
 use std::io::Result;
 use std::sync::Arc;
 
 use crate::chatwidget::ActiveCellTranscriptKey;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::SessionInfoCell;
-use crate::history_cell::UserHistoryCell;
 use crate::key_hint;
 use crate::key_hint::KeyBinding;
 use crate::key_hint::KeyBindingListExt;
@@ -30,10 +31,7 @@ use crate::keymap::PagerKeymap;
 use crate::render::Insets;
 use crate::render::renderable::InsetRenderable;
 use crate::render::renderable::Renderable;
-use crate::style::user_message_accent_style;
 use crate::terminal_hyperlinks::HyperlinkLine;
-use crate::terminal_hyperlinks::mark_buffer_hyperlinks;
-use crate::terminal_hyperlinks::visible_lines_ref;
 use crate::tui;
 use crate::tui::TuiEvent;
 use crossterm::event::KeyCode;
@@ -41,7 +39,6 @@ use crossterm::event::KeyEvent;
 use ratatui::buffer::Buffer;
 use ratatui::buffer::Cell;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::text::Span;
@@ -50,6 +47,11 @@ use ratatui::widgets::Clear;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
 use ratatui::widgets::Wrap;
+use scrolling::CellRenderable;
+use scrolling::HyperlinkLinesRenderable;
+use scrolling::render_offset_content;
+#[cfg(test)]
+use scrolling::user_history_overlay_style;
 
 pub(crate) enum Overlay {
     Transcript(TranscriptOverlay),
@@ -462,6 +464,11 @@ impl Renderable for CachedRenderable {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         self.renderable.render(area, buf);
     }
+
+    fn render_scrolled(&self, area: Rect, buf: &mut Buffer, scroll_offset: u16) -> bool {
+        self.renderable.render_scrolled(area, buf, scroll_offset)
+    }
+
     fn desired_height(&self, width: u16) -> u16 {
         if self.last_width.get() != Some(width) {
             let height = self.renderable.desired_height(width);
@@ -472,73 +479,11 @@ impl Renderable for CachedRenderable {
     }
 }
 
-struct CellRenderable {
-    cell: Arc<dyn HistoryCell>,
-    highlighted: bool,
-    content: TranscriptContent,
-}
-
-fn user_history_overlay_style(highlighted: bool) -> Style {
-    if highlighted {
-        user_message_accent_style().reversed()
-    } else {
-        Style::default()
-    }
-}
-
-impl Renderable for CellRenderable {
-    fn render(&self, area: Rect, buf: &mut Buffer) {
-        let hyperlink_lines = match self.content {
-            TranscriptContent::Full => self.cell.transcript_hyperlink_lines(area.width),
-            TranscriptContent::Compact => self.cell.display_hyperlink_lines(area.width),
-        };
-        let style = if self.cell.as_any().is::<UserHistoryCell>() {
-            user_history_overlay_style(self.highlighted)
-        } else {
-            Style::default()
-        };
-        let p = Paragraph::new(Text::from(visible_lines_ref(&hyperlink_lines)))
-            .style(style)
-            .wrap(Wrap { trim: false });
-        p.render(area, buf);
-        mark_buffer_hyperlinks(buf, area, &hyperlink_lines, /*scroll_rows*/ 0);
-    }
-
-    fn desired_height(&self, width: u16) -> u16 {
-        match self.content {
-            TranscriptContent::Full => self.cell.desired_transcript_height(width),
-            TranscriptContent::Compact => self.cell.desired_height(width),
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TranscriptContent {
+pub(super) enum TranscriptContent {
     Full,
     Compact,
 }
-
-struct HyperlinkLinesRenderable {
-    lines: Vec<HyperlinkLine>,
-}
-
-impl Renderable for HyperlinkLinesRenderable {
-    fn render(&self, area: Rect, buf: &mut Buffer) {
-        Paragraph::new(Text::from(visible_lines_ref(&self.lines)))
-            .wrap(Wrap { trim: false })
-            .render(area, buf);
-        mark_buffer_hyperlinks(buf, area, &self.lines, /*scroll_rows*/ 0);
-    }
-
-    fn desired_height(&self, width: u16) -> u16 {
-        Paragraph::new(Text::from(visible_lines_ref(&self.lines)))
-            .wrap(Wrap { trim: false })
-            .line_count(width)
-            .try_into()
-            .unwrap_or(/*default*/ 0)
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum TranscriptHistoryState {
     #[default]
@@ -1186,33 +1131,6 @@ impl StaticOverlay {
     }
 }
 
-fn render_offset_content(
-    area: Rect,
-    buf: &mut Buffer,
-    renderable: &dyn Renderable,
-    scroll_offset: u16,
-) -> u16 {
-    let height = renderable.desired_height(area.width);
-    let mut tall_buf = Buffer::empty(Rect::new(
-        0,
-        0,
-        area.width,
-        height.min(area.height + scroll_offset),
-    ));
-    renderable.render(*tall_buf.area(), &mut tall_buf);
-    let copy_height = area
-        .height
-        .min(tall_buf.area().height.saturating_sub(scroll_offset));
-    for y in 0..copy_height {
-        let src_y = y + scroll_offset;
-        for x in 0..area.width {
-            buf[(area.x + x, area.y + y)] = tall_buf[(x, src_y)].clone();
-        }
-    }
-
-    copy_height
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1232,9 +1150,11 @@ mod tests {
     use crate::history_cell;
     use crate::history_cell::HistoryCell;
     use crate::history_cell::new_patch_event;
+    use crate::style::user_message_accent_style;
     use codex_protocol::parse_command::ParsedCommand;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::style::Style;
     use ratatui::text::Span;
     use ratatui::text::Text;
     use url::Url;

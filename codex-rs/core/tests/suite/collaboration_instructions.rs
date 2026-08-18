@@ -70,7 +70,9 @@ fn model_with_collaboration_messages(
         collaboration_modes: None,
         auto_review: None,
         permissions: None,
+        multi_agent: None,
         token_budget: None,
+        guardian_v2: None,
     });
     model_messages.collaboration_modes = Some(CollaborationModeMessages {
         default: default.map(str::to_string),

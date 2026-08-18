@@ -2,10 +2,10 @@ use super::*;
 use crate::config::ConfigBuilder;
 use crate::config::PermissionProfileSnapshot;
 use crate::context::ContextualUserFragment;
+use crate::environment_selection::EnvironmentConfigOrigin;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::environment_selection::TurnEnvironmentState;
 use crate::session::turn_context::TurnEnvironment;
-use crate::session::turn_context::TurnEnvironmentConfig;
 use codex_config::ConfigLayerEntry;
 use codex_config::ConfigLayerStack;
 use codex_config::ConfigRequirements;
@@ -23,6 +23,8 @@ use codex_exec_server::RemoveOptions;
 use codex_extension_api::UserInstructions;
 use codex_features::Feature;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::protocol::EnvironmentConfig;
+use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
@@ -337,19 +339,23 @@ fn resolved_local_environments<const N: usize>(
                         environment_id: environment_id.to_string(),
                         cwd: PathUri::from_abs_path(&cwd),
                         workspace_roots: Vec::new(),
+                        config: EnvironmentConfigState::Ready(EnvironmentConfig {
+                            allow_login_shell: true,
+                            permission_profile: PermissionProfileSnapshot::legacy(
+                                PermissionProfile::read_only(),
+                            ),
+                            shell_environment_policy: Default::default(),
+                            exec_policy: None,
+                            network_policy: None,
+                            selected_capability_roots: Vec::new(),
+                        }),
                     },
+                    EnvironmentConfigOrigin::Thread,
                     Arc::new(
                         Environment::create_for_tests(/*exec_server_url*/ None)
                             .expect("local environment"),
                     ),
                     /*shell*/ None,
-                    TurnEnvironmentConfig {
-                        allow_login_shell: true,
-                        permission_profile: PermissionProfileSnapshot::legacy(
-                            PermissionProfile::read_only(),
-                        ),
-                        selected_capability_roots: None,
-                    },
                 ))
             })
             .collect(),
