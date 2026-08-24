@@ -16,6 +16,7 @@ use crate::inline_visualization::InlineVisualizationContext;
 use codex_app_server_protocol::AddCreditsNudgeCreditType;
 use codex_app_server_protocol::AddCreditsNudgeEmailStatus;
 use codex_app_server_protocol::ConsumeAccountRateLimitResetCreditResponse;
+use codex_app_server_protocol::DynamicToolCallResponse;
 use codex_app_server_protocol::GetAccountRateLimitsResponse;
 use codex_app_server_protocol::GetAccountTokenUsageResponse;
 use codex_app_server_protocol::MarketplaceAddResponse;
@@ -29,6 +30,7 @@ use codex_app_server_protocol::PluginMarketplaceEntry;
 use codex_app_server_protocol::PluginReadParams;
 use codex_app_server_protocol::PluginReadResponse;
 use codex_app_server_protocol::PluginUninstallResponse;
+use codex_app_server_protocol::RequestId as AppServerRequestId;
 use codex_app_server_protocol::SkillsListResponse;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadGoalStatus;
@@ -40,6 +42,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ModelPreset;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_approval_presets::ApprovalPreset;
+use strum_macros::IntoStaticStr;
 use uuid::Uuid;
 
 use crate::app_command::AppCommand;
@@ -193,7 +196,7 @@ pub(crate) enum TranscriptExportDestination {
 }
 
 #[allow(clippy::large_enum_variant)]
-#[derive(Debug)]
+#[derive(Debug, IntoStaticStr)]
 pub(crate) enum AppEvent {
     /// Open the daemon-wide overview of loaded root sessions.
     OpenAgentsOverview,
@@ -286,6 +289,12 @@ pub(crate) enum AppEvent {
         destination: TranscriptExportDestination,
     },
 
+    /// Copy a picker selection while retaining its clipboard lease in the chat widget.
+    CopySelection {
+        text: Arc<str>,
+        label: String,
+    },
+
     /// Persist a submitted prompt in the cross-session message history.
     AppendMessageHistoryEntry {
         thread_id: ThreadId,
@@ -327,6 +336,18 @@ pub(crate) enum AppEvent {
     /// Result of the fresh startup thread that is attached after the input UI is live.
     StartupThreadStarted {
         result: Result<AppServerStartedThread, String>,
+    },
+
+    /// Register a dynamically created background thread before its first turn starts.
+    DynamicToolThreadStarted {
+        thread_id: ThreadId,
+        registered: tokio::sync::oneshot::Sender<()>,
+    },
+
+    /// Return a completed client-owned dynamic tool call to app server.
+    DynamicToolCallCompleted {
+        request_id: AppServerRequestId,
+        response: DynamicToolCallResponse,
     },
 
     /// Clear the terminal UI (screen + scrollback), start a fresh session, and keep the
@@ -945,6 +966,12 @@ pub(crate) enum AppEvent {
         preset: ApprovalPreset,
         return_to_permissions: bool,
         profile_selection: Option<PermissionProfileSelection>,
+    },
+
+    /// Apply a permission shortcut only while its originating thread is displayed.
+    ApplyPermissionShortcut {
+        thread_id: ThreadId,
+        selection: PermissionProfileSelection,
     },
 
     /// Open the Windows world-writable directories warning.

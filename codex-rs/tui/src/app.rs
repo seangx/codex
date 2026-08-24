@@ -219,11 +219,13 @@ mod background_requests;
 mod config_persistence;
 mod connector_mentions;
 mod event_dispatch;
+mod file_change_approvals;
 mod history_pagination;
 mod history_ui;
 mod input;
 mod loaded_threads;
 mod pending_interactive_replay;
+mod permission_shortcuts;
 mod pets;
 mod platform_actions;
 mod plugin_mentions;
@@ -607,6 +609,9 @@ pub(crate) struct App {
     primary_session_configured: Option<ThreadSessionState>,
     pending_primary_events: VecDeque<ThreadBufferedEvent>,
     pending_app_server_requests: PendingAppServerRequests,
+    dynamic_tool_status_updates:
+        tokio::sync::broadcast::Sender<codex_app_server_protocol::ThreadStatusChangedNotification>,
+    dynamic_tool_tasks: HashMap<codex_app_server_protocol::RequestId, (String, JoinHandle<()>)>,
     pending_startup_thread_start: bool,
     /// Keeps protected screens quarantined until initialized chat receives genuine user input.
     startup_protected_input_boundary: bool,
@@ -681,31 +686,6 @@ fn active_turn_steer_race(error: &TypedRequestError) -> Option<ActiveTurnSteerRa
         .strip_suffix('`')?
         .to_string();
     Some(ActiveTurnSteerRace::ExpectedTurnMismatch { actual_turn_id })
-}
-
-fn session_start_error(
-    action: &str,
-    target_session: &SessionTarget,
-    err: color_eyre::eyre::Report,
-) -> color_eyre::eyre::Report {
-    if let Some(message) = archived_session_guidance(&err) {
-        return color_eyre::eyre::eyre!("{message}");
-    }
-
-    let target_label = target_session.display_label();
-    color_eyre::eyre::eyre!("Failed to {action} session from {target_label}: {err}")
-}
-
-fn archived_session_guidance(err: &color_eyre::eyre::Report) -> Option<String> {
-    let err = err.to_string();
-    let message = &err[err.find("session ")?..];
-    if !message.contains(" is archived. Run `codex unarchive ") {
-        return None;
-    }
-    let message = message
-        .split_once(" (code ")
-        .map_or(message, |(message, _)| message);
-    Some(message.to_string())
 }
 
 fn active_turn_interrupt_race(error: &TypedRequestError) -> Option<String> {

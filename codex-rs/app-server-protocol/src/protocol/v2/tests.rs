@@ -144,6 +144,7 @@ fn thread_sources_round_trip_as_scalar_labels() {
     for (source, label) in [
         (ThreadSource::User, "user"),
         (ThreadSource::Subagent, "subagent"),
+        (ThreadSource::GuardianReview, "guardian_review"),
         (
             ThreadSource::Feature("automation".to_string()),
             "automation",
@@ -1996,6 +1997,8 @@ fn config_granular_approval_policy_is_marked_experimental() {
         service_tier: None,
         analytics: None,
         apps: None,
+        browser_use: None,
+        computer_use: None,
         desktop: None,
         additional: HashMap::new(),
     });
@@ -2029,6 +2032,8 @@ fn config_approvals_reviewer_is_marked_experimental() {
         service_tier: None,
         analytics: None,
         apps: None,
+        browser_use: None,
+        computer_use: None,
         desktop: None,
         additional: HashMap::new(),
     });
@@ -2042,6 +2047,7 @@ fn config_requirements_granular_allowed_approval_policy_is_marked_experimental()
         crate::experimental_api::ExperimentalApi::experimental_reason(&ConfigRequirements {
             cli_auth_credentials_store: None,
             chatgpt_base_url: None,
+            additional_developer_instructions: None,
             allowed_approval_policies: Some(vec![AskForApproval::Granular {
                 sandbox_approval: true,
                 rules: true,
@@ -2056,10 +2062,12 @@ fn config_requirements_granular_allowed_approval_policy_is_marked_experimental()
             default_permissions: None,
             allowed_web_search_modes: None,
             allow_managed_hooks_only: None,
+            allow_browser_and_computer_use: None,
             allow_appshots: None,
             allow_remote_control: None,
             computer_use: None,
             browser_use: None,
+            in_app_browser: None,
             feature_requirements: None,
             hooks: None,
             enforce_residency: None,
@@ -2499,6 +2507,7 @@ fn mcp_server_status_serializes_absent_server_info_as_null() {
     let response = ListMcpServerStatusResponse {
         data: vec![McpServerStatus {
             name: "not-ready".to_string(),
+            runtime_status: None,
             plugin_id: None,
             server_info: None,
             tools: HashMap::new(),
@@ -2514,6 +2523,7 @@ fn mcp_server_status_serializes_absent_server_info_as_null() {
         json!({
             "data": [{
                 "name": "not-ready",
+                "runtimeStatus": null,
                 "pluginId": null,
                 "serverInfo": null,
                 "tools": {},
@@ -2523,6 +2533,33 @@ fn mcp_server_status_serializes_absent_server_info_as_null() {
             }],
             "nextCursor": null,
         })
+    );
+}
+
+#[test]
+fn mcp_server_status_accepts_older_inventory_without_runtime_status() {
+    let status: McpServerStatus = serde_json::from_value(json!({
+        "name": "older-server",
+        "pluginId": null,
+        "serverInfo": null,
+        "tools": {},
+        "resources": [],
+        "resourceTemplates": [],
+        "authStatus": "unknown",
+    }))
+    .expect("older app-server inventory should deserialize");
+    assert_eq!(
+        status,
+        McpServerStatus {
+            name: "older-server".to_string(),
+            runtime_status: None,
+            plugin_id: None,
+            server_info: None,
+            tools: HashMap::new(),
+            resources: Vec::new(),
+            resource_templates: Vec::new(),
+            auth_status: McpAuthStatus::Unknown,
+        }
     );
 }
 
@@ -2586,6 +2623,7 @@ fn mcp_server_status_serializes_absent_server_info_metadata_as_null() {
     let response = ListMcpServerStatusResponse {
         data: vec![McpServerStatus {
             name: "initialized".to_string(),
+            runtime_status: None,
             plugin_id: Some("lookup@test".to_string()),
             server_info: Some(McpServerInfo {
                 name: "lookup-server".to_string(),
@@ -2608,6 +2646,7 @@ fn mcp_server_status_serializes_absent_server_info_metadata_as_null() {
         json!({
             "data": [{
                 "name": "initialized",
+                "runtimeStatus": null,
                 "pluginId": "lookup@test",
                 "serverInfo": {
                     "name": "lookup-server",
@@ -2942,6 +2981,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         ],
         phase: None,
         memory_citation: None,
+        delivery: None,
     });
 
     assert_eq!(
@@ -2951,6 +2991,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             text: "Hello world".to_string(),
             phase: None,
             memory_citation: None,
+            delivery: None,
         }
     );
 
@@ -2969,6 +3010,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             }],
             rollout_ids: vec!["rollout-1".to_string()],
         }),
+        delivery: None,
     });
 
     assert_eq!(
@@ -2986,6 +3028,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
                 }],
                 thread_ids: vec!["rollout-1".to_string()],
             }),
+            delivery: None,
         }
     );
 

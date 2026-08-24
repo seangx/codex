@@ -133,11 +133,14 @@ async fn hosted_plugin_runtime_ps_mcp_tool_calls_use_current_auth_manager_token(
         .latest_call_tool(
             CODEX_APPS_MCP_SERVER_NAME,
             "calendar_create_event",
+            /*environment_id*/ None,
             Some(json!({
                 "title": "Lunch",
                 "starts_at": "2026-06-18T12:00:00Z",
             })),
             /*meta*/ None,
+            /*requested_timeout*/ None,
+            /*wait_for_server*/ true,
         )
         .await?;
     assert_eq!(tool_result.is_error, Some(false));

@@ -13,6 +13,7 @@ use crate::config_update::format_config_error;
 use crate::external_agent_config_migration::flow::ExternalAgentConfigMigrationFlowOutcome;
 use crate::pager_overlay::TranscriptHistoryState;
 use crate::session_resume::cwds_differ;
+use codex_app_server_protocol::ThreadGoalStatus;
 #[cfg(target_os = "windows")]
 use codex_config::types::WindowsSandboxModeToml;
 
@@ -25,6 +26,24 @@ impl App {
         app_server: &mut AppServerSession,
         event: AppEvent,
     ) -> Result<AppRunControl> {
+        if self.chat_widget.has_misalignment_policy_violation()
+            && matches!(
+                event,
+                AppEvent::OpenAgentPicker
+                    | AppEvent::SelectAgentThread(_)
+                    | AppEvent::StartSide { .. }
+                    | AppEvent::ForkCurrentSession { .. }
+                    | AppEvent::ForkSessionForPromptEdit { .. }
+                    | AppEvent::SetThreadGoalDraft { .. }
+                    | AppEvent::SetThreadGoalStatus {
+                        status: ThreadGoalStatus::Active,
+                        ..
+                    }
+            )
+        {
+            return Ok(AppRunControl::Continue);
+        }
+
         match event {
             AppEvent::SkillsListLoaded { ref cwd, .. }
             | AppEvent::PluginMentionsLoaded { ref cwd, .. }
@@ -35,6 +54,9 @@ impl App {
                     /*initial_user_message*/ None, name,
                 )
                 .await;
+                if self.chat_widget.has_misalignment_policy_violation() {
+                    self.chat_widget.show_misalignment_policy_precaution();
+                }
             }
             AppEvent::ChangeWorkingDirectory {
                 thread_id,
@@ -78,6 +100,35 @@ impl App {
                 self.handle_startup_thread_started(app_server, result)
                     .await?;
             }
+            AppEvent::DynamicToolThreadStarted {
+                thread_id,
+                registered,
+            } => {
+                self.agents_overview
+                    .dispatched_requests
+                    .entry(thread_id)
+                    .or_default();
+                let _ = registered.send(());
+            }
+            AppEvent::DynamicToolCallCompleted {
+                request_id,
+                response,
+            } => {
+                self.dynamic_tool_tasks.remove(&request_id);
+                match serde_json::to_value(response) {
+                    Ok(result) => {
+                        if let Err(error) = app_server
+                            .resolve_server_request(request_id.clone(), result)
+                            .await
+                        {
+                            tracing::warn!(?request_id, %error, "failed to resolve dynamic tool call");
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(?request_id, %error, "failed to serialize dynamic tool response");
+                    }
+                }
+            }
             AppEvent::RequestOlderScrollbackHistory { thread_id } => {
                 if self.chat_widget.thread_id() == Some(thread_id)
                     && self.overlay.is_none()
@@ -118,6 +169,9 @@ impl App {
                         .set_queue_autosend_suppressed(/*suppressed*/ false);
                     self.chat_widget.maybe_send_next_queued_input();
                 }
+            }
+            AppEvent::CopySelection { text, label } => {
+                self.chat_widget.copy_selection(text, label);
             }
             AppEvent::ClearUi { name } => {
                 self.clear_terminal_ui(tui, /*redraw_header*/ false)?;
@@ -1498,6 +1552,9 @@ impl App {
                     profile_selection,
                 );
             }
+            AppEvent::ApplyPermissionShortcut { thread_id, selection } => {
+                self.apply_permission_shortcut(app_server, tui, thread_id, selection).await;
+            }
             AppEvent::OpenWorldWritableWarningConfirmation {
                 preset,
                 profile_selection,
@@ -2876,6 +2933,25 @@ impl App {
         app_server: &mut AppServerSession,
         mode: ExitMode,
     ) -> AppRunControl {
+        for (request_id, (_, task)) in self.dynamic_tool_tasks.drain() {
+            task.abort();
+            let response = crate::dynamic_tools::failure_response(
+                "TUI disconnected while handling a dynamic tool call",
+            );
+            match serde_json::to_value(response) {
+                Ok(result) => {
+                    if let Err(error) = app_server
+                        .resolve_server_request(request_id.clone(), result)
+                        .await
+                    {
+                        tracing::warn!(?request_id, %error, "failed to cancel dynamic tool call");
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(?request_id, %error, "failed to serialize dynamic tool response")
+                }
+            }
+        }
         match mode {
             ExitMode::ShutdownFirst => {
                 // Mark the thread we are explicitly shutting down for exit so

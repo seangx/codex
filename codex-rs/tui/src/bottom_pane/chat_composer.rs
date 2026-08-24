@@ -77,6 +77,7 @@
 //!
 //! - Expands pending paste placeholders so element ranges align with the final text.
 //! - Trims whitespace and rebases text elements accordingly.
+//! - Treats a leading `!` revealed only by paste expansion as literal model input, not shell input.
 //! - Prunes local attached images so only placeholders that survive expansion are sent.
 //! - Preserves remote image URLs as separate attachments even when text is empty.
 //!
@@ -425,6 +426,8 @@ fn parent_owned_command_is_allowed(command: SlashCommand, args: &str) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueuedInputAction {
     Plain,
+    /// Preserve model-input provenance when paste expansion reveals a leading shell sigil.
+    Literal,
     ParseSlash,
     RunShell,
 }
@@ -554,19 +557,6 @@ pub(crate) struct ComposerDraftSnapshot {
 
 const FOOTER_SPACING_HEIGHT: u16 = 0;
 
-/// Builds the one-line nudge that replaces the ambient footer without adding layout height.
-fn plan_mode_nudge_line() -> Line<'static> {
-    Line::from(vec![
-        "Create a plan?".magenta(),
-        "  ".into(),
-        key_hint::shift(KeyCode::Tab).into(),
-        " use Plan mode".into(),
-        "   ".into(),
-        key_hint::plain(KeyCode::Esc).into(),
-        " dismiss".into(),
-    ])
-}
-
 impl ChatComposer {
     fn slash_input(&self) -> SlashInput<'_> {
         SlashInput::new(
@@ -637,7 +627,6 @@ impl ChatComposer {
                 use_shift_enter_hint,
                 mode: FooterMode::ComposerEmpty,
                 hint_override: None,
-                plan_mode_nudge_visible: false,
                 flash: None,
                 context_window_percent: None,
                 context_window_used_tokens: None,
@@ -744,7 +733,6 @@ impl ChatComposer {
             self.effort_ignition = Some(EffortIgnition::new(tier, style));
             self.effort_animation_style = Some(style);
             if self.footer.status_line_enabled
-                && !self.footer.plan_mode_nudge_visible
                 && let Some(previous) = passive_footer_status_line(&self.footer_props())
             {
                 self.effort_status_line_transition =
@@ -1342,8 +1330,7 @@ impl ChatComposer {
         enabled
     }
 
-    /// Return whether Vim editing is enabled for tests that assert mode transitions.
-    #[cfg(test)]
+    /// Return whether Vim editing is enabled.
     pub(crate) fn is_vim_enabled(&self) -> bool {
         self.draft.textarea.is_vim_enabled()
     }
@@ -1360,14 +1347,7 @@ impl ChatComposer {
     }
 
     fn vim_mode_indicator_span(&self) -> Option<Span<'static>> {
-        self.draft
-            .textarea
-            .vim_mode_label()
-            .map(|label| match label {
-                "Normal" => "Vim: Normal".magenta(),
-                "Insert" => "Vim: Insert".green(),
-                _ => unreachable!(),
-            })
+        self.draft.textarea.vim_mode_indicator_span()
     }
 
     fn mode_indicator_line(&self, show_cycle_hint: bool) -> Option<Line<'static>> {
@@ -1444,23 +1424,6 @@ impl ChatComposer {
     /// `None` restores the default shortcut footer.
     pub(crate) fn set_footer_hint_override(&mut self, items: Option<Vec<(String, String)>>) {
         self.footer.hint_override = items;
-    }
-
-    /// Updates whether the Plan-mode nudge replaces the ambient footer row.
-    ///
-    /// Returns `true` only when the rendered footer can change so callers can avoid scheduling
-    /// redundant redraws while reevaluating nudge policy on routine composer updates.
-    pub(crate) fn set_plan_mode_nudge_visible(&mut self, visible: bool) -> bool {
-        if self.footer.plan_mode_nudge_visible == visible {
-            return false;
-        }
-        self.footer.plan_mode_nudge_visible = visible;
-        true
-    }
-
-    #[cfg(test)]
-    pub(crate) fn plan_mode_nudge_visible(&self) -> bool {
-        self.footer.plan_mode_nudge_visible
     }
 
     pub(crate) fn set_remote_image_urls(&mut self, urls: Vec<String>) {
@@ -3007,13 +2970,29 @@ impl ChatComposer {
         }
         self.draft.recent_submission_mention_bindings = original_mention_bindings.clone();
         if record_history && (!text.is_empty() || !self.attachments.is_empty()) {
+            let preserve_literal_paste = self.slash_commands_enabled()
+                && text.starts_with('!')
+                && !original_input.trim_start().starts_with('!');
+            let (history_text, history_text_elements) = if preserve_literal_paste {
+                let history_text = original_input.trim().to_string();
+                let history_text_elements = Self::trim_text_elements(
+                    &original_input,
+                    &history_text,
+                    original_text_elements,
+                );
+                (history_text, history_text_elements)
+            } else {
+                (text.clone(), text_elements.clone())
+            };
             self.history.record_local_submission(HistoryEntry {
-                text: text.clone(),
-                text_elements: text_elements.clone(),
+                text: history_text,
+                text_elements: history_text_elements,
                 local_image_paths: self.attachments.local_image_paths(),
                 remote_image_urls: self.attachments.remote_image_urls(),
                 mention_bindings: original_mention_bindings,
-                pending_pastes: if pending_paste_handling == PendingPasteHandling::Preserve {
+                pending_pastes: if pending_paste_handling == PendingPasteHandling::Preserve
+                    || preserve_literal_paste
+                {
                     original_pending_pastes.clone()
                 } else {
                     Vec::new()
@@ -3091,6 +3070,10 @@ impl ChatComposer {
             if let Some(pasted) = self.draft.paste_burst.flush_before_modified_input() {
                 self.handle_paste(pasted);
             }
+            let visible_shell_command = self.is_bang_shell_command();
+            let original_input = self.current_text();
+            let original_text_elements = self.current_text_elements();
+            let original_pending_pastes = self.draft.pending_pastes.clone();
             let raw_text = self.draft.textarea.text();
             let defer_slash_validation = self.slash_input().should_parse_on_dequeue(raw_text);
             let preserve_pending_pastes = defer_slash_validation
@@ -3115,7 +3098,20 @@ impl ChatComposer {
                     PendingPasteHandling::Expand
                 },
             ) {
-                let action = slash_input::queued_input_action(&text, defer_slash_validation);
+                let action = if text.starts_with('!') && !visible_shell_command {
+                    QueuedInputAction::Literal
+                } else {
+                    slash_input::queued_input_action(&text, defer_slash_validation)
+                };
+                let (text, text_elements, pending_pastes) = if action == QueuedInputAction::Literal
+                {
+                    let text = original_input.trim().to_string();
+                    let text_elements =
+                        Self::trim_text_elements(&original_input, &text, original_text_elements);
+                    (text, text_elements, original_pending_pastes)
+                } else {
+                    (text, text_elements, pending_pastes)
+                };
                 return (
                     InputResult::Queued {
                         text,
@@ -3152,13 +3148,19 @@ impl ChatComposer {
         if let Some((text, text_elements)) =
             self.prepare_submission_text(/*record_history*/ true)
         {
-            if should_queue {
+            if self.slash_commands_enabled()
+                && text.starts_with('!')
+                && !original_input.trim_start().starts_with('!')
+            {
+                let text = original_input.trim().to_string();
+                let text_elements =
+                    Self::trim_text_elements(&original_input, &text, original_text_elements);
                 (
                     InputResult::Queued {
                         text,
                         text_elements,
-                        action: QueuedInputAction::Plain,
-                        pending_pastes: Vec::new(),
+                        action: QueuedInputAction::Literal,
+                        pending_pastes: original_pending_pastes,
                     },
                     true,
                 )
@@ -4241,7 +4243,6 @@ impl ChatComposer {
         self.footer.quit_shortcut_expires_at = None;
         self.footer.mode = FooterMode::ComposerEmpty;
         self.footer.hint_override = Some(Vec::new());
-        self.footer.plan_mode_nudge_visible = false;
         self.footer.flash = None;
     }
 
@@ -4562,17 +4563,6 @@ impl ChatComposer {
                 };
                 if let Some(line) = self.history_search_footer_line() {
                     render_footer_line(hint_rect, buf, line);
-                } else if self.footer.plan_mode_nudge_visible {
-                    let available_width =
-                        hint_rect.width.saturating_sub(FOOTER_INDENT_COLS as u16) as usize;
-                    render_footer_line(
-                        hint_rect,
-                        buf,
-                        truncate_line_with_ellipsis_if_overflow(
-                            plan_mode_nudge_line(),
-                            available_width,
-                        ),
-                    );
                 } else {
                     let available_width =
                         hint_rect.width.saturating_sub(FOOTER_INDENT_COLS as u16) as usize;

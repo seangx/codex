@@ -120,6 +120,8 @@ mod cwd_prompt;
 mod debug_config;
 mod diff_model;
 mod diff_render;
+mod dynamic_tools;
+mod dynamic_tools_mcp;
 mod exec_cell;
 mod exec_command;
 mod external_agent_config_migration;
@@ -173,6 +175,7 @@ mod session_archive_commands;
 mod session_log;
 mod session_queue_commands;
 mod session_resume;
+mod session_start;
 mod session_state;
 mod skills_helpers;
 mod slash_command;
@@ -198,6 +201,7 @@ mod tooltips;
 mod transcript_reflow;
 mod tui;
 mod ui_consts;
+mod unarchive_prompt;
 pub(crate) mod update_action;
 pub use update_action::UpdateAction;
 #[cfg(not(debug_assertions))]
@@ -2999,6 +3003,15 @@ mod tests {
         )?;
 
         assert_eq!(config_cwd, None);
+        let local_daemon = AppServerTarget::LocalDaemon {
+            endpoint: RemoteAppServerEndpoint::UnixSocket {
+                socket_path: AbsolutePathBuf::relative_to_current_dir("codex.sock")?,
+            },
+        };
+        assert!(uses_remote_workspace_or_environment(
+            &local_daemon,
+            &environment_manager
+        ));
         Ok(())
     }
 
