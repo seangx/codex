@@ -577,7 +577,7 @@ async fn run_session_picker_with_loader(
                         state.handle_paste(pasted);
                     }
                     TuiEvent::Mouse(_) | TuiEvent::MouseScroll(_) => {}
-                    TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) => {
+                    TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) | TuiEvent::FocusGained => {
                         let list_width = list_viewport_width(screen_size.width);
                         let list_height =
                             usize::from(screen_size.height.saturating_sub(PICKER_CHROME_HEIGHT));
@@ -588,6 +588,7 @@ async fn run_session_picker_with_loader(
                             state.open_pending_transcript_if_ready();
                         }
                     }
+                    TuiEvent::FocusLost => {}
                 }
             }
             Some(event) = background_events.next() => {

@@ -401,6 +401,7 @@ impl ThreadHistoryBuilder {
             | RolloutItem::InterAgentCommunicationMetadata { .. }
             | RolloutItem::TurnContext(_)
             | RolloutItem::WorldState(_)
+            | RolloutItem::RealtimeItem(_)
             | RolloutItem::SecurityRiskScore(_)
             | RolloutItem::SessionMeta(_) => {}
         }
@@ -858,6 +859,7 @@ impl ThreadHistoryBuilder {
             transparent_background: None,
             failure: None,
             saved_path: None,
+            imagegen_request_id: None,
         });
         self.upsert_item_in_current_turn(item);
     }
@@ -871,6 +873,7 @@ impl ThreadHistoryBuilder {
             transparent_background: payload.transparent_background,
             failure: payload.failure.clone(),
             saved_path: payload.saved_path.clone(),
+            imagegen_request_id: None,
         });
         self.upsert_item_in_current_turn(item);
     }
@@ -1631,6 +1634,7 @@ mod tests {
     use codex_protocol::items::EnteredReviewModeItem as CoreEnteredReviewModeItem;
     use codex_protocol::items::ExitedReviewModeItem as CoreExitedReviewModeItem;
     use codex_protocol::items::HookPromptFragment as CoreHookPromptFragment;
+    use codex_protocol::items::SubAgentActivityItem as CoreSubAgentActivityItem;
     use codex_protocol::items::TurnItem as CoreTurnItem;
     use codex_protocol::items::UserMessageItem as CoreUserMessageItem;
     use codex_protocol::items::build_hook_prompt_message;
@@ -1654,6 +1658,7 @@ mod tests {
     use codex_protocol::protocol::McpToolCallEndEvent;
     use codex_protocol::protocol::PatchApplyBeginEvent;
     use codex_protocol::protocol::ReviewTarget;
+    use codex_protocol::protocol::SubAgentActivityKind as CoreSubAgentActivityKind;
     use codex_protocol::protocol::ThreadRolledBackEvent;
     use codex_protocol::protocol::TurnAbortReason;
     use codex_protocol::protocol::TurnAbortedEvent;
@@ -2080,6 +2085,7 @@ mod tests {
                         transparent_background: Some(true),
                         failure: None,
                         saved_path: Some(saved_path.clone()),
+                        imagegen_request_id: None,
                     },
                 )),
                 started_at_ms: Some(0),
@@ -2112,6 +2118,7 @@ mod tests {
                 transparent_background: Some(true),
                 failure: None,
                 saved_path: Some(saved_path),
+                imagegen_request_id: None,
             })]
         );
     }
@@ -2429,6 +2436,7 @@ mod tests {
                             },
                         ),
                         saved_path: Some(test_path_buf("/tmp/ig_123.png").abs()),
+                        imagegen_request_id: None,
                     }),
                 ],
             }
@@ -4477,6 +4485,57 @@ mod tests {
         assert_eq!(
             builder.active_turn_snapshot().expect("active turn").items,
             vec![expected_item]
+        );
+    }
+
+    #[test]
+    fn completed_sub_agent_activity_updates_completed_parent_turn() {
+        let child_thread_id = ThreadId::new();
+        let child_path = codex_protocol::AgentPath::root()
+            .join("worker")
+            .expect("worker path");
+        let items = vec![
+            RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "turn-a".into(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            })),
+            RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-a".into(),
+                started_at: None,
+                last_agent_message: None,
+                error: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            })),
+            RolloutItem::EventMsg(EventMsg::ItemCompleted(ItemCompletedEvent {
+                thread_id: ThreadId::new(),
+                turn_id: "turn-a".into(),
+                item: CoreTurnItem::SubAgentActivity(CoreSubAgentActivityItem {
+                    id: "child-turn-completed".into(),
+                    kind: CoreSubAgentActivityKind::Completed,
+                    agent_thread_id: child_thread_id,
+                    agent_path: child_path,
+                }),
+                started_at_ms: None,
+                completed_at_ms: 0,
+            })),
+        ];
+
+        let turns = build_turns_from_rollout_items(&items);
+
+        assert_eq!(turns.len(), 1);
+        assert_eq!(
+            turns[0].items,
+            vec![ThreadItem::SubAgentActivity {
+                id: "child-turn-completed".into(),
+                kind: crate::protocol::v2::SubAgentActivityKind::Completed,
+                agent_thread_id: child_thread_id.to_string(),
+                agent_path: "/root/worker".into(),
+            }]
         );
     }
 

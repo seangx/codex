@@ -491,7 +491,7 @@ impl App {
     ) -> Result<()> {
         if matches!(
             &event,
-            TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_)
+            TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) | TuiEvent::FocusGained
         ) && let Some(Overlay::Transcript(t)) = &mut self.overlay
         {
             if t.is_embedded() {

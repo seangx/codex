@@ -601,6 +601,9 @@
             "background_paginated_rollout_migration": {
               "type": "boolean"
             },
+            "bedrock_setup_wizard": {
+              "type": "boolean"
+            },
             "browser_use": {
               "type": "boolean"
             },
@@ -628,6 +631,9 @@
             "code_mode_only": {
               "type": "boolean"
             },
+            "code_mode_prewarm": {
+              "type": "boolean"
+            },
             "codex_git_commit": {
               "type": "boolean"
             },
@@ -650,6 +656,9 @@
               "type": "boolean"
             },
             "connectors": {
+              "type": "boolean"
+            },
+            "content_item_kinds": {
               "type": "boolean"
             },
             "current_time_reminder": {
@@ -749,6 +758,9 @@
               "type": "boolean"
             },
             "in_app_dictation": {
+              "type": "boolean"
+            },
+            "in_app_local_automation": {
               "type": "boolean"
             },
             "in_app_updates": {
@@ -889,6 +901,9 @@
             "skill_search": {
               "type": "boolean"
             },
+            "skip_host_skill_discovery": {
+              "type": "boolean"
+            },
             "sqlite": {
               "type": "boolean"
             },
@@ -896,6 +911,9 @@
               "type": "boolean"
             },
             "steer": {
+              "type": "boolean"
+            },
+            "step_model_switching": {
               "type": "boolean"
             },
             "telepathy": {
@@ -923,6 +941,9 @@
               "type": "boolean"
             },
             "tool_suggest": {
+              "type": "boolean"
+            },
+            "transcript_v2": {
               "type": "boolean"
             },
             "tui_app_server": {
@@ -1441,6 +1462,10 @@
       "additionalProperties": false,
       "description": "Optional tool-call categories available to the Guardian v2 classifier.",
       "properties": {
+        "computer_use_only": {
+          "description": "Restrict asynchronous classification and fast approvals to browser and computer-use tools.",
+          "type": "boolean"
+        },
         "sandboxed_exec_commands": {
           "description": "Include sandboxed shell command calls in Guardian v2 classification.",
           "type": "boolean"
@@ -1668,6 +1693,13 @@
     },
     "HooksToml": {
       "properties": {
+        "Interrupt": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/MatcherGroup"
+          },
+          "type": "array"
+        },
         "PermissionRequest": {
           "default": [],
           "items": {
@@ -1887,6 +1919,10 @@
           "format": "uint16",
           "minimum": 0.0,
           "type": "integer"
+        },
+        "callback_url": {
+          "description": "Registered callback URL associated with this OAuth client.",
+          "type": "string"
         },
         "client_id": {
           "description": "Explicit OAuth client identifier to present during authorization and token exchange.",
@@ -2373,6 +2409,9 @@
           "type": "boolean"
         },
         "allow_upstream_proxy": {
+          "type": "boolean"
+        },
+        "credential_broker": {
           "type": "boolean"
         },
         "dangerously_allow_all_unix_sockets": {
@@ -3781,6 +3820,7 @@
               "open_line_above": null,
               "open_line_below": null,
               "paste_after": null,
+              "repeat_last_change": null,
               "replace_char": null,
               "start_change_operator": null,
               "start_delete_operator": null,
@@ -4588,6 +4628,7 @@
             "open_line_above": null,
             "open_line_below": null,
             "paste_after": null,
+            "repeat_last_change": null,
             "replace_char": null,
             "start_change_operator": null,
             "start_delete_operator": null,
@@ -4995,6 +5036,14 @@
             }
           ],
           "description": "Paste after cursor (`p`)."
+        },
+        "repeat_last_change": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Repeat the last complete edit (`.`)."
         },
         "replace_char": {
           "allOf": [
@@ -5574,6 +5623,9 @@
         "background_paginated_rollout_migration": {
           "type": "boolean"
         },
+        "bedrock_setup_wizard": {
+          "type": "boolean"
+        },
         "browser_use": {
           "type": "boolean"
         },
@@ -5601,6 +5653,9 @@
         "code_mode_only": {
           "type": "boolean"
         },
+        "code_mode_prewarm": {
+          "type": "boolean"
+        },
         "codex_git_commit": {
           "type": "boolean"
         },
@@ -5623,6 +5678,9 @@
           "type": "boolean"
         },
         "connectors": {
+          "type": "boolean"
+        },
+        "content_item_kinds": {
           "type": "boolean"
         },
         "current_time_reminder": {
@@ -5722,6 +5780,9 @@
           "type": "boolean"
         },
         "in_app_dictation": {
+          "type": "boolean"
+        },
+        "in_app_local_automation": {
           "type": "boolean"
         },
         "in_app_updates": {
@@ -5862,6 +5923,9 @@
         "skill_search": {
           "type": "boolean"
         },
+        "skip_host_skill_discovery": {
+          "type": "boolean"
+        },
         "sqlite": {
           "type": "boolean"
         },
@@ -5869,6 +5933,9 @@
           "type": "boolean"
         },
         "steer": {
+          "type": "boolean"
+        },
+        "step_model_switching": {
           "type": "boolean"
         },
         "telepathy": {
@@ -5896,6 +5963,9 @@
           "type": "boolean"
         },
         "tool_suggest": {
+          "type": "boolean"
+        },
+        "transcript_v2": {
           "type": "boolean"
         },
         "tui_app_server": {

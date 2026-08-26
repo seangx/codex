@@ -116,6 +116,7 @@ use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
 use crate::context::BaseInstructionsFragment;
 use crate::context::ContextualUserFragment;
+use crate::cyber_access_program;
 use crate::feedback_tags;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::subagent_header_value;
@@ -208,6 +209,7 @@ struct ModelClientState {
     session_source: SessionSource,
     originator: String,
     model_verbosity: Option<VerbosityConfig>,
+    content_item_kinds_enabled: bool,
     enable_request_compression: bool,
     include_timing_metrics: bool,
     beta_features_header: Option<String>,
@@ -306,6 +308,7 @@ struct WebsocketSession {
 
 // This is intentionally not a `PartialEq` implementation: request equality includes `input` and
 // `client_metadata`, while websocket reuse compares the input separately and ignores metadata.
+// Access programs are authorized per response, including continuations, without replaying input.
 // Keep the destructuring exhaustive so new request fields require an explicit reuse decision.
 fn responses_request_properties_match(
     previous: &ResponsesApiRequest,
@@ -327,6 +330,7 @@ fn responses_request_properties_match(
         prompt_cache_key: previous_prompt_cache_key,
         text: previous_text,
         client_metadata: _,
+        access_programs: _,
     } = previous;
     let ResponsesApiRequest {
         model: current_model,
@@ -344,6 +348,7 @@ fn responses_request_properties_match(
         prompt_cache_key: current_prompt_cache_key,
         text: current_text,
         client_metadata: _,
+        access_programs: _,
     } = current;
 
     previous_model == current_model
@@ -436,6 +441,7 @@ impl ModelClient {
         session_source: SessionSource,
         originator: String,
         model_verbosity: Option<VerbosityConfig>,
+        content_item_kinds_enabled: bool,
         enable_request_compression: bool,
         include_timing_metrics: bool,
         beta_features_header: Option<String>,
@@ -459,6 +465,7 @@ impl ModelClient {
                 session_source,
                 originator,
                 model_verbosity,
+                content_item_kinds_enabled,
                 enable_request_compression,
                 include_timing_metrics,
                 beta_features_header,
@@ -617,6 +624,10 @@ impl ModelClient {
             service_tier: service_tier.as_deref(),
             prompt_cache_key: prompt_cache_key.as_deref(),
             text,
+            access_programs: cyber_access_program::for_auth(
+                client_setup.auth.as_ref(),
+                prompt.cyber_access_program,
+            ),
         };
 
         let mut extra_headers = ApiHeaderMap::new();
@@ -954,6 +965,7 @@ impl ModelClient {
             prompt_cache_key,
             text,
             client_metadata: Some(responses_metadata.client_metadata()),
+            access_programs: None,
         };
         Ok(request)
     }
@@ -962,6 +974,9 @@ impl ModelClient {
         for item in input {
             if item.id().is_some_and(|id| !id.is_prefixed()) {
                 item.set_id(/*new_id*/ None);
+            }
+            if !self.state.content_item_kinds_enabled {
+                item.clear_content_item_kinds();
             }
         }
     }
@@ -1514,6 +1529,10 @@ impl ModelClientSession {
                     .extra_headers
                     .insert(X_CODEX_ROUTING_HINT_HEADER, header_value);
             }
+            request.access_programs = cyber_access_program::for_auth(
+                client_setup.auth.as_ref(),
+                prompt.cyber_access_program,
+            );
             self.client
                 .prepare_response_items_for_request(&mut request.input);
             let request_session_telemetry =
@@ -1632,6 +1651,10 @@ impl ModelClientSession {
                 service_tier.clone(),
                 responses_metadata,
             )?;
+            request.access_programs = cyber_access_program::for_auth(
+                client_setup.auth.as_ref(),
+                prompt.cyber_access_program,
+            );
             let mut websocket_metadata = responses_metadata.clone();
             websocket_metadata.routing_hint = self.client.build_routing_hint_header(
                 client_setup.auth.as_ref(),
@@ -2219,7 +2242,9 @@ impl AuthRequestTelemetryContext {
         let auth_telemetry = auth_header_telemetry(api_auth);
         Self {
             auth_mode: auth_mode.map(|mode| match mode {
-                AuthMode::ApiKey | AuthMode::BedrockApiKey => "ApiKey",
+                AuthMode::ApiKey | AuthMode::BedrockApiKey | AuthMode::BedrockAccessKeys => {
+                    "ApiKey"
+                }
                 AuthMode::Chatgpt
                 | AuthMode::ChatgptAuthTokens
                 | AuthMode::Headers

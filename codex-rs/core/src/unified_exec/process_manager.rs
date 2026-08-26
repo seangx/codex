@@ -741,7 +741,7 @@ impl UnifiedExecProcessManager {
             truncation_policy: context
                 .step_context
                 .turn
-                .model_info
+                .model_info()
                 .truncation_policy
                 .into(),
             max_output_tokens: request.max_output_tokens,
@@ -1084,6 +1084,9 @@ impl UnifiedExecProcessManager {
             .as_ref()
             .filter(|launch| launch.policy_decision_timeout_ms.is_some())
             .and_then(|_| network.and_then(NetworkProxy::remote_policy_decider));
+        if environment.is_remote() && network.is_some() && network_proxy_launch.is_none() {
+            request.exec_server_enforce_managed_network = false;
+        }
         request.exec_server_network_proxy = network_proxy_launch;
         request.exec_server_env_config = exec_server_env_config;
         request.exec_server_shell_snapshot = shell_snapshot;
@@ -1266,7 +1269,7 @@ impl UnifiedExecProcessManager {
                     approval_policy: turn.approval_policy(),
                     permission_profile: request.turn_environment.permission_profile().clone(),
                     environment_policy: request.turn_environment.config().exec_policy.as_ref(),
-                    windows_sandbox_level: turn.windows_sandbox_level,
+                    windows_sandbox_level: request.turn_environment.config().windows_sandbox_level,
                     sandbox_permissions: if request.additional_permissions_preapproved {
                         crate::sandboxing::SandboxPermissions::UseDefault
                     } else {
