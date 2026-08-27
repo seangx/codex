@@ -48,6 +48,7 @@ const WORKSPACE_KIND_KEY: &str = "workspace_kind";
 pub(crate) struct McpTurnMetadataContext<'a> {
     pub(crate) model: &'a str,
     pub(crate) reasoning_effort: Option<ReasoningEffortConfig>,
+    pub(crate) node_repl_disabled: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -210,6 +211,8 @@ impl TurnMetadataState {
         context: McpTurnMetadataContext<'_>,
     ) -> Option<serde_json::Value> {
         let mut responses_metadata = self.mcp_metadata_template();
+        // Use the issuing step's Node REPL restriction.
+        responses_metadata.node_repl_disabled = Some(context.node_repl_disabled);
         // Never serialize harness-owned tool inventory for external MCP servers.
         responses_metadata.tool_namespaces_info = None;
         let Value::Object(mut metadata) = responses_metadata.turn_metadata_value()? else {
@@ -354,7 +357,8 @@ impl TurnMetadataState {
         *self
             .responses_api_metadata
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = responses_api_metadata;
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            filter_extra_metadata(responses_api_metadata);
     }
 
     pub(crate) fn workspace_kind(&self) -> Option<String> {
@@ -367,6 +371,9 @@ impl TurnMetadataState {
 
     fn responses_metadata_template(&self) -> CodexResponsesMetadata {
         let mut metadata = self.mcp_metadata_template();
+        if metadata.parent_thread_id.is_some() {
+            metadata.forked_from_thread_id = None;
+        }
         metadata.extra.extend(
             self.responses_api_metadata
                 .read()
