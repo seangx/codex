@@ -30,12 +30,9 @@ fn reads_recent_messages_without_loading_the_rollout_prefix() -> io::Result<()> 
     file.flush()?;
 
     let turns = read_recent_legacy_turns(path)?;
-    let items = turns
+    let text = turns
         .into_iter()
         .flat_map(|turn| turn.items)
-        .collect::<Vec<_>>();
-    let text = items
-        .into_iter()
         .filter_map(|item| match item {
             ThreadItem::UserMessage { content, .. } => content.into_iter().find_map(|input| {
                 let UserInput::Text { text, .. } = input else {
