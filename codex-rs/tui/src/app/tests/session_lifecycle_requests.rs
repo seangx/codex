@@ -2276,11 +2276,11 @@ async fn paginated_workflows_never_request_full_thread_history() -> Result<()> {
 }
 
 #[test]
-fn remote_legacy_metadata_only_resume_skips_unbounded_thread_read() -> Result<()> {
+fn remote_legacy_metadata_only_resume_recovers_bounded_tail_without_thread_read() -> Result<()> {
     const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
 
     std::thread::Builder::new()
-        .name("remote-legacy-metadata-resume".to_string())
+        .name("remote-legacy-bounded-resume".to_string())
         .stack_size(TEST_STACK_SIZE_BYTES)
         .spawn(|| {
             let runtime = tokio::runtime::Builder::new_current_thread()
@@ -2310,7 +2310,7 @@ async fn remote_legacy_metadata_only_resume_test() -> Result<()> {
         .await?;
 
     assert_eq!(resumed.session.thread_id, thread_id);
-    assert!(resumed.turns.is_empty());
+    assert!(!resumed.turns.is_empty());
     let resume_params = recorded_params(&requests, "thread/resume");
     assert_eq!(resume_params.len(), 1);
     assert_eq!(resume_params[0]["excludeTurns"], true);
