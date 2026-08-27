@@ -195,8 +195,8 @@ impl AppServerSession {
     ///
     /// Legacy servers expose neither paging method, so embedded legacy threads may use
     /// `thread/read(includeTurns: true)` to preserve their existing history. Remote legacy
-    /// threads can be arbitrarily large and cannot be loaded safely without pagination; when a
-    /// remote resume returns metadata only, keep the live attachment and omit local replay.
+    /// threads can be arbitrarily large and cannot be loaded safely without pagination; recover a
+    /// bounded conversation tail from an accessible rollout path instead.
     pub(crate) async fn hydrate_initial_thread_history(
         &mut self,
         thread: &mut Thread,
@@ -210,10 +210,28 @@ impl AppServerSession {
         if thread.history_mode == ThreadHistoryMode::Legacy {
             if thread.turns.is_empty() {
                 if self.uses_remote_workspace() {
-                    tracing::warn!(
-                        %thread_id,
-                        "remote legacy thread returned metadata-only history; skipping unbounded thread/read(includeTurns=true)"
-                    );
+                    if let Some(path) = thread.path.as_deref() {
+                        match super::legacy_history_tail::load_recent_legacy_turns(path).await {
+                            Ok(turns) => {
+                                tracing::info!(
+                                    %thread_id,
+                                    recovered_turns = turns.len(),
+                                    "recovered bounded recent history for remote legacy thread"
+                                );
+                                thread.turns = turns;
+                            }
+                            Err(err) => tracing::warn!(
+                                %thread_id,
+                                %err,
+                                "failed to recover bounded recent history for remote legacy thread"
+                            ),
+                        }
+                    } else {
+                        tracing::warn!(
+                            %thread_id,
+                            "remote legacy thread returned metadata-only history without an accessible rollout path"
+                        );
+                    }
                 } else {
                     thread.turns = Box::pin(self.thread_read(thread_id, /*include_turns*/ true))
                         .await?

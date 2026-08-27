@@ -15,6 +15,7 @@
 //! recomputed. `ChatWidget` is responsible for producing a key that changes when the active cell
 //! mutates in place or when its transcript output is time-dependent.
 
+mod height_index;
 mod scrolling;
 
 use std::io::Result;
@@ -36,6 +37,7 @@ use crate::tui;
 use crate::tui::TuiEvent;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
+use height_index::HeightIndex;
 use ratatui::buffer::Buffer;
 use ratatui::buffer::Cell;
 use ratatui::layout::Rect;
@@ -162,6 +164,7 @@ fn render_navigation_hints(area: Rect, buf: &mut Buffer, keymap: &PagerKeymap) {
 /// Generic widget for rendering a pager view.
 struct PagerView {
     renderables: Vec<Box<dyn Renderable>>,
+    height_index: HeightIndex,
     scroll_offset: usize,
     title: String,
     keymap: PagerKeymap,
@@ -182,6 +185,7 @@ impl PagerView {
     ) -> Self {
         Self {
             renderables,
+            height_index: HeightIndex::default(),
             scroll_offset,
             title,
             keymap,
@@ -193,10 +197,11 @@ impl PagerView {
     }
 
     fn content_height(&self, width: u16) -> usize {
-        self.renderables
-            .iter()
-            .map(|c| c.desired_height(width) as usize)
-            .sum()
+        self.height_index.total_height(&self.renderables, width)
+    }
+
+    fn invalidate_height_index(&mut self) {
+        self.height_index.invalidate();
     }
 
     fn render(&mut self, area: Rect, buf: &mut Buffer) {
@@ -263,9 +268,14 @@ impl PagerView {
     }
 
     fn render_content(&self, area: Rect, buf: &mut Buffer) {
-        let mut y = -(self.scroll_offset as isize);
+        let (start, mut y) = self.height_index.first_visible(
+            &self.renderables,
+            area.width,
+            self.scroll_offset,
+            area.y,
+        );
         let mut drawn_bottom = area.y;
-        for renderable in &self.renderables {
+        for renderable in &self.renderables[start..] {
             let top = y;
             let height = renderable.desired_height(area.width) as isize;
             y += height;
@@ -426,13 +436,12 @@ impl PagerView {
         if area.height == 0 || idx >= self.renderables.len() {
             return;
         }
-        let first = self
-            .renderables
-            .iter()
-            .take(idx)
-            .map(|r| r.desired_height(area.width) as usize)
-            .sum();
-        let last = first + self.renderables[idx].desired_height(area.width) as usize;
+        let Some((first, last)) = self
+            .height_index
+            .item_bounds(&self.renderables, area.width, idx)
+        else {
+            return;
+        };
         let current_top = self.scroll_offset;
         let current_bottom = current_top.saturating_add(area.height.saturating_sub(1) as usize);
         if first < current_top {
@@ -740,6 +749,7 @@ impl TranscriptOverlay {
             };
             self.view.renderables.push(tail);
         }
+        self.view.invalidate_height_index();
         if follow_bottom {
             self.view.scroll_offset = usize::MAX;
         }
@@ -905,6 +915,7 @@ impl TranscriptOverlay {
                 ));
             }
         }
+        self.view.invalidate_height_index();
         if follow_bottom {
             self.view.scroll_offset = usize::MAX;
         }
@@ -938,6 +949,7 @@ impl TranscriptOverlay {
         if let Some(tail) = tail_renderable {
             self.view.renderables.push(tail);
         }
+        self.view.invalidate_height_index();
     }
 
     /// Removes and returns the cached live-tail renderable, if present.
@@ -1251,6 +1263,23 @@ mod tests {
         }
 
         fn desired_transcript_height(&self, _width: u16) -> u16 {
+            self.height_calls.fetch_add(1, Ordering::Relaxed);
+            1
+        }
+    }
+
+    struct CountingRenderable {
+        height_calls: Arc<AtomicUsize>,
+        render_calls: Arc<AtomicUsize>,
+    }
+
+    impl Renderable for CountingRenderable {
+        fn render(&self, area: Rect, buf: &mut Buffer) {
+            self.render_calls.fetch_add(1, Ordering::Relaxed);
+            "counted".render(area, buf);
+        }
+
+        fn desired_height(&self, _width: u16) -> u16 {
             self.height_calls.fetch_add(1, Ordering::Relaxed);
             1
         }
@@ -2062,6 +2091,40 @@ mod tests {
         );
 
         assert_eq!(pv.content_height(/*width*/ 80), 5);
+    }
+
+    #[test]
+    fn pager_view_reuses_height_index_while_scrolling_long_history() {
+        let height_calls = Arc::new(AtomicUsize::new(0));
+        let render_calls = Arc::new(AtomicUsize::new(0));
+        let renderables = (0..10_000)
+            .map(|_| {
+                Box::new(CountingRenderable {
+                    height_calls: height_calls.clone(),
+                    render_calls: render_calls.clone(),
+                }) as Box<dyn Renderable>
+            })
+            .collect();
+        let mut pager = pager_view(renderables, "T", /*scroll_offset*/ 5_000);
+        let area = Rect::new(0, 0, 24, 8);
+        let mut buffer = Buffer::empty(area);
+
+        pager.render_content_only(area, &mut buffer);
+        let height_calls_after_first_render = height_calls.load(Ordering::Relaxed);
+        let render_calls_after_first_render = render_calls.load(Ordering::Relaxed);
+        pager.scroll_down(area, /*rows*/ 1);
+        pager.render_content_only(area, &mut buffer);
+
+        assert!(
+            height_calls.load(Ordering::Relaxed) - height_calls_after_first_render
+                <= area.height as usize + 1,
+            "scrolling should remeasure only the visible renderables"
+        );
+        assert!(
+            render_calls.load(Ordering::Relaxed) - render_calls_after_first_render
+                <= area.height as usize + 1,
+            "scrolling should render only the visible renderables"
+        );
     }
 
     #[test]
