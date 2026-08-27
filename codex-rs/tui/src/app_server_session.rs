@@ -5,6 +5,7 @@
 
 mod fs;
 mod history;
+mod legacy_history_tail;
 mod rollout_history;
 
 pub(crate) use history::HISTORY_ITEM_PAGE_LIMIT;
