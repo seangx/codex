@@ -283,7 +283,7 @@ impl PagerView {
             if bottom < area.y as isize {
                 continue;
             }
-            if top > area.y as isize + area.height as isize {
+            if top >= area.y as isize + area.height as isize {
                 break;
             }
             if top < 0 {
