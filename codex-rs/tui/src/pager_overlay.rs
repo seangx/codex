@@ -2115,15 +2115,19 @@ mod tests {
         pager.scroll_down(area, /*rows*/ 1);
         pager.render_content_only(area, &mut buffer);
 
+        let additional_height_calls =
+            height_calls.load(Ordering::Relaxed) - height_calls_after_first_render;
+        let additional_render_calls =
+            render_calls.load(Ordering::Relaxed) - render_calls_after_first_render;
         assert!(
-            height_calls.load(Ordering::Relaxed) - height_calls_after_first_render
-                <= area.height as usize + 1,
-            "scrolling should remeasure only the visible renderables"
+            additional_height_calls <= area.height as usize + 1,
+            "scrolling should remeasure only the visible renderables; got \
+             {additional_height_calls} height calls"
         );
         assert!(
-            render_calls.load(Ordering::Relaxed) - render_calls_after_first_render
-                <= area.height as usize + 1,
-            "scrolling should render only the visible renderables"
+            additional_render_calls <= area.height as usize + 1,
+            "scrolling should render only the visible renderables; got {additional_render_calls} \
+             render calls"
         );
     }
 
