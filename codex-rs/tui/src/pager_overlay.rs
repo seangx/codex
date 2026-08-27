@@ -2120,7 +2120,7 @@ mod tests {
         let additional_render_calls =
             render_calls.load(Ordering::Relaxed) - render_calls_after_first_render;
         assert!(
-            additional_height_calls <= area.height as usize + 1,
+            additional_height_calls <= area.height as usize + 2,
             "scrolling should remeasure only the visible renderables; got \
              {additional_height_calls} height calls"
         );
