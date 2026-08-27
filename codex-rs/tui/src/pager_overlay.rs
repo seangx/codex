@@ -277,14 +277,14 @@ impl PagerView {
         let mut drawn_bottom = area.y;
         for renderable in &self.renderables[start..] {
             let top = y;
+            if top >= area.y as isize + area.height as isize {
+                break;
+            }
             let height = renderable.desired_height(area.width) as isize;
             y += height;
             let bottom = y;
             if bottom < area.y as isize {
                 continue;
-            }
-            if top >= area.y as isize + area.height as isize {
-                break;
             }
             if top < 0 {
                 let drawn = render_offset_content(area, buf, &**renderable, (-top) as u16);
