@@ -543,6 +543,7 @@ async fn user_turn_personality_skips_if_feature_disabled() -> anyhow::Result<()>
     let mut builder = test_codex()
         .with_model("exp-codex-personality")
         .with_config(|config| {
+            config.update_plan_enabled = true;
             config
                 .features
                 .disable(Feature::Personality)
@@ -634,6 +635,7 @@ async fn remote_model_friendly_personality_instructions_with_feature() -> anyhow
         upgrade: None,
         model_messages: Some(ModelMessages {
             persistent_instructions: None,
+            tools: None,
             instructions_template: Some("Base instructions\n{{ personality }}\n".to_string()),
             instructions_variables: Some(ModelInstructionsVariables {
                 personality_default: Some(default_personality_message.to_string()),
@@ -646,6 +648,7 @@ async fn remote_model_friendly_personality_instructions_with_feature() -> anyhow
             permissions: None,
             multi_agent: None,
             token_budget: None,
+            confirmation_policies: None,
             guardian_v2: None,
         }),
         include_skills_usage_instructions: false,
@@ -676,6 +679,7 @@ async fn remote_model_friendly_personality_instructions_with_feature() -> anyhow
         model_specialty: None,
         tool_mode: None,
         multi_agent_version: None,
+        multi_agent_reasoning_effort: None,
     };
 
     let _models_mock = mount_models_once(
@@ -761,6 +765,7 @@ async fn user_turn_personality_remote_model_template_includes_update_message() -
         upgrade: None,
         model_messages: Some(ModelMessages {
             persistent_instructions: None,
+            tools: None,
             instructions_template: Some("Base instructions\n{{ personality }}\n".to_string()),
             instructions_variables: Some(ModelInstructionsVariables {
                 personality_default: None,
@@ -773,6 +778,7 @@ async fn user_turn_personality_remote_model_template_includes_update_message() -
             permissions: None,
             multi_agent: None,
             token_budget: None,
+            confirmation_policies: None,
             guardian_v2: None,
         }),
         include_skills_usage_instructions: false,
@@ -803,6 +809,7 @@ async fn user_turn_personality_remote_model_template_includes_update_message() -
         model_specialty: None,
         tool_mode: None,
         multi_agent_version: None,
+        multi_agent_reasoning_effort: None,
     };
 
     let _models_mock = mount_models_once(
