@@ -864,6 +864,7 @@ async fn conversation_webrtc_start_posts_generated_session() -> Result<()> {
         ],
         response_headers: Vec::new(),
         accept_delay: Some(sideband_accept_delay),
+        idle_timeout: None,
         close_after_requests: false,
     }])
     .await;
@@ -1344,6 +1345,7 @@ async fn conversation_webrtc_start_uses_avas_query() -> Result<()> {
         ],
         response_headers: Vec::new(),
         accept_delay: None,
+        idle_timeout: None,
         close_after_requests: false,
     }])
     .await;
@@ -1448,6 +1450,7 @@ async fn conversation_webrtc_default_v1_ignores_configured_v2_voice() -> Result<
         })]],
         response_headers: Vec::new(),
         accept_delay: None,
+        idle_timeout: None,
         close_after_requests: false,
     }])
     .await;
@@ -1591,6 +1594,7 @@ async fn conversation_webrtc_start_uses_configured_call_base_url_for_avas() -> R
         ],
         response_headers: Vec::new(),
         accept_delay: None,
+        idle_timeout: None,
         close_after_requests: false,
     }])
     .await;
@@ -5151,6 +5155,7 @@ async fn inbound_handoff_request_steers_active_turn() -> Result<()> {
         ],
         response_headers: Vec::new(),
         accept_delay: None,
+        idle_timeout: None,
         close_after_requests: false,
     }])
     .await;

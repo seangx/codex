@@ -820,6 +820,89 @@ async fn responses_websocket_reuses_connection_after_session_drop() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_websocket_keepalive_preserves_idle_connection() {
+    skip_if_no_network!();
+
+    let server = start_websocket_server_with_headers(vec![WebSocketConnectionConfig {
+        requests: vec![
+            vec![ev_response_created("resp-1"), ev_completed("resp-1")],
+            vec![ev_response_created("resp-2"), ev_completed("resp-2")],
+        ],
+        response_headers: Vec::new(),
+        accept_delay: None,
+        idle_timeout: Some(Duration::from_millis(175)),
+        close_after_requests: true,
+    }])
+    .await;
+
+    let mut provider = websocket_provider(&server);
+    // The client heartbeat is half the configured stream idle timeout, clamped to 100 ms.
+    provider.stream_idle_timeout_ms = Some(200);
+    let harness = websocket_harness_with_provider_options(
+        provider,
+        /*runtime_metrics_enabled*/ false,
+        /*concurrent_reasoning_summaries_enabled*/ false,
+        /*enabled_features*/ &[],
+    )
+    .await;
+    let mut client_session = harness.client.new_session();
+
+    stream_until_complete(
+        &mut client_session,
+        &harness,
+        &prompt_with_input(vec![message_item("hello")]),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(450)).await;
+    stream_until_complete(
+        &mut client_session,
+        &harness,
+        &prompt_with_input(vec![message_item("again")]),
+    )
+    .await;
+
+    assert_eq!(server.handshakes().len(), 1);
+    assert_eq!(server.single_connection().len(), 2);
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_websocket_reconnects_after_background_pump_closes() {
+    skip_if_no_network!();
+
+    let server = start_websocket_server(vec![
+        vec![vec![ev_response_created("resp-1"), ev_completed("resp-1")]],
+        vec![vec![ev_response_created("resp-2"), ev_completed("resp-2")]],
+    ])
+    .await;
+    let harness = websocket_harness(&server).await;
+    let mut client_session = harness.client.new_session();
+
+    stream_until_complete(
+        &mut client_session,
+        &harness,
+        &prompt_with_input(vec![message_item("hello")]),
+    )
+    .await;
+    // Let the background pump observe the close frame sent after the first scripted response.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    stream_until_complete(
+        &mut client_session,
+        &harness,
+        &prompt_with_input(vec![message_item("again")]),
+    )
+    .await;
+
+    assert_eq!(server.handshakes().len(), 2);
+    assert_eq!(server.connections().len(), 2);
+    assert_eq!(server.connections()[0].len(), 1);
+    assert_eq!(server.connections()[1].len(), 1);
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn responses_websocket_sends_responses_lite_metadata_per_request() {
     skip_if_no_network!();
 
@@ -1493,6 +1576,7 @@ async fn responses_websocket_emits_reasoning_included_event() {
         requests: vec![vec![ev_response_created("resp-1"), ev_completed("resp-1")]],
         response_headers: vec![("X-Reasoning-Included".to_string(), "true".to_string())],
         accept_delay: None,
+        idle_timeout: None,
         close_after_requests: true,
     }])
     .await;
@@ -1569,6 +1653,7 @@ async fn responses_websocket_emits_rate_limit_events() {
         ]],
         response_headers: vec![("X-Reasoning-Included".to_string(), "true".to_string())],
         accept_delay: None,
+        idle_timeout: None,
         close_after_requests: true,
     }])
     .await;
@@ -2373,6 +2458,7 @@ async fn responses_websocket_v2_surfaces_terminal_error_without_close_handshake(
         ],
         response_headers: Vec::new(),
         accept_delay: None,
+        idle_timeout: None,
         close_after_requests: false,
     }])
     .await;

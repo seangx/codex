@@ -565,6 +565,11 @@ pub struct WebSocketConnectionConfig {
     /// Tests use this to force websocket setup into an in-flight state so first-turn warmup paths
     /// can be exercised deterministically.
     pub accept_delay: Option<Duration>,
+    /// Optional maximum interval between incoming websocket frames.
+    ///
+    /// This models a proxy or NAT that drops an otherwise healthy but idle connection. Ping and
+    /// Pong frames count as activity and therefore extend the deadline.
+    pub idle_timeout: Option<Duration>,
     /// Whether the server should send a websocket close frame after all scripted responses.
     ///
     /// Tests can disable this to simulate a peer that surfaces a terminal event but never
@@ -1309,6 +1314,7 @@ pub async fn start_websocket_server(connections: Vec<Vec<Vec<Value>>>) -> WebSoc
             requests,
             response_headers: Vec::new(),
             accept_delay: None,
+            idle_timeout: None,
             close_after_requests: true,
         })
         .collect();
@@ -1408,9 +1414,30 @@ pub async fn start_websocket_server_with_headers(
             };
             let close_after_requests = connection.close_after_requests;
             for request_events in connection.requests {
-                let Some(Ok(message)) = ws_stream.next().await else {
-                    break;
+                let message = loop {
+                    let next_message = if let Some(idle_timeout) = connection.idle_timeout {
+                        match tokio::time::timeout(idle_timeout, ws_stream.next()).await {
+                            Ok(message) => message,
+                            Err(_) => None,
+                        }
+                    } else {
+                        ws_stream.next().await
+                    };
+                    match next_message {
+                        Some(Ok(Message::Ping(payload))) => {
+                            if ws_stream.send(Message::Pong(payload)).await.is_err() {
+                                break None;
+                            }
+                        }
+                        Some(Ok(Message::Pong(_))) => {}
+                        Some(Ok(message)) if parse_ws_request_body(message.clone()).is_some() => {
+                            break Some(message);
+                        }
+                        Some(Ok(_)) => {}
+                        Some(Err(_)) | None => break None,
+                    }
                 };
+                let Some(message) = message else { break };
                 if let Some(body) = parse_ws_request_body(message) {
                     let mut log = requests.lock().unwrap();
                     if let Some(connection_log) = log.get_mut(connection_index) {

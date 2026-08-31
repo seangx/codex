@@ -61,12 +61,14 @@ enum WsCommand {
 }
 
 impl WsStream {
-    fn new(inner: WebSocketConnection) -> Self {
+    fn new(inner: WebSocketConnection, keepalive_interval: Duration) -> Self {
         let (tx_command, mut rx_command) = mpsc::channel::<WsCommand>(32);
         let (tx_message, rx_message) = mpsc::unbounded_channel::<Result<Message, WsError>>();
 
         let pump_task = tokio::spawn(async move {
             let mut inner = inner;
+            let keepalive = tokio::time::sleep(keepalive_interval);
+            tokio::pin!(keepalive);
             loop {
                 tokio::select! {
                     command = rx_command.recv() => {
@@ -77,6 +79,7 @@ impl WsStream {
                             WsCommand::Send { message, tx_result } => {
                                 let result = inner.send(message).await;
                                 let should_break = result.is_err();
+                                keepalive.as_mut().reset(Instant::now() + keepalive_interval);
                                 let _ = tx_result.send(result);
                                 if should_break {
                                     break;
@@ -88,6 +91,7 @@ impl WsStream {
                         let Some(message) = message else {
                             break;
                         };
+                        keepalive.as_mut().reset(Instant::now() + keepalive_interval);
                         match message {
                             Ok(Message::Ping(payload)) => {
                                 if let Err(err) = inner.send(Message::Pong(payload)).await {
@@ -113,6 +117,13 @@ impl WsStream {
                                 break;
                             }
                         }
+                    }
+                    _ = &mut keepalive => {
+                        if let Err(err) = inner.send(Message::Ping(Vec::new().into())).await {
+                            let _ = tx_message.send(Err(err));
+                            break;
+                        }
+                        keepalive.as_mut().reset(Instant::now() + keepalive_interval);
                     }
                 }
             }
@@ -144,6 +155,10 @@ impl WsStream {
     async fn next(&mut self) -> Option<Result<Message, WsError>> {
         self.rx_message.recv().await
     }
+
+    fn is_closed(&self) -> bool {
+        self.tx_command.is_closed() || self.pump_task.is_finished()
+    }
 }
 
 impl Drop for WsStream {
@@ -163,6 +178,8 @@ const PREVIOUS_RESPONSE_NOT_FOUND_MESSAGE: &str =
     "Previous response was not found. Retrying the full request.";
 const RESPONSES_WEBSOCKET_TIMING_KIND: &str = "responsesapi.websocket_timing";
 const RESPONSES_WEBSOCKET_TIMING_EVENT_TARGET: &str = "codex_api::responses_websocket_timing";
+const MAX_RESPONSES_WEBSOCKET_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
+const MIN_RESPONSES_WEBSOCKET_KEEPALIVE_INTERVAL: Duration = Duration::from_millis(100);
 const SESSION_ID_CLIENT_METADATA_KEY: &str = "session_id";
 const THREAD_ID_CLIENT_METADATA_KEY: &str = "thread_id";
 const TURN_ID_CLIENT_METADATA_KEY: &str = "turn_id";
@@ -223,7 +240,11 @@ impl ResponsesWebsocketConnection {
     }
 
     pub async fn is_closed(&self) -> bool {
-        self.stream.lock().await.is_none()
+        self.stream
+            .lock()
+            .await
+            .as_ref()
+            .is_none_or(WsStream::is_closed)
     }
 
     #[instrument(
@@ -411,8 +432,14 @@ impl ResponsesWebsocketClient {
             merge_request_headers(&self.provider.headers, extra_headers, default_headers);
         self.auth.add_auth_headers(&mut headers);
 
-        let (stream, _status, server_reasoning_included, server_model) =
-            connect_websocket(ws_url, headers, http_client_factory, turn_state.clone()).await?;
+        let (stream, _status, server_reasoning_included, server_model) = connect_websocket(
+            ws_url,
+            headers,
+            http_client_factory,
+            turn_state.clone(),
+            websocket_keepalive_interval(self.provider.stream_idle_timeout),
+        )
+        .await?;
         Ok(ResponsesWebsocketConnection::new(
             stream,
             self.provider.stream_idle_timeout,
@@ -451,6 +478,7 @@ impl ResponsesWebsocketClient {
             headers,
             http_client_factory,
             /*turn_state*/ None,
+            websocket_keepalive_interval(self.provider.stream_idle_timeout),
         )
         .await?;
         let immediate_close = tokio::time::timeout(immediate_close_timeout, stream.next())
@@ -507,6 +535,7 @@ async fn connect_websocket(
     headers: HeaderMap,
     http_client_factory: &HttpClientFactory,
     turn_state: Option<Arc<OnceLock<String>>>,
+    keepalive_interval: Duration,
 ) -> Result<(WsStream, StatusCode, bool, Option<String>), ApiError> {
     info!("connecting to websocket: {url}");
 
@@ -549,11 +578,18 @@ async fn connect_websocket(
         let _ = turn_state.set(header_value.to_string());
     }
     Ok((
-        WsStream::new(stream),
+        WsStream::new(stream, keepalive_interval),
         response.status(),
         reasoning_included,
         server_model,
     ))
+}
+
+fn websocket_keepalive_interval(idle_timeout: Duration) -> Duration {
+    idle_timeout.checked_div(2).unwrap_or(idle_timeout).clamp(
+        MIN_RESPONSES_WEBSOCKET_KEEPALIVE_INTERVAL,
+        MAX_RESPONSES_WEBSOCKET_KEEPALIVE_INTERVAL,
+    )
 }
 
 fn websocket_config() -> WebSocketConfig {

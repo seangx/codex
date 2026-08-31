@@ -118,6 +118,7 @@ async fn websocket_turn_state_persists_within_turn_and_resets_after() -> Result<
         ],
         response_headers: Vec::new(),
         accept_delay: None,
+        idle_timeout: None,
         close_after_requests: false,
     }])
     .await;
@@ -229,6 +230,7 @@ async fn websocket_turn_state_is_stable_within_turn() -> Result<()> {
         ],
         response_headers: Vec::new(),
         accept_delay: None,
+        idle_timeout: None,
         close_after_requests: false,
     }])
     .await;

@@ -3,6 +3,7 @@ use super::CompactConversationRequestSettings;
 use super::ModelClient;
 use super::PendingUnauthorizedRetry;
 use super::Prompt;
+use super::StreamCompletionHook;
 use super::UnauthorizedRecoveryExecution;
 use super::X_CODEX_INSTALLATION_ID_HEADER;
 use super::X_CODEX_PARENT_THREAD_ID_HEADER;
@@ -121,6 +122,35 @@ fn test_model_client_with_thread_id(
         /*attestation_provider*/ None,
         HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
     )
+}
+
+fn test_websocket_model_client() -> ModelClient {
+    let provider = ModelProviderInfo::create_openai_provider(Some("https://example.com/v1".into()));
+    ModelClient::new(
+        /*auth_manager*/ None,
+        AgentIdentityAuthPolicy::JwtOnly,
+        ThreadId::new(),
+        provider,
+        SessionSource::Cli,
+        "test_originator".to_string(),
+        /*model_verbosity*/ None,
+        /*content_item_kinds_enabled*/ true,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+        /*concurrent_reasoning_summaries_enabled*/ false,
+        /*attestation_provider*/ None,
+        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+    )
+}
+
+fn expire_websocket_fallback_cooldown(client: &ModelClient) {
+    client
+        .state
+        .websocket_fallback
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .disabled_until = Some(std::time::Instant::now() - Duration::from_millis(1));
 }
 
 #[tokio::test]
@@ -284,6 +314,92 @@ fn test_model_info() -> ModelInfo {
         "experimental_supported_tools": []
     }))
     .expect("deserialize test model info")
+}
+
+#[test]
+fn websocket_fallback_recovers_after_cooldown() {
+    let client = test_websocket_model_client();
+    let model_info = test_model_info();
+    let session_telemetry = test_session_telemetry();
+
+    assert!(client.responses_websocket_enabled());
+    assert!(client.force_http_fallback(&session_telemetry, &model_info));
+    assert!(!client.responses_websocket_enabled());
+
+    expire_websocket_fallback_cooldown(&client);
+
+    assert!(client.responses_websocket_enabled());
+}
+
+#[test]
+fn websocket_fallback_becomes_permanent_after_recovery_budget() {
+    let client = test_websocket_model_client();
+    let model_info = test_model_info();
+    let session_telemetry = test_session_telemetry();
+
+    for _ in 0..super::MAX_WEBSOCKET_FALLBACK_RECOVERY_ATTEMPTS {
+        assert!(client.force_http_fallback(&session_telemetry, &model_info));
+        expire_websocket_fallback_cooldown(&client);
+        assert!(client.responses_websocket_enabled());
+    }
+
+    assert!(client.force_http_fallback(&session_telemetry, &model_info));
+    assert!(!client.responses_websocket_enabled());
+    assert!(
+        client
+            .state
+            .websocket_fallback
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .permanently_disabled
+    );
+}
+
+#[tokio::test]
+async fn only_completed_websocket_response_resets_fallback_budget() {
+    let client = test_websocket_model_client();
+    let model_info = test_model_info();
+    let session_telemetry = test_session_telemetry();
+
+    assert!(client.force_http_fallback(&session_telemetry, &model_info));
+    let incomplete_stream = futures::stream::iter([Ok(ResponseEvent::Created)]);
+    let (mut stream, _) = super::map_response_events(
+        /*upstream_request_id*/ None,
+        incomplete_stream,
+        session_telemetry.clone(),
+        InferenceTraceAttempt::disabled(),
+        test_model_provider(),
+        StreamCompletionHook::WebsocketSuccess(client.clone()),
+    );
+    while stream.next().await.is_some() {}
+    assert!(!client.responses_websocket_enabled());
+
+    let completed_stream = futures::stream::iter([Ok(ResponseEvent::Completed {
+        response_id: "resp-123".to_string(),
+        token_usage: None,
+        usage_metadata: None,
+        end_turn: Some(true),
+    })]);
+    let (mut stream, _) = super::map_response_events(
+        /*upstream_request_id*/ None,
+        completed_stream,
+        session_telemetry,
+        InferenceTraceAttempt::disabled(),
+        test_model_provider(),
+        StreamCompletionHook::WebsocketSuccess(client.clone()),
+    );
+    while stream.next().await.is_some() {}
+
+    assert!(client.responses_websocket_enabled());
+    assert_eq!(
+        client
+            .state
+            .websocket_fallback
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .consecutive_fallbacks,
+        0
+    );
 }
 
 #[test]
@@ -807,6 +923,7 @@ async fn dropped_response_stream_traces_cancelled_partial_output() -> anyhow::Re
         test_session_telemetry(),
         attempt,
         test_model_provider(),
+        StreamCompletionHook::None,
     );
 
     let observed = stream
@@ -858,6 +975,7 @@ async fn response_stream_records_last_model_feedback_ids() {
         test_session_telemetry(),
         InferenceTraceAttempt::disabled(),
         test_model_provider(),
+        StreamCompletionHook::None,
     );
 
     while stream.next().await.is_some() {}
@@ -1079,6 +1197,7 @@ async fn dropped_backpressured_response_stream_traces_cancelled_partial_output()
         test_session_telemetry(),
         attempt,
         test_model_provider(),
+        StreamCompletionHook::None,
     );
 
     // Fill the mapper channel with non-terminal events, then yield one output
