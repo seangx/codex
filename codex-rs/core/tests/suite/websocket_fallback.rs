@@ -109,6 +109,32 @@ async fn wait_for_fallback_request(test: &TestCodex) -> RequestUserInputEvent {
     request
 }
 
+async fn wait_for_fallback_request_with_paused_time(test: &TestCodex) -> RequestUserInputEvent {
+    loop {
+        let event = test
+            .codex
+            .next_event()
+            .await
+            .expect("event stream should remain open");
+        if let EventMsg::RequestUserInput(request) = event.msg {
+            return request;
+        }
+    }
+}
+
+async fn wait_for_turn_complete_with_paused_time(test: &TestCodex) {
+    loop {
+        let event = test
+            .codex
+            .next_event()
+            .await
+            .expect("event stream should remain open");
+        if matches!(event.msg, EventMsg::TurnComplete(_)) {
+            return;
+        }
+    }
+}
+
 async fn answer_fallback_request(
     test: &TestCodex,
     request: RequestUserInputEvent,
@@ -287,7 +313,9 @@ async fn cli_can_keep_reconnecting_with_exponential_delays() -> Result<()> {
     assert_eq!(first_retry.message, "Reconnecting WebSocket in 5s");
 
     tokio::time::advance(Duration::from_secs(5)).await;
-    let second_request = wait_for_fallback_request(&test).await;
+    // `wait_for_event` uses a Tokio timeout. With time paused, that timeout can advance before
+    // the loopback socket accepts the reconnect, so wait directly for the protocol event here.
+    let second_request = wait_for_fallback_request_with_paused_time(&test).await;
     answer_fallback_request(&test, second_request, KEEP_RECONNECTING_LABEL).await?;
     let EventMsg::StreamError(second_retry) = wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::StreamError(_))
@@ -299,10 +327,7 @@ async fn cli_can_keep_reconnecting_with_exponential_delays() -> Result<()> {
     assert_eq!(second_retry.message, "Reconnecting WebSocket in 10s");
 
     tokio::time::advance(Duration::from_secs(10)).await;
-    wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::TurnComplete(_))
-    })
-    .await;
+    wait_for_turn_complete_with_paused_time(&test).await;
     tokio::time::resume();
 
     let connections = server.connections();
