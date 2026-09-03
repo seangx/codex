@@ -116,6 +116,15 @@ impl ChatWidget {
             self.push_tool_activity(cell);
         }
         self.bump_active_cell_revision();
+        let should_flush = self
+            .transcript
+            .active_cell
+            .as_ref()
+            .and_then(|cell| cell.as_any().downcast_ref::<ToolActivityGroupCell>())
+            .is_some_and(ToolActivityGroupCell::should_flush);
+        if should_flush {
+            self.flush_active_cell();
+        }
         self.transcript.had_work_activity = true;
         self.request_redraw();
     }
@@ -125,7 +134,7 @@ impl ChatWidget {
         self.push_tool_activity(history_cell::new_active_web_search_call(
             call_id,
             String::new(),
-            self.config.animations,
+            self.local_settings.tui.animations,
         ));
         self.request_redraw();
     }
@@ -232,7 +241,7 @@ impl ChatWidget {
                 tool,
                 arguments: Some(arguments),
             },
-            self.config.animations,
+            self.local_settings.tui.animations,
         ));
         self.request_redraw();
     }
@@ -283,8 +292,11 @@ impl ChatWidget {
         {
             Some(cell) if cell.call_id() == id => cell.complete(duration, result),
             _ => {
-                let mut cell =
-                    history_cell::new_active_mcp_tool_call(id, invocation, self.config.animations);
+                let mut cell = history_cell::new_active_mcp_tool_call(
+                    id,
+                    invocation,
+                    self.local_settings.tui.animations,
+                );
                 let extra_cell = cell.complete(duration, result);
                 self.push_tool_activity(cell);
                 extra_cell
@@ -295,6 +307,14 @@ impl ChatWidget {
         if let Some(extra) = extra_cell {
             self.flush_active_cell();
             self.add_boxed_history(extra);
+        } else if self
+            .transcript
+            .active_cell
+            .as_ref()
+            .and_then(|cell| cell.as_any().downcast_ref::<ToolActivityGroupCell>())
+            .is_some_and(ToolActivityGroupCell::should_flush)
+        {
+            self.flush_active_cell();
         }
         // Mark that actual work was done (MCP tool call)
         self.transcript.had_work_activity = true;

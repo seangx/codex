@@ -10,9 +10,9 @@ empty (48 columns):
 │ directory: loading                    │
 ╰───────────────────────────────────────╯
 
-
-› Ask Codex to do anything
-
+────────────────────────────────────────────────
+▌ Ask Codex to do anything
+────────────────────────────────────────────────
   ? for shortcuts
 ---
 resuming (48 columns):
@@ -23,9 +23,9 @@ resuming (48 columns):
 │ directory: loading                    │
 ╰───────────────────────────────────────╯
   Resuming session…
-
-› Ask Codex to do anything
-
+────────────────────────────────────────────────
+▌ Ask Codex to do anything
+────────────────────────────────────────────────
   ? for shortcuts
 ---
 forking (48 columns):
@@ -36,9 +36,9 @@ forking (48 columns):
 │ directory: loading                    │
 ╰───────────────────────────────────────╯
   Forking session…
-
-› draft while loading
-
+────────────────────────────────────────────────
+▌ draft while loading
+────────────────────────────────────────────────
 
 ---
 multiline (48 columns):
@@ -49,10 +49,10 @@ multiline (48 columns):
 │ directory: loading                    │
 ╰───────────────────────────────────────╯
 
-
-› first startup line
-  second startup line
-
+────────────────────────────────────────────────
+▌ first startup line
+▌ second startup line
+────────────────────────────────────────────────
 
 ---
 narrow (18 columns):
@@ -63,8 +63,9 @@ narrow (18 columns):
 │ directory: …ng │
 ╰────────────────╯
 
-
-› first startup
-  line
-  second startup
-  line
+──────────────────
+▌ first startup
+▌ line
+▌ second startup
+▌ line
+──────────────────

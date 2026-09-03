@@ -73,6 +73,7 @@ pub(super) async fn run_main_inner(
             /*default_daemon_socket*/ None,
             /*can_reuse_implicit_local_daemon*/ false,
             workload_identity_selected,
+            std::env::var_os(codex_exec_server::CODEX_EXEC_SERVER_URL_ENV_VAR).as_deref(),
         )?;
         let validation_environment_manager =
             if should_load_configured_environments(&loader_overrides, &validation_target) {
@@ -187,6 +188,7 @@ pub(super) async fn run_main_inner(
         default_daemon,
         reuse_implicit_local_daemon,
         workload_identity_selected,
+        std::env::var_os(codex_exec_server::CODEX_EXEC_SERVER_URL_ENV_VAR).as_deref(),
     )?;
     let remote_cwd_override = cli
         .cwd
@@ -400,6 +402,17 @@ pub(super) async fn run_main_inner(
     };
     if let Some(metrics) = otel.as_ref().and_then(codex_otel::OtelProvider::metrics) {
         let _ = codex_otel::record_process_start_once(metrics, otel_originator.as_str());
+        // Count the selected mode once per TUI launch, independently of reconnects.
+        let app_server_mode = match &app_server_target {
+            AppServerTarget::Embedded => "in_process",
+            AppServerTarget::LocalDaemon { .. } => "local_daemon",
+            AppServerTarget::Remote { .. } => "remote",
+        };
+        let _ = metrics.counter(
+            "codex.tui.start",
+            /*inc*/ 1,
+            &[("app_server_mode", app_server_mode)],
+        );
         let telemetry =
             codex_rollout::sqlite_telemetry_recorder(metrics.clone(), otel_originator.as_str());
         let _ = codex_state::install_process_db_telemetry(telemetry);

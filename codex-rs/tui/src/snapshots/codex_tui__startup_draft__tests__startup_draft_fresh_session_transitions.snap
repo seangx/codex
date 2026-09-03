@@ -11,9 +11,9 @@ before:
 │ directory: loading                    │
 ╰───────────────────────────────────────╯
   Resuming session…
-
-› draft while loading
-
+────────────────────────────────────────────────
+▌ draft while loading
+────────────────────────────────────────────────
 
 after:
 ╭───────────────────────────────────────╮
@@ -23,9 +23,9 @@ after:
 │ directory: loading                    │
 ╰───────────────────────────────────────╯
 
-
-› draft while loading
-
+────────────────────────────────────────────────
+▌ draft while loading
+────────────────────────────────────────────────
 
 ---
 fork lookup fallback:
@@ -37,9 +37,9 @@ before:
 │ directory: loading                    │
 ╰───────────────────────────────────────╯
   Forking session…
-
-› draft while loading
-
+────────────────────────────────────────────────
+▌ draft while loading
+────────────────────────────────────────────────
 
 after:
 ╭───────────────────────────────────────╮
@@ -49,9 +49,9 @@ after:
 │ directory: loading                    │
 ╰───────────────────────────────────────╯
 
-
-› draft while loading
-
+────────────────────────────────────────────────
+▌ draft while loading
+────────────────────────────────────────────────
 
 ---
 resume picker cancellation:
@@ -65,9 +65,9 @@ after:
 │ directory: loading                    │
 ╰───────────────────────────────────────╯
 
-
-› Ask Codex to do anything
-
+────────────────────────────────────────────────
+▌ Ask Codex to do anything
+────────────────────────────────────────────────
   ? for shortcuts
 ---
 fork picker cancellation:
@@ -81,7 +81,7 @@ after:
 │ directory: loading                    │
 ╰───────────────────────────────────────╯
 
-
-› Ask Codex to do anything
-
+────────────────────────────────────────────────
+▌ Ask Codex to do anything
+────────────────────────────────────────────────
   ? for shortcuts

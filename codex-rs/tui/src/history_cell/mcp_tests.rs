@@ -227,9 +227,7 @@ fn code_mode_preserves_text_fields_on_nontext_and_unknown_blocks() {
         .join("\n");
     insta::assert_snapshot!(format!("history:\n{display}\n\ntranscript:\n{transcript}"), @r#"
     history:
-    • Called Inspect results
-      └ image-side output
-        unknown-side output
+    • Inspect results
 
     transcript:
     • Called node_repl.js({"title":"Inspect results"})
@@ -277,9 +275,7 @@ fn code_mode_preserves_text_fields_on_nontext_and_unknown_blocks() {
         .join("\n");
     insta::assert_snapshot!(format!("history:\n{display}\n\ntranscript:\n{transcript}"), @r"
     history:
-    • Called cua_repl.js
-      └ image-side output
-        unknown-side output
+    • cua_repl.js
 
     transcript:
     • Called cua_repl.js()

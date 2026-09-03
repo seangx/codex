@@ -10,7 +10,6 @@ impl ChatWidget {
         let Some(wait) = self.unified_exec_wait_streak.take() else {
             return;
         };
-        self.flush_completed_command_activity();
         self.transcript.needs_final_message_separator = true;
         let cell = history_cell::new_unified_exec_interaction(wait.command_display, String::new());
         self.app_event_tx
@@ -315,7 +314,7 @@ impl ChatWidget {
                 parsed_cmd,
                 source,
                 /*interaction_input*/ None,
-                self.config.animations,
+                self.local_settings.tui.animations,
             )));
             self.bump_active_cell_revision();
         } else {
@@ -343,7 +342,7 @@ impl ChatWidget {
                     parsed_cmd,
                     source,
                     /*interaction_input*/ None,
-                    self.config.animations,
+                    self.local_settings.tui.animations,
                 ));
             }
         }
@@ -403,10 +402,10 @@ impl ChatWidget {
         let aggregated_output = aggregated_output.unwrap_or_default();
 
         let running = self.running_commands.remove(&id);
+        let was_running = running.is_some();
         if self.suppressed_exec_calls.remove(&id) {
             return;
         }
-        let was_running = running.is_some();
         let (command, parsed, source) = match running {
             Some(rc) => (rc.command, rc.parsed_cmd, rc.source),
             None => (event_command, event_parsed, source),
@@ -460,6 +459,8 @@ impl ChatWidget {
                     .expect("checked ToolActivityGroupCell type");
                 if group.exec_for_call(&id).is_some() {
                     ExecEndTarget::GroupTracked
+                } else if group.is_active() && source != ExecCommandSource::UnifiedExecStartup {
+                    ExecEndTarget::OrphanHistoryWhileDirectExec
                 } else {
                     ExecEndTarget::AppendToGroup
                 }
@@ -501,6 +502,10 @@ impl ChatWidget {
                 }
             }
             ExecEndTarget::GroupTracked => {
+                let has_active_hook = self
+                    .active_hook_cell
+                    .as_ref()
+                    .is_some_and(HookCell::has_visible_running_run);
                 let should_flush = if let Some(group) = self
                     .transcript
                     .active_cell
@@ -511,7 +516,7 @@ impl ChatWidget {
                         .exec_for_call_mut(&id)
                         .is_some_and(|cell| cell.complete_call(&id, output, duration));
                     debug_assert!(completed, "active tool group should contain {id}");
-                    group.should_flush()
+                    group.should_flush() || (has_active_hook && !group.is_active())
                 } else {
                     false
                 };
@@ -529,7 +534,7 @@ impl ChatWidget {
                     parsed,
                     source,
                     /*interaction_input*/ None,
-                    self.config.animations,
+                    self.local_settings.tui.animations,
                 );
                 let completed = orphan.complete_call(&id, output, duration);
                 debug_assert!(completed, "new orphan exec cell should contain {id}");
@@ -545,7 +550,7 @@ impl ChatWidget {
                     parsed,
                     source,
                     /*interaction_input*/ None,
-                    self.config.animations,
+                    self.local_settings.tui.animations,
                 );
                 let completed = cell.complete_call(&id, output, duration);
                 debug_assert!(completed, "new grouped exec cell should contain {id}");
@@ -565,7 +570,7 @@ impl ChatWidget {
                     parsed,
                     source,
                     /*interaction_input*/ None,
-                    self.config.animations,
+                    self.local_settings.tui.animations,
                 );
                 let completed = cell.complete_call(&id, output, duration);
                 debug_assert!(completed, "new exec cell should contain {id}");

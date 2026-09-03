@@ -106,15 +106,9 @@ impl ExecCell {
             duration: None,
             interaction_input,
         };
-        let has_failed_call = self.calls.iter().any(|existing| {
-            existing
-                .output
-                .as_ref()
-                .is_some_and(|output| output.exit_code != 0)
-        });
         if (self.calls.len() >= MAX_GROUPED_COMMANDS && !self.is_active())
             || (!Self::is_groupable_source(call.source) && !self.is_active())
-            || (has_failed_call && !self.is_active())
+            || (self.has_failed_call() && !self.is_active())
         {
             return false;
         }

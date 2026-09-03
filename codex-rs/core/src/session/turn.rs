@@ -100,7 +100,6 @@ use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::PlanDeltaEvent;
-use codex_protocol::protocol::RawResponseCompletedEvent;
 use codex_protocol::protocol::ReasoningContentDeltaEvent;
 use codex_protocol::protocol::ReasoningRawContentDeltaEvent;
 use codex_protocol::protocol::SafetyBufferingEvent;
@@ -139,6 +138,13 @@ use tracing::warn;
 
 const POST_SAMPLING_TOKEN_ESTIMATE_TARGET: &str = "codex_core::post_sampling_token_estimate";
 
+/// Explicit MCP startup requirements retained across restarts within one user turn.
+#[derive(Default)]
+pub(crate) struct McpStartupRequirements {
+    required_servers: Vec<String>,
+    required_plugins: HashSet<String>,
+}
+
 /// Takes initial turn input and runs a loop where, at each sampling request,
 /// the model replies with either:
 ///
@@ -157,6 +163,7 @@ pub(crate) async fn run_turn(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
     input: Vec<TurnInput>,
+    mcp_startup_requirements: &mut McpStartupRequirements,
     prewarmed_client_session: Option<ModelClientSession>,
     cancellation_token: CancellationToken,
 ) -> CodexResult<Option<String>> {
@@ -193,7 +200,16 @@ pub(crate) async fn run_turn(
     }
 
     let user_input = turn_user_input(&input);
-    let (required_servers, mentioned_plugins) =
+    let allow_plugin_mentions =
+        !crate::guardian::is_basic_session_source(&turn_context.session_source);
+    let McpStartupRequirements {
+        required_servers,
+        required_plugins,
+    } = mcp_startup_requirements;
+    if allow_plugin_mentions {
+        required_plugins.extend(crate::plugins::collect_explicit_plugin_ids(&user_input));
+    }
+    let (input_required_servers, mentioned_plugins) =
         match required_mcp_servers_for_input(&sess, turn_context.as_ref(), &user_input)
             .or_cancel(&cancellation_token)
             .await
@@ -206,12 +222,17 @@ pub(crate) async fn run_turn(
             }
         };
 
+    required_servers.extend(input_required_servers);
+    required_servers.sort_unstable();
+    required_servers.dedup();
+
     // run_turn owns the step used to seed context and make the first sampling request.
     let first_step_context = match sess
         .capture_step_context_with_required_mcp_servers(
             Arc::clone(&turn_context),
             &cancellation_token,
-            &required_servers,
+            required_servers,
+            required_plugins,
         )
         .await
     {
@@ -268,6 +289,15 @@ pub(crate) async fn run_turn(
     let mut can_drain_pending_input = input.is_empty();
     if run_hooks_and_record_inputs(&sess, &turn_context, &input, PersistContext::TurnStart).await {
         return Ok(None);
+    }
+
+    // Only speculate after hooks accept the turn, using its finalized tools and permissions.
+    {
+        let mut state = sess.state.lock().await;
+        if state.shell_snapshot_prewarm.is_none() {
+            state.shell_snapshot_prewarm =
+                sess.prewarm_shell_snapshots(first_step_context.as_ref());
+        }
     }
 
     sess.merge_connector_selection(explicitly_enabled_connectors.clone())
@@ -335,24 +365,38 @@ pub(crate) async fn run_turn(
 
         // Capture once so context, advertised tools, and tool calls share one request view.
         let step_context = match next_step_context.take() {
-            Some(step_context) => step_context,
+            Some(step_context) if pending_input.is_empty() => step_context,
             None if pending_input.is_empty() => {
-                sess.capture_step_context(Arc::clone(&turn_context), &cancellation_token)
-                    .await?
+                sess.capture_step_context_with_required_mcp_servers(
+                    Arc::clone(&turn_context),
+                    &cancellation_token,
+                    required_servers,
+                    required_plugins,
+                )
+                .await?
             }
-            None => {
+            Some(_) | None => {
                 let pending_user_input = turn_user_input(&pending_input);
-                let (required_servers, _) = required_mcp_servers_for_input(
+                if allow_plugin_mentions {
+                    required_plugins.extend(crate::plugins::collect_explicit_plugin_ids(
+                        &pending_user_input,
+                    ));
+                }
+                let (pending_required_servers, _) = required_mcp_servers_for_input(
                     &sess,
                     turn_context.as_ref(),
                     &pending_user_input,
                 )
                 .or_cancel(&cancellation_token)
                 .await?;
+                required_servers.extend(pending_required_servers);
+                required_servers.sort_unstable();
+                required_servers.dedup();
                 sess.capture_step_context_with_required_mcp_servers(
                     Arc::clone(&turn_context),
                     &cancellation_token,
-                    &required_servers,
+                    required_servers,
+                    required_plugins,
                 )
                 .await?
             }
@@ -1021,6 +1065,18 @@ async fn track_turn_resolved_config_analytics(
                 .and_then(ServiceTier::from_request_value),
             approval_policy: turn_context.approval_policy(),
             approvals_reviewer: turn_context.config.approvals_reviewer,
+            guardian_v2_enabled: sess
+                .services
+                .thread_extension_data
+                .get::<codex_extension_api::GuardianV2Enabled>()
+                .is_some_and(|state| {
+                    state.computer_use_only
+                        || !turn_context
+                            .config
+                            .config_layer_stack
+                            .requirements()
+                            .auto_review_required_for_model(&turn_context.model_info().slug)
+                }),
             sandbox_network_access: turn_context.network_sandbox_policy().is_enabled(),
             collaboration_mode: turn_context.mode(),
             personality: turn_context.personality(),
@@ -2068,6 +2124,7 @@ async fn emit_agent_message_in_plan_mode(
                     phase: None,
                     memory_citation: None,
                     delivery: None,
+                    questions: None,
                 })
             });
         sess.emit_turn_item_started(turn_context, &start_item).await;
@@ -2406,6 +2463,7 @@ async fn try_run_sampling_request(
                     | ResponseItem::WebSearchCall { .. }
                     | ResponseItem::ImageGenerationCall { .. }
                     | ResponseItem::Compaction { .. }
+                    | ResponseItem::ConfigurationUpdate { .. }
                     | ResponseItem::CompactionTrigger { .. }
                     | ResponseItem::ContextCompaction { .. }
                     | ResponseItem::Other => false,
@@ -2590,13 +2648,11 @@ async fn try_run_sampling_request(
                     &mut assistant_message_stream_parsers,
                 )
                 .await;
-                sess.send_event(
+                sess.record_observed_response_completed(
                     &turn_context,
-                    EventMsg::RawResponseCompleted(RawResponseCompletedEvent {
-                        response_id,
-                        token_usage: token_usage.clone(),
-                        usage_metadata,
-                    }),
+                    &response_id,
+                    token_usage.as_ref(),
+                    usage_metadata.as_ref(),
                 )
                 .await;
                 let budget_result = sess

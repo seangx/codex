@@ -1386,6 +1386,11 @@ pub struct ThreadListParams {
     /// are returned. When omitted or empty, defaults to interactive sources.
     #[ts(optional = nullable)]
     pub source_kinds: Option<Vec<ThreadSourceKind>>,
+    /// Optional originator allowlist, matching any supplied value exactly.
+    /// Supported by hosted backends only; the local app-server rejects a nonempty list.
+    /// Omitted or empty lists leave originators unrestricted.
+    #[ts(optional = nullable)]
+    pub originators: Option<Vec<String>>,
     /// Optional archived filter; when set to true, only archived threads are returned.
     /// If false or null, only non-archived threads are returned.
     #[ts(optional = nullable)]
@@ -1856,12 +1861,14 @@ pub struct RawResponseCompletedNotification {
 #[ts(export_to = "v2/")]
 pub struct ResponseUsageMetadata {
     pub amount: Option<String>,
+    pub metadata: Option<JsonValue>,
 }
 
 impl From<codex_protocol::ResponseUsageMetadata> for ResponseUsageMetadata {
     fn from(value: codex_protocol::ResponseUsageMetadata) -> Self {
         Self {
             amount: value.amount,
+            metadata: value.metadata,
         }
     }
 }

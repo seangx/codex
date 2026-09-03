@@ -1,3 +1,4 @@
+mod application_requirements;
 mod auth_policy;
 mod browser_computer_use_requirements;
 mod browser_use;
@@ -39,6 +40,8 @@ pub mod types;
 
 pub const CONFIG_TOML_FILE: &str = "config.toml";
 
+pub use application_requirements::ApplicationNetworkRequirementsToml;
+pub use application_requirements::ApplicationRequirementsToml;
 pub use auth_policy::ManagedAuthPolicy;
 pub use browser_computer_use_requirements::AllowDenyRequirementToml;
 pub use browser_computer_use_requirements::BrowserUseAccessApprovalLifetimeToml;
@@ -83,6 +86,8 @@ pub use config_layer_source::ConfigLayerSource;
 pub use config_layer_source::format_config_layer_source;
 pub use config_requirements::AppRequirementToml;
 pub use config_requirements::AppToolRequirementToml;
+pub use config_requirements::AppToolResultSourceFormat;
+pub use config_requirements::AppToolResultSourceRequirementToml;
 pub use config_requirements::AppToolsRequirementsToml;
 pub use config_requirements::AppsRequirementsToml;
 pub use config_requirements::AutoReviewRequirementsToml;
@@ -100,6 +105,7 @@ pub use config_requirements::ModelsRequirementsToml;
 pub use config_requirements::NetworkConstraints;
 pub use config_requirements::NetworkDomainPermissionToml;
 pub use config_requirements::NetworkDomainPermissionsToml;
+pub use config_requirements::NetworkHeaderInjectionToml;
 pub use config_requirements::NetworkRequirementsToml;
 pub use config_requirements::NetworkUnixSocketPermissionToml;
 pub use config_requirements::NetworkUnixSocketPermissionsToml;

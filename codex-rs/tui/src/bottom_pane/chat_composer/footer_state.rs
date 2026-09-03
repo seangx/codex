@@ -1,4 +1,5 @@
 //! Footer and status-row presentation state for the chat composer.
+//! Owners schedule flash expiry redraws; replacing a draft clears its flash.
 
 use std::time::Duration;
 use std::time::Instant;
@@ -10,6 +11,18 @@ use crate::bottom_pane::footer::FooterMode;
 use crate::bottom_pane::footer::GoalStatusIndicator;
 use crate::key_hint::KeyBinding;
 use crate::key_hint::ShortcutHint;
+impl super::ChatComposer {
+    pub(crate) fn footer_flash_delay(&self) -> Option<Duration> {
+        self.footer
+            .flash
+            .as_ref()
+            .and_then(|flash| flash.expires_at.checked_duration_since(Instant::now()))
+    }
+
+    pub(crate) fn show_footer_flash(&mut self, line: Line<'static>, duration: Duration) {
+        self.footer.show_flash(line, duration);
+    }
+}
 
 pub(super) struct FooterState {
     pub(super) quit_shortcut_expires_at: Option<Instant>,

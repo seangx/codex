@@ -2,11 +2,11 @@
 source: tui/src/bottom_pane/chat_composer.rs
 expression: terminal.backend()
 ---
-"                                                                                                    "
-"› @migr                                                                                             "
-"                                                                                                    "
-"                                                                                                    "
-"                                                                                                    "
+"────────────────────────────────────────────────────────────────────────────────────────────────────"
+"▌ @migr                                                                                             "
+"▌                                                                                                   "
+"▌                                                                                                   "
+"────────────────────────────────────────────────────────────────────────────────────────────────────"
 "> Review database migration  /workspace/project                                               Task  "
 "  migration                  /another/project                                                 Task  "
 "                                                                                                    "

@@ -30,6 +30,19 @@ impl App {
         app_server: &mut AppServerSession,
         event: AppEvent,
     ) -> Result<AppRunControl> {
+        if self.reconnect.offline
+            && !matches!(
+                &event,
+                AppEvent::InsertHistoryCell(_)
+                    | AppEvent::AppendMessageHistoryEntry { .. }
+                    | AppEvent::BeginInitialHistoryReplayBuffer
+                    | AppEvent::BeginThreadSwitchHistoryReplayBuffer
+                    | AppEvent::EndInitialHistoryReplayBuffer
+                    | AppEvent::FatalExitRequest(_)
+            )
+        {
+            return Ok(AppRunControl::Continue);
+        }
         if self.chat_widget.has_misalignment_policy_violation()
             && matches!(
                 event,
@@ -49,6 +62,13 @@ impl App {
         }
 
         match event {
+            AppEvent::ReviewMisalignment(review) => {
+                self.open_misalignment_review(tui, review);
+            }
+            AppEvent::ContinueMisalignment(review) => {
+                self.continue_misalignment(app_server, review).await;
+            }
+            AppEvent::CloseMisalignmentReview => self.chat_widget.show_misalignment_policy_precaution(),
             AppEvent::SkillsListLoaded { ref cwd, .. }
             | AppEvent::PluginMentionsLoaded { ref cwd, .. }
                 if cwds_differ(cwd, self.config.cwd.as_path()) => {}
@@ -218,60 +238,7 @@ impl App {
                 .await;
             }
             AppEvent::OpenResumePicker => {
-                let picker_app_server = match crate::start_app_server_for_picker(
-                    &self.config,
-                    &self.app_server_target,
-                    self.state_db.clone(),
-                    self.environment_manager.clone(),
-                )
-                .await
-                {
-                    Ok(app_server) => app_server,
-                    Err(err) => {
-                        self.chat_widget.add_error_message(format!(
-                            "Failed to start TUI session picker: {err}"
-                        ));
-                        self.chat_widget.maybe_send_next_queued_input();
-                        return Ok(AppRunControl::Continue);
-                    }
-                };
-                match crate::resume_picker::run_resume_picker_from_existing_session_with_app_server(
-                    tui,
-                    &self.config,
-                    /*show_all*/ false,
-                    /*include_non_interactive*/ false,
-                    picker_app_server,
-                    app_server.request_handle(),
-                    self.primary_thread_id
-                        .or(self.current_displayed_thread_id()),
-                )
-                .await?
-                {
-                    SessionSelection::Resume(target_session) => {
-                        match self
-                            .resume_target_session(tui, app_server, target_session)
-                            .await?
-                        {
-                            AppRunControl::Continue => {}
-                            AppRunControl::Exit(reason) => {
-                                return Ok(AppRunControl::Exit(reason));
-                            }
-                        }
-                    }
-                    SessionSelection::Exit
-                    | SessionSelection::StartFresh
-                    | SessionSelection::AgentsOverview => {
-                        self.refresh_in_memory_config_from_disk_best_effort(
-                            "closing the session picker",
-                        )
-                        .await;
-                    }
-                    SessionSelection::Fork(_) => {}
-                }
-
-                self.chat_widget.maybe_send_next_queued_input();
-                // Leaving alt-screen may blank the inline viewport; force a redraw either way.
-                tui.frame_requester().schedule_frame();
+                return Box::pin(self.open_resume_picker(tui, app_server)).await;
             }
             AppEvent::OpenExternalAgentConfigMigration => {
                 match crate::external_agent_config_migration::flow::handle_external_agent_config_migration_prompt(
@@ -348,7 +315,7 @@ impl App {
                     fork_config.model = Some(self.chat_widget.current_model().to_string());
                     fork_config.model_reasoning_effort =
                         self.chat_widget.current_reasoning_effort();
-                    match app_server.fork_thread(fork_config, thread_id).await {
+                    match app_server.fork_thread(&self.local_settings, fork_config, thread_id).await {
                         Ok(mut forked) => {
                             let name_error = if let Some(name) = name {
                                 match app_server
@@ -501,8 +468,7 @@ impl App {
                             let before_turn_id = before_turn_id
                                 .or_else(|| turns.first().map(|turn| turn.id.clone()));
                             app_server
-                                .fork_thread_at(
-                                    config.clone(),
+                                .fork_thread_at(&self.local_settings, config.clone(),
                                     thread_id,
                                     /*last_turn_id*/ None,
                                     before_turn_id,
@@ -708,7 +674,16 @@ impl App {
             AppEvent::FatalExitRequest(message) => {
                 return Ok(AppRunControl::Exit(ExitReason::Fatal(message)));
             }
-            AppEvent::CodexOp(op) => {
+            AppEvent::CodexOp(mut op) => {
+                if self.active_thread_id == self.chat_widget.thread_id() {
+                    if matches!(&op, AppCommand::UserTurn { .. })
+                        && self.chat_widget.defer_pending_turn_for_luna_reserve()
+                    {
+                        return Ok(AppRunControl::Continue);
+                    }
+                    self.chat_widget
+                        .apply_reserve_fallback_to_pending_turn(&mut op);
+                }
                 let is_user_turn = matches!(&op, AppCommand::UserTurn { .. });
                 if is_user_turn {
                     self.return_to_latest_from_transcript(tui);
@@ -723,6 +698,10 @@ impl App {
                 }
                 self.chat_widget.prepare_local_op_submission(&op);
                 if let Err(err) = self.submit_active_thread_op(app_server, op).await {
+                    if self.recover_transport_error(&err)
+                    {
+                        return Ok(AppRunControl::Continue);
+                    }
                     let unsupported_permissions = err
                         .downcast_ref::<UnsupportedLegacyPermissionProfile>()
                         .is_some();
@@ -744,6 +723,16 @@ impl App {
                     }
                     tracing::error!(error = ?err, "failed to start turn through app server");
                 }
+            }
+            AppEvent::ConfirmSafetyBufferedRetry {
+                thread_id,
+                turn_id,
+                model,
+                turn,
+                prompt,
+            } => {
+                self.chat_widget
+                    .confirm_safety_buffered_retry(thread_id, turn_id, model, turn, prompt);
             }
             AppEvent::RetrySafetyBufferedTurn {
                 thread_id,
@@ -1203,6 +1192,17 @@ impl App {
             AppEvent::RefreshRateLimits { origin } => {
                 self.refresh_rate_limits(app_server, origin);
             }
+            AppEvent::ApplyBackendBannerFallback { thread_id } => {
+                if self.active_thread_id == Some(thread_id)
+                    && self.chat_widget.thread_id() == Some(thread_id)
+                {
+                    self.apply_backend_banner_fallback(app_server).await;
+                    if !self.rate_limit_refresh_state.has_pending_recovery() {
+                        self.chat_widget.finish_rate_limit_recovery();
+                    }
+                    self.refresh_rate_limits(app_server, RateLimitRefreshOrigin::Periodic);
+                }
+            }
             AppEvent::RefreshTokenActivity { request_id } => {
                 self.refresh_token_activity(app_server, request_id);
             }
@@ -1284,7 +1284,7 @@ impl App {
                         Vec::new()
                     };
                     match origin {
-                        RateLimitRefreshOrigin::Recovery => {
+                        RateLimitRefreshOrigin::Recovery | RateLimitRefreshOrigin::Periodic => {
                             for snapshot in snapshots {
                                 self.chat_widget.on_rate_limit_snapshot(Some(snapshot));
                             }
@@ -1345,7 +1345,11 @@ impl App {
                     // A failed read is not authoritative recovery. Keep the last valid banner.
                     tracing::warn!("account/rateLimits/read failed during TUI refresh: {err}");
                     match origin {
-                        RateLimitRefreshOrigin::Recovery => {},
+                        RateLimitRefreshOrigin::Recovery | RateLimitRefreshOrigin::Periodic => {
+                            // Re-evaluate snapshot age even when the backend cannot refresh it.
+                            // This updates display freshness without authorizing model recovery.
+                            self.chat_widget.refresh_status_surfaces();
+                        },
                         RateLimitRefreshOrigin::StartupPrefetch {
                             reset_hint_request_id,
                         } => {
@@ -1383,10 +1387,10 @@ impl App {
                     }
                 }
                 }
-                if matches!(
+                if (accepted || matches!(
                     origin,
                     RateLimitRefreshOrigin::Recovery | RateLimitRefreshOrigin::ResetConsume { .. }
-                ) && !self.rate_limit_refresh_state.has_pending_recovery()
+                )) && !self.rate_limit_refresh_state.has_pending_recovery()
                 {
                     self.chat_widget.finish_rate_limit_recovery();
                 }
@@ -1525,6 +1529,10 @@ impl App {
                 self.sync_active_thread_reasoning_setting(app_server, effort)
                     .await;
             }
+            AppEvent::UpdateLunaReserveReasoning { thread_id, effort } => {
+                self.update_luna_reserve_reasoning(app_server, thread_id, effort)
+                    .await;
+            }
             AppEvent::UpdateModel(model) => {
                 let model_changed = self.chat_widget.current_model() != model
                     || self.chat_widget.current_collaboration_mode().model() != model;
@@ -1562,6 +1570,20 @@ impl App {
                         self.chat_widget.maybe_send_next_queued_input();
                     }
                 }
+            }
+            AppEvent::FetchPermissionProfiles { request_id, thread_cwd } => {
+                if self.chat_widget.permission_popup_request_is_current(request_id) {
+                    crate::permission_discovery::fetch(
+                        app_server,
+                        request_id,
+                        self.chat_widget.config_ref(),
+                        thread_cwd.as_deref(),
+                        self.app_event_tx.clone(),
+                    );
+                }
+            }
+            AppEvent::PermissionProfilesLoaded { request_id, result } => {
+                self.chat_widget.on_permission_profiles_loaded(request_id, result);
             }
             AppEvent::FetchModels { request_id } => {
                 if self.chat_widget.model_popup_request_is_current(request_id) {
@@ -1764,22 +1786,11 @@ impl App {
                     let codex_home = self.config.codex_home.clone();
                     let tx = self.app_event_tx.clone();
 
-                    // If the elevated setup already ran on this machine, don't prompt for
-                    // elevation again - just flip the config to use the elevated path.
-                    if crate::windows_sandbox::sandbox_setup_is_complete(codex_home.as_path()) {
-                        tx.send(AppEvent::EnableWindowsSandboxForAgentMode {
-                            preset,
-                            mode: WindowsSandboxEnableMode::Elevated,
-                            profile_selection,
-                        });
-                        return Ok(AppRunControl::Continue);
-                    }
-
                     self.chat_widget.show_windows_sandbox_setup_status();
                     self.windows_sandbox.setup_started_at = Some(Instant::now());
                     let session_telemetry = self.session_telemetry.clone();
                     tokio::task::spawn_blocking(move || {
-                        let result = crate::windows_sandbox::run_elevated_setup(
+                        let result = crate::windows_sandbox::prepare_elevated_sandbox(
                             &permission_profile,
                             workspace_roots.as_slice(),
                             command_cwd.as_path(),
@@ -2277,7 +2288,8 @@ impl App {
                 self.config = config;
                 let approval_policy =
                     AskForApproval::from(self.config.permissions.approval_policy.value());
-                self.runtime_approval_policy_override = Some(approval_policy);
+                self.runtime_approval_policy_override =
+                    Some(RuntimeApprovalPolicyOverride::Explicit(approval_policy));
                 self.chat_widget.set_approval_policy(approval_policy);
                 self.sync_active_thread_permission_settings_to_cached_session()
                     .await;
@@ -2383,6 +2395,13 @@ impl App {
                         .add_error_message(format!("Failed to save approvals reviewer: {err}"));
                 }
             }
+            AppEvent::FetchExperimentalFeatures { thread_id, response_tx } => {
+                crate::experimental_features::fetch(
+                    app_server.request_handle(),
+                    thread_id,
+                    response_tx,
+                );
+            }
             AppEvent::UpdateFeatureFlags { updates } => {
                 self.update_feature_flags(app_server, updates).await;
             }
@@ -2416,7 +2435,8 @@ impl App {
                     .await;
             }
             AppEvent::PersistWorldWritableWarningAcknowledged => {
-                if let Err(err) = ConfigEditsBuilder::for_config(&self.config)
+                self.local_settings.notices.hide_world_writable_warning = Some(true);
+                if let Err(err) = ConfigEditsBuilder::for_config_path(self.local_settings.user_config_path.as_path())
                     .set_hide_world_writable_warning(/*acknowledged*/ true)
                     .apply()
                     .await
@@ -2431,7 +2451,8 @@ impl App {
                 }
             }
             AppEvent::PersistRateLimitSwitchPromptHidden => {
-                if let Err(err) = ConfigEditsBuilder::for_config(&self.config)
+                self.local_settings.notices.hide_rate_limit_model_nudge = Some(true);
+                if let Err(err) = ConfigEditsBuilder::for_config_path(self.local_settings.user_config_path.as_path())
                     .set_hide_rate_limit_model_nudge(/*acknowledged*/ true)
                     .apply()
                     .await
@@ -2474,7 +2495,7 @@ impl App {
                 from_model,
                 to_model,
             } => {
-                if let Err(err) = ConfigEditsBuilder::for_config(&self.config)
+                if let Err(err) = ConfigEditsBuilder::for_config_path(self.local_settings.user_config_path.as_path())
                     .record_model_migration_seen(from_model.as_str(), to_model.as_str())
                     .apply()
                     .await
@@ -2487,9 +2508,6 @@ impl App {
                         "Failed to save model migration prompt preference: {err}"
                     ));
                 }
-            }
-            AppEvent::OpenApprovalsPopup => {
-                self.chat_widget.open_approvals_popup();
             }
             AppEvent::OpenAgentsOverview => {
                 self.open_agents_overview(app_server);
@@ -2591,11 +2609,11 @@ impl App {
                 self.stop_agents_overview_thread(app_server, thread_id)
                     .await;
             }
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             AppEvent::StartAgentsDaemon => {
                 self.start_agents_daemon();
             }
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             AppEvent::AgentsDaemonStarted { result } => match result {
                 Ok(()) => self.chat_widget.add_info_message(
                     "Background server started. Run `codex agents` in another terminal; this session remains unchanged."
@@ -2726,8 +2744,12 @@ impl App {
                     self.chat_widget.add_error_message(err);
                 }
             }
-            AppEvent::OpenPermissionsPopup => {
-                self.chat_widget.open_permissions_popup();
+            AppEvent::OpenPermissionsPopup | AppEvent::OpenApprovalsPopup => {
+                if app_server.uses_remote_workspace() {
+                    self.chat_widget.request_permission_profiles();
+                } else {
+                    self.chat_widget.open_approvals_popup();
+                }
             }
             AppEvent::OpenReviewBranchPicker(cwd) => {
                 self.chat_widget.show_review_branch_picker(&cwd).await;
@@ -2819,14 +2841,14 @@ impl App {
                 let items_edit = crate::legacy_core::config::edit::status_line_items_edit(&ids);
                 let colors_edit =
                     crate::legacy_core::config::edit::status_line_use_colors_edit(use_theme_colors);
-                let apply_result = ConfigEditsBuilder::for_config(&self.config)
+                let apply_result = ConfigEditsBuilder::for_config_path(self.local_settings.user_config_path.as_path())
                     .with_edits([items_edit, colors_edit])
                     .apply()
                     .await;
                 match apply_result {
                     Ok(()) => {
-                        self.config.tui_status_line = Some(ids.clone());
-                        self.config.tui_status_line_use_colors = use_theme_colors;
+                        self.local_settings.tui.status_line = Some(ids.clone());
+                        self.local_settings.tui.status_line_use_colors = use_theme_colors;
                         self.chat_widget.setup_status_line(items, use_theme_colors);
                     }
                     Err(err) => {
@@ -2860,13 +2882,13 @@ impl App {
             AppEvent::TerminalTitleSetup { items } => {
                 let ids = items.iter().map(ToString::to_string).collect::<Vec<_>>();
                 let edit = crate::legacy_core::config::edit::terminal_title_items_edit(&ids);
-                let apply_result = ConfigEditsBuilder::for_config(&self.config)
+                let apply_result = ConfigEditsBuilder::for_config_path(self.local_settings.user_config_path.as_path())
                     .with_edits([edit])
                     .apply()
                     .await;
                 match apply_result {
                     Ok(()) => {
-                        self.config.tui_terminal_title = Some(ids.clone());
+                        self.local_settings.tui.terminal_title = Some(ids.clone());
                         self.chat_widget.setup_terminal_title(items);
                     }
                     Err(err) => {
@@ -2886,7 +2908,7 @@ impl App {
             }
             AppEvent::SyntaxThemeSelected { name } => {
                 let edit = crate::legacy_core::config::edit::syntax_theme_edit(&name);
-                let apply_result = ConfigEditsBuilder::for_config(&self.config)
+                let apply_result = ConfigEditsBuilder::for_config_path(self.local_settings.user_config_path.as_path())
                     .with_edits([edit])
                     .apply()
                     .await;
@@ -2898,7 +2920,7 @@ impl App {
                         // navigating, the runtime theme must still be applied.
                         if let Some(theme) = crate::render::highlight::resolve_theme_by_name(
                             &name,
-                            Some(&self.config.codex_home),
+                            Some(&self.local_settings.codex_home),
                         ) {
                             crate::render::highlight::set_syntax_theme(theme);
                         }
@@ -3033,7 +3055,7 @@ impl App {
         intent: crate::app_event::KeymapEditIntent,
     ) {
         let outcome = match crate::keymap_setup::keymap_with_edit(
-            &self.config.tui_keymap,
+            &self.local_settings.tui.keymap,
             &self.keymap,
             &context,
             &action,
@@ -3071,14 +3093,14 @@ impl App {
 
         let edit =
             crate::legacy_core::config::edit::keymap_bindings_edit(&context, &action, &bindings);
-        match ConfigEditsBuilder::for_config(&self.config)
+        match ConfigEditsBuilder::for_config_path(self.local_settings.user_config_path.as_path())
             .with_edits([edit])
             .apply()
             .await
         {
             Ok(()) => {
                 self.cancel_pending_key_chord();
-                self.config.tui_keymap = keymap_config.clone();
+                self.local_settings.tui.keymap = keymap_config.clone();
                 self.keymap = runtime_keymap.clone();
                 self.chat_widget
                     .apply_keymap_update(keymap_config, &runtime_keymap);
@@ -3104,7 +3126,7 @@ impl App {
 
     async fn apply_keymap_clear(&mut self, context: String, action: String) {
         let keymap_config = match crate::keymap_setup::keymap_without_custom_binding(
-            &self.config.tui_keymap,
+            &self.local_settings.tui.keymap,
             &context,
             &action,
         ) {
@@ -3125,14 +3147,14 @@ impl App {
         };
 
         let edit = crate::legacy_core::config::edit::keymap_binding_clear_edit(&context, &action);
-        match ConfigEditsBuilder::for_config(&self.config)
+        match ConfigEditsBuilder::for_config_path(self.local_settings.user_config_path.as_path())
             .with_edits([edit])
             .apply()
             .await
         {
             Ok(()) => {
                 self.cancel_pending_key_chord();
-                self.config.tui_keymap = keymap_config.clone();
+                self.local_settings.tui.keymap = keymap_config.clone();
                 self.keymap = runtime_keymap.clone();
                 self.chat_widget
                     .apply_keymap_update(keymap_config, &runtime_keymap);

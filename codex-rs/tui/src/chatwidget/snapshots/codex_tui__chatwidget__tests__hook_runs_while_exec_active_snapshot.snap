@@ -1,23 +1,36 @@
 ---
 source: tui/src/chatwidget/tests/status_and_layout.rs
-expression: "format!(\"exec running:\\n{exec_running}\\nexec and hook running:\\n{exec_and_hook_running}\\nhistory after exec:\\n{history_after_exec}\\nhook running after exec:\\n{hook_running_after_exec}\\nquiet hook completed lingering:\\n{quiet_hook_completed_lingering}\\nquiet hook completed:\\n{quiet_hook_completed}\")"
+expression: "format!(\"exec running:\\n{exec_running}\\nexec and hook running:\\n{exec_and_hook_running}\\nhistory after exec:\\n{history_after_exec}\\nhook running after exec:\\n{hook_running_after_exec}\\nquiet hook completed:\\n{quiet_hook_completed}\")"
 ---
 exec running:
 • Ran 1 shell command
 
 exec and hook running:
-active exec:
-• Ran 1 shell command
-active hooks:
-• Running PostToolUse hook: checking output policy
-
+"                                                                                "
+"• Ran 1 shell command                                                           "
+"                                                                                "
+"• Working (0s • esc to interrupt) · checking output policy                      "
+"                                                                                "
+"────────────────────────────────────────────────────────────────────────────────"
+"▌ Ask Codex to do anything                                                      "
+"────────────────────────────────────────────────────────────────────────────────"
+"  gpt-5.6-sol default · /tmp/project                                            "
 history after exec:
+• Ran 1 shell command
 
 hook running after exec:
-• Running PostToolUse hook: checking output policy
-
-quiet hook completed lingering:
-• Running PostToolUse hook: checking output policy
-
+"                                                                                "
+"• Working (0s • esc to interrupt) · checking output policy                      "
+"                                                                                "
+"────────────────────────────────────────────────────────────────────────────────"
+"▌ Ask Codex to do anything                                                      "
+"────────────────────────────────────────────────────────────────────────────────"
+"  gpt-5.6-sol default · /tmp/project                                            "
 quiet hook completed:
-<empty>
+"                                                                                "
+"• Working (0s • esc to interrupt)                                               "
+"                                                                                "
+"────────────────────────────────────────────────────────────────────────────────"
+"▌ Ask Codex to do anything                                                      "
+"────────────────────────────────────────────────────────────────────────────────"
+"  gpt-5.6-sol default · /tmp/project                                            "
