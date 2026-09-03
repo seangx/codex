@@ -4,20 +4,17 @@
 
 use super::App;
 use super::agents_overview::AGENTS_OVERVIEW_VIEW_ID;
-use super::agents_overview_details::preview_text;
 use super::app_server_event_targets::ServerNotificationThreadTarget;
 use super::app_server_event_targets::server_notification_thread_target;
 use crate::AppServerTarget;
 use crate::app_event::AgentsOverviewThreadRefresh;
 use crate::app_event::AppEvent;
 use crate::app_server_session::AppServerSession;
-use crate::chatwidget::ChatWidget;
 use codex_app_server_client::TypedRequestError;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::SessionSource;
-use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadListResponse;
 use codex_app_server_protocol::ThreadLoadedListParams;
@@ -27,8 +24,6 @@ use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadSortKey;
 use codex_app_server_protocol::ThreadSourceKind;
 use codex_app_server_protocol::ThreadStatus;
-use codex_app_server_protocol::ThreadTurnsListParams;
-use codex_app_server_protocol::ThreadTurnsListResponse;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::SubAgentSource;
 use std::collections::HashMap;
@@ -58,7 +53,6 @@ impl App {
             }
             ServerNotification::ThreadArchived(_) | ServerNotification::ThreadDeleted(_) => {
                 self.agents_overview.activity.remove(&thread_id);
-                self.agents_overview.last_messages.remove(&thread_id);
                 self.agents_overview.threads.remove(&thread_id);
                 self.agents_overview.refresh_thread_ids.remove(&thread_id);
             }
@@ -70,7 +64,6 @@ impl App {
             }
             ServerNotification::ThreadReverted(_) => {
                 self.agents_overview.activity.remove(&thread_id);
-                self.agents_overview.last_messages.remove(&thread_id);
                 self.repaint_agents_overview();
             }
             ServerNotification::ThreadStatusChanged(status) => {
@@ -163,7 +156,6 @@ impl App {
         let refresh_task = tokio::spawn(async move {
             let result = async {
                 let mut threads = HashMap::new();
-                let mut last_messages = HashMap::new();
                 let mut recent_seed_complete = true;
                 if !initialized {
                     let loaded = request_handle.request_typed::<ThreadLoadedListResponse>(
@@ -294,43 +286,7 @@ impl App {
                             })
                             .await
                         {
-                            Ok(mut response) => {
-                                let mut last_message = None;
-                                if let Ok(turns) = request_handle
-                                    .request_typed::<ThreadTurnsListResponse>(
-                                        ClientRequest::ThreadTurnsList {
-                                            request_id: RequestId::String(
-                                                Uuid::new_v4().to_string(),
-                                            ),
-                                            params: ThreadTurnsListParams {
-                                                thread_id: thread_id.to_string(),
-                                                cursor: None,
-                                                limit: Some(1),
-                                                sort_direction: None,
-                                                items_view: None,
-                                            },
-                                        },
-                                    )
-                                    .await
-                                    && let Some(turn) = turns.data.first()
-                                {
-                                    if let Some(ThreadItem::UserMessage { content, .. }) =
-                                        turn.items.first()
-                                    {
-                                        response.thread.preview =
-                                            ChatWidget::user_message_display_from_inputs(content)
-                                                .message;
-                                    }
-                                    last_message =
-                                        turn.items.iter().rev().find_map(|item| match item {
-                                            ThreadItem::AgentMessage { text, .. } => {
-                                                Some(preview_text(text))
-                                            }
-                                            _ => None,
-                                        });
-                                }
-                                Some((thread_id, response.thread, last_message))
-                            }
+                            Ok(response) => Some((thread_id, response.thread)),
                             Err(error) => {
                                 tracing::warn!(%thread_id, %error, "failed to read agent thread");
                                 None
@@ -338,26 +294,18 @@ impl App {
                         }
                     });
                     if reads.len() >= 16
-                        && let Some(Ok(Some((thread_id, thread, last_message)))) =
-                            reads.join_next().await
+                        && let Some(Ok(Some((thread_id, thread)))) = reads.join_next().await
                     {
                         threads.insert(thread_id, Some(thread));
-                        if let Some(message) = last_message {
-                            last_messages.insert(thread_id, message);
-                        }
                     }
                 }
                 while let Some(result) = reads.join_next().await {
-                    if let Ok(Some((thread_id, thread, last_message))) = result {
+                    if let Ok(Some((thread_id, thread))) = result {
                         threads.insert(thread_id, Some(thread));
-                        if let Some(message) = last_message {
-                            last_messages.insert(thread_id, message);
-                        }
                     }
                 }
                 Ok(AgentsOverviewThreadRefresh {
                     threads,
-                    last_messages,
                     recent_seed_complete,
                 })
             }

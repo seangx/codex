@@ -75,7 +75,6 @@ impl App {
                 self.agents_overview.refresh_pending = false;
                 self.agents_overview.refresh_notifications.clear();
                 self.agents_overview.activity.clear();
-                self.agents_overview.last_messages.clear();
                 self.repaint_agents_overview();
                 self.refresh_agents_overview_threads(app_server_client);
             }

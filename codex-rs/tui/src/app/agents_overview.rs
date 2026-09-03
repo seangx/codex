@@ -28,7 +28,6 @@ pub(crate) const AGENTS_OVERVIEW_VIEW_ID: &str = "agents-overview";
 pub(super) struct AgentsOverviewState {
     /// Missing metadata records a local resume until the next metadata refresh.
     pub(super) threads: HashMap<ThreadId, Option<Thread>>,
-    pub(super) last_messages: HashMap<ThreadId, String>,
     pub(super) activity: HashMap<ThreadId, super::agents_overview_details::AgentsOverviewActivity>,
     pub(super) initialized: bool,
     pub(super) request_id: Option<Uuid>,
@@ -135,14 +134,10 @@ impl App {
         match result {
             Ok(refresh) => {
                 self.agents_overview.initialized = refresh.recent_seed_complete;
-                self.agents_overview
-                    .last_messages
-                    .extend(refresh.last_messages);
                 for (thread_id, thread) in refresh.threads {
                     if let Some(mut thread) = thread {
                         if thread.ephemeral {
                             self.agents_overview.threads.remove(&thread_id);
-                            self.agents_overview.last_messages.remove(&thread_id);
                             self.agents_overview.activity.remove(&thread_id);
                             continue;
                         }
@@ -169,11 +164,8 @@ impl App {
             std::mem::take(&mut self.agents_overview.refresh_notifications).into_values()
         {
             for notification in notifications {
-                if let ServerNotification::ThreadReverted(reverted) = &notification
-                    && let Ok(thread_id) = ThreadId::from_string(&reverted.thread_id)
-                {
-                    // Discard stale read results without clearing activity received after the revert.
-                    self.agents_overview.last_messages.remove(&thread_id);
+                if matches!(notification, ServerNotification::ThreadReverted(_)) {
+                    // Do not let an older refresh clear activity received after the revert.
                     continue;
                 }
                 self.track_agents_overview_notification(&notification);

@@ -319,7 +319,6 @@ async fn shared_overview_keeps_rows_and_replays_changes_over_stale_reads() -> Re
         &app_server,
         request_id,
         Ok(AgentsOverviewThreadRefresh {
-            last_messages: HashMap::new(),
             threads: HashMap::from([
                 (retained, Some(retained_thread.clone())),
                 (archived, Some(archived_thread)),
@@ -342,7 +341,6 @@ async fn shared_overview_keeps_rows_and_replays_changes_over_stale_reads() -> Re
         &app_server,
         request_id,
         Ok(AgentsOverviewThreadRefresh {
-            last_messages: HashMap::new(),
             threads: HashMap::from([(retained, None)]),
             recent_seed_complete: true,
         }),
@@ -359,7 +357,6 @@ async fn shared_overview_keeps_rows_and_replays_changes_over_stale_reads() -> Re
 
     let view = app.agents_overview_view(Vec::new(), /*selected_thread_id*/ None);
     app.chat_widget.show_bottom_pane_view(Box::new(view));
-    let stale_messages = HashMap::from([(retained, "Removed answer".into())]);
     for event in [
         AppServerEvent::ServerNotification(Box::new(ServerNotification::ThreadReverted(
             codex_app_server_protocol::ThreadRevertedNotification {
@@ -371,10 +368,8 @@ async fn shared_overview_keeps_rows_and_replays_changes_over_stale_reads() -> Re
         let old_request = Uuid::new_v4();
         app.agents_overview.request_id = Some(old_request);
         app.agents_overview.activity.entry(retained).or_default();
-        app.agents_overview.last_messages = stale_messages.clone();
         app.handle_app_server_event(&app_server, event).await;
         assert!(!app.agents_overview.activity.contains_key(&retained));
-        assert!(app.agents_overview.last_messages.is_empty());
         // Fresh activity must survive an older read arriving after invalidation.
         app.track_agents_overview_notification(&reasoning_delta(
             retained,
@@ -382,20 +377,15 @@ async fn shared_overview_keeps_rows_and_replays_changes_over_stale_reads() -> Re
             "**Checking the revised task**",
         ));
         let current_request = app.agents_overview.request_id.unwrap();
-        for (request_id, last_messages) in [
-            (old_request, stale_messages.clone()),
-            (current_request, HashMap::new()),
-        ] {
+        for request_id in [old_request, current_request] {
             app.apply_agents_overview_thread_refresh(
                 &app_server,
                 request_id,
                 Ok(AgentsOverviewThreadRefresh {
                     threads: HashMap::new(),
-                    last_messages,
                     recent_seed_complete: true,
                 }),
             );
-            assert!(app.agents_overview.last_messages.is_empty());
         }
         assert!(app.agents_overview.activity.contains_key(&retained));
         assert!(app.agents_overview.request_id.is_none());
@@ -405,7 +395,7 @@ async fn shared_overview_keeps_rows_and_replays_changes_over_stale_reads() -> Re
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn shared_overview_seeds_once_and_retains_locally_resumed_history() -> Result<()> {
+async fn shared_overview_seeds_metadata_and_retains_local_resumes() -> Result<()> {
     let mut app = make_test_app().await;
     let mut ids = Vec::new();
     for day in 1..=22 {
@@ -433,22 +423,6 @@ async fn shared_overview_seeds_once_and_retains_locally_resumed_history() -> Res
             .expect("materialize historical session"),
         )?);
     }
-    let message_path = app_test_support::rollout_path(
-        &app.config.codex_home,
-        "2025-01-21T12-00-00",
-        &ids[20].to_string(),
-    );
-    let mut history = std::fs::read_to_string(&message_path)?;
-    history.push_str(
-        &serde_json::json!({
-            "timestamp": "2025-01-21T12:00:01Z",
-            "type": "event_msg",
-            "payload": { "type": "agent_message", "message": "Found the regression in the parser." }
-        })
-        .to_string(),
-    );
-    history.push('\n');
-    std::fs::write(message_path, history)?;
     let config = app.config.clone();
     let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(&config)).await?;
     for thread_id in [ids[0], ids[21]] {
@@ -475,12 +449,14 @@ async fn shared_overview_seeds_once_and_retains_locally_resumed_history() -> Res
     expected.insert(ids[0]);
     let retained: HashSet<_> = app.agents_overview.threads.keys().copied().collect();
     assert_eq!(retained, expected);
-    assert_eq!(
-        app.agents_overview.last_messages,
-        HashMap::from([(ids[20], "Found the regression in the parser.".to_string())])
-    );
     let thread = app.agents_overview.threads[&ids[20]].as_ref().unwrap();
-    assert_eq!(thread.status, ThreadStatus::NotLoaded);
+    assert_eq!(
+        (thread.status.clone(), thread.preview.clone()),
+        (ThreadStatus::NotLoaded, "Task 21".to_string())
+    );
+    // Background overview refreshes summarize only existing metadata and live
+    // activity. They must not hydrate persisted turns for historical details.
+    assert!(app.agents_overview.activity.is_empty());
 
     let created = app_server.start_thread(&config).await?.session.thread_id;
     // Closing the view must not cancel a metadata refresh or forget unloaded entries.
@@ -699,12 +675,21 @@ async fn agents_overview_details_show_available_attention_without_expanding_rows
         .cloned()
         .map(|thread| (ThreadId::from_string(&thread.id).unwrap(), Some(thread)))
         .collect();
-    app.agents_overview.last_messages.insert(
-        unloaded,
-        super::super::agents_overview_details::preview_text(
-            &"Found the regression\nin the parser. ".repeat(20),
-        ),
-    );
+    app.track_agents_overview_notification(&ServerNotification::ItemCompleted(
+        codex_app_server_protocol::ItemCompletedNotification {
+            thread_id: unloaded.to_string(),
+            turn_id: "recent-turn".into(),
+            completed_at_ms: 0,
+            item: ThreadItem::AgentMessage {
+                id: "recent-answer".into(),
+                text: "Found the regression\nin the parser. ".repeat(20),
+                phase: None,
+                memory_citation: None,
+                delivery: None,
+                questions: None,
+            },
+        },
+    ));
     app.agents_overview.dispatched_requests.insert(
         child,
         vec![ServerRequest::ToolRequestUserInput {

@@ -192,7 +192,6 @@ impl App {
         }
         if let Some(message) = activity
             .and_then(|activity| activity.last_message.as_ref())
-            .or_else(|| self.agents_overview.last_messages.get(&thread_id))
             .filter(|message| !message.trim().is_empty())
         {
             lines.extend([
