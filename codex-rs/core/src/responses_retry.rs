@@ -153,6 +153,7 @@ pub(crate) async fn handle_retryable_response_stream_error(
 
         if keep_reconnecting {
             let retry_delay = retry_state.connection_retry_delay;
+            let retry_deadline = tokio::time::Instant::now() + retry_delay;
             warn!(
                 turn_id = %turn_context.sub_id,
                 error = %err,
@@ -167,7 +168,7 @@ pub(crate) async fn handle_retryable_response_stream_error(
             .await;
             retry_state.connection_retries = retry_state.connection_retries.saturating_add(1);
             codex_client::record_retry!(retry_state.connection_retries, retry_delay, operation);
-            tokio::time::sleep(retry_delay).await;
+            tokio::time::sleep_until(retry_deadline).await;
             retry_state.connection_retry_delay = retry_delay
                 .saturating_mul(2)
                 .min(MAX_CONNECTION_RETRY_DELAY);
