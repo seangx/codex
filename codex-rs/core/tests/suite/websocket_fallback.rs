@@ -312,6 +312,7 @@ async fn cli_can_keep_reconnecting_with_exponential_delays() -> Result<()> {
     };
     assert_eq!(first_retry.message, "Reconnecting WebSocket in 5s");
 
+    tokio::task::yield_now().await;
     tokio::time::advance(Duration::from_secs(5)).await;
     // `wait_for_event` uses a Tokio timeout. With time paused, that timeout can advance before
     // the loopback socket accepts the reconnect, so wait directly for the protocol event here.
@@ -326,6 +327,7 @@ async fn cli_can_keep_reconnecting_with_exponential_delays() -> Result<()> {
     };
     assert_eq!(second_retry.message, "Reconnecting WebSocket in 10s");
 
+    tokio::task::yield_now().await;
     tokio::time::advance(Duration::from_secs(10)).await;
     wait_for_turn_complete_with_paused_time(&test).await;
     tokio::time::resume();
