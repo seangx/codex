@@ -11,13 +11,21 @@ use codex_features::Feature;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::WarningEvent;
+use codex_protocol::request_user_input::RequestUserInputArgs;
+use codex_protocol::request_user_input::RequestUserInputQuestion;
+use codex_protocol::request_user_input::RequestUserInputQuestionOption;
 use tracing::warn;
 
 const INITIAL_CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(5);
 const MAX_CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(60);
 const HTTP_FALLBACK_STREAM_RETRY_MULTIPLIER: u64 = 2;
 const MAX_HTTP_FALLBACK_STREAM_RETRIES: u64 = 100;
+const WEBSOCKET_FALLBACK_CALL_ID: &str = "websocket_fallback_choice";
+const WEBSOCKET_FALLBACK_QUESTION_ID: &str = "transport";
+const KEEP_RECONNECTING_LABEL: &str = "Keep reconnecting (Recommended)";
+const USE_HTTPS_FALLBACK_LABEL: &str = "Use HTTPS fallback";
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ResponsesStreamRequest {
@@ -95,20 +103,92 @@ pub(crate) async fn handle_retryable_response_stream_error(
     }
 
     if retry_state.retries >= max_retries
-        && client_session.try_switch_fallback_transport(
+        && sess.services.model_client.responses_websocket_enabled()
+    {
+        let keep_reconnecting = if matches!(request, ResponsesStreamRequest::Sampling)
+            && matches!(&turn_context.session_source, SessionSource::Cli)
+        {
+            let response = sess
+                .request_user_input(
+                    turn_context,
+                    WEBSOCKET_FALLBACK_CALL_ID.to_string(),
+                    RequestUserInputArgs {
+                        questions: vec![RequestUserInputQuestion {
+                            id: WEBSOCKET_FALLBACK_QUESTION_ID.to_string(),
+                            header: "Connection".to_string(),
+                            question:
+                                "WebSocket retries were exhausted. How should Codex continue?"
+                                    .to_string(),
+                            is_other: false,
+                            is_secret: false,
+                            options: Some(vec![
+                                RequestUserInputQuestionOption {
+                                    label: KEEP_RECONNECTING_LABEL.to_string(),
+                                    description: "Retry WebSocket after a longer delay and keep HTTPS disabled."
+                                        .to_string(),
+                                },
+                                RequestUserInputQuestionOption {
+                                    label: USE_HTTPS_FALLBACK_LABEL.to_string(),
+                                    description: "Replay this turn over HTTPS now; long sessions may resend a large request."
+                                        .to_string(),
+                                },
+                            ]),
+                        }],
+                        is_blocking: true,
+                        auto_resolution_ms: None,
+                    },
+                )
+                .await;
+            let Some(response) = response else {
+                return Err(err);
+            };
+            response
+                .answers
+                .get(WEBSOCKET_FALLBACK_QUESTION_ID)
+                .and_then(|answer| answer.answers.first())
+                .is_some_and(|answer| answer == KEEP_RECONNECTING_LABEL)
+        } else {
+            false
+        };
+
+        if keep_reconnecting {
+            let retry_delay = retry_state.connection_retry_delay;
+            warn!(
+                turn_id = %turn_context.sub_id,
+                error = %err,
+                ?retry_delay,
+                "WebSocket retries exhausted; user chose to keep reconnecting"
+            );
+            sess.notify_stream_error(
+                turn_context,
+                format!("Reconnecting WebSocket in {}s", retry_delay.as_secs()),
+                err,
+            )
+            .await;
+            retry_state.connection_retries = retry_state.connection_retries.saturating_add(1);
+            codex_client::record_retry!(retry_state.connection_retries, retry_delay, operation);
+            tokio::time::sleep(retry_delay).await;
+            retry_state.connection_retry_delay = retry_delay
+                .saturating_mul(2)
+                .min(MAX_CONNECTION_RETRY_DELAY);
+            retry_state.retries = 0;
+            return Ok(());
+        }
+
+        if client_session.try_switch_fallback_transport(
             &turn_context.session_telemetry,
             turn_context.model_info(),
-        )
-    {
-        sess.send_event(
-            turn_context,
-            EventMsg::Warning(WarningEvent {
-                message: format!("Falling back from WebSockets to HTTPS transport. {err:#}"),
-            }),
-        )
-        .await;
-        retry_state.retries = 0;
-        return Ok(());
+        ) {
+            sess.send_event(
+                turn_context,
+                EventMsg::Warning(WarningEvent {
+                    message: format!("Falling back from WebSockets to HTTPS transport. {err:#}"),
+                }),
+            )
+            .await;
+            retry_state.retries = 0;
+            return Ok(());
+        }
     }
 
     if retry_state.retries < max_retries {

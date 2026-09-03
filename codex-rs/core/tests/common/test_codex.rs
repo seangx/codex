@@ -338,6 +338,7 @@ pub struct TestCodexBuilder {
     code_mode_host_program: Option<PathBuf>,
     history_mode: Option<ThreadHistoryMode>,
     models_manager: Option<SharedModelsManager>,
+    session_source: SessionSource,
 }
 
 impl TestCodexBuilder {
@@ -356,6 +357,11 @@ impl TestCodexBuilder {
 
     pub fn with_models_manager(mut self, models_manager: SharedModelsManager) -> Self {
         self.models_manager = Some(models_manager);
+        self
+    }
+
+    pub fn with_session_source(mut self, session_source: SessionSource) -> Self {
+        self.session_source = session_source;
         self
     }
 
@@ -697,7 +703,7 @@ impl TestCodexBuilder {
             auth_manager.clone(),
             models_manager,
             codex_core::CodexAppsToolsCache::default(),
-            SessionSource::Exec,
+            self.session_source.clone(),
             Arc::clone(&environment_manager),
             Arc::clone(&self.extensions),
             user_instructions_provider,
@@ -1361,6 +1367,7 @@ pub fn test_codex() -> TestCodexBuilder {
         code_mode_host_program: None,
         history_mode: None,
         models_manager: None,
+        session_source: SessionSource::Exec,
     }
 }
 
