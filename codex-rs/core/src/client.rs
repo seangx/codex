@@ -2129,6 +2129,12 @@ impl ModelClientSession {
         }
     }
 
+    /// Returns whether this session is currently using HTTP after a WebSocket fallback.
+    pub(crate) fn responses_http_fallback_active(&self) -> bool {
+        self.client.state.provider.info().supports_websockets
+            && !self.client.responses_websocket_enabled()
+    }
+
     /// Disables WebSockets for this Codex session until the next recovery window.
     ///
     /// This is used after exhausting the provider retry budget, to force subsequent requests onto

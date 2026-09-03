@@ -16,6 +16,8 @@ use tracing::warn;
 
 const INITIAL_CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(5);
 const MAX_CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(60);
+const HTTP_FALLBACK_STREAM_RETRY_MULTIPLIER: u64 = 2;
+const MAX_HTTP_FALLBACK_STREAM_RETRIES: u64 = 100;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ResponsesStreamRequest {
@@ -53,6 +55,16 @@ pub(crate) async fn handle_retryable_response_stream_error(
     let operation = match request {
         ResponsesStreamRequest::Sampling => RetryOperation::Sampling,
         ResponsesStreamRequest::RemoteCompactionV2 => RetryOperation::RemoteCompactionV2,
+    };
+    // A fallback request has already spent the WebSocket retry budget. Give the HTTP transport a
+    // separate, larger bounded budget so a transient disconnect does not immediately terminate the
+    // turn. Preserve an explicit zero-retry policy and keep the provider-level hard cap.
+    let max_retries = if max_retries > 0 && client_session.responses_http_fallback_active() {
+        max_retries
+            .saturating_mul(HTTP_FALLBACK_STREAM_RETRY_MULTIPLIER)
+            .min(MAX_HTTP_FALLBACK_STREAM_RETRIES)
+    } else {
+        max_retries
     };
 
     if turn_context

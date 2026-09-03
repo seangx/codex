@@ -128,6 +128,57 @@ async fn websocket_fallback_switches_to_http_after_retries_exhausted() -> Result
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn websocket_fallback_uses_a_separate_http_retry_budget() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let incomplete_sse = responses::sse(vec![serde_json::json!({
+        "type": "response.output_item.done",
+    })]);
+    let response_mock = mount_sse_sequence(
+        &server,
+        vec![
+            incomplete_sse.clone(),
+            incomplete_sse,
+            sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
+        ],
+    )
+    .await;
+
+    let mut builder = test_codex().with_config({
+        let base_url = format!("{}/v1", server.uri());
+        move |config| {
+            config.model_provider.base_url = Some(base_url);
+            config.model_provider.wire_api = WireApi::Responses;
+            config.model_provider.supports_websockets = true;
+            config.model_provider.stream_max_retries = Some(1);
+            config.model_provider.request_max_retries = Some(0);
+        }
+    });
+    let test = builder.build(&server).await?;
+
+    test.submit_turn("hello").await?;
+
+    let requests = server.received_requests().await.unwrap_or_default();
+    let websocket_attempts = requests
+        .iter()
+        .filter(|req| req.method == Method::GET && req.url.path().ends_with("/responses"))
+        .count();
+    let http_attempts = requests
+        .iter()
+        .filter(|req| req.method == Method::POST && req.url.path().ends_with("/responses"))
+        .count();
+
+    // One configured retry allows 2 WebSocket attempts. After fallback, the independent HTTP
+    // budget allows 2 retries, so the third HTTP response completes the turn.
+    assert_eq!(websocket_attempts, 3);
+    assert_eq!(http_attempts, 3);
+    assert_eq!(response_mock.requests().len(), 3);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn websocket_fallback_hides_first_websocket_retry_stream_error() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
