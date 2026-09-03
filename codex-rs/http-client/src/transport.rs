@@ -77,10 +77,20 @@ impl ReqwestTransport {
         Ok(builder)
     }
 
-    fn map_error(err: reqwest::Error) -> TransportError {
-        if err.is_connect() {
-            TransportError::Connection(err.without_url())
+    fn map_request_error(err: reqwest::Error) -> TransportError {
+        if err.is_builder() {
+            TransportError::Build(err.to_string())
         } else if err.is_timeout() {
+            TransportError::Timeout
+        } else if err.is_connect() || err.is_request() {
+            TransportError::Connection(err.without_url())
+        } else {
+            TransportError::Network(err.to_string())
+        }
+    }
+
+    fn map_response_body_error(err: reqwest::Error) -> TransportError {
+        if err.is_timeout() {
             TransportError::Timeout
         } else {
             TransportError::Network(err.to_string())
@@ -116,10 +126,10 @@ impl HttpTransport for ReqwestTransport {
 
         let url = req.url.clone();
         let builder = self.build(req)?;
-        let resp = builder.send().await.map_err(Self::map_error)?;
+        let resp = builder.send().await.map_err(Self::map_request_error)?;
         let status = resp.status();
         let headers = resp.headers().clone();
-        let bytes = resp.bytes().await.map_err(Self::map_error)?;
+        let bytes = resp.bytes().await.map_err(Self::map_response_body_error)?;
         if !status.is_success() {
             let body = String::from_utf8(bytes.to_vec()).ok();
             return Err(TransportError::Http {
@@ -141,7 +151,7 @@ impl HttpTransport for ReqwestTransport {
 
         let url = req.url.clone();
         let builder = self.build(req)?;
-        let resp = builder.send().await.map_err(Self::map_error)?;
+        let resp = builder.send().await.map_err(Self::map_request_error)?;
         let status = resp.status();
         let headers = resp.headers().clone();
         if !status.is_success() {
@@ -155,7 +165,7 @@ impl HttpTransport for ReqwestTransport {
         }
         let stream = resp
             .bytes_stream()
-            .map(|result| result.map_err(Self::map_error));
+            .map(|result| result.map_err(Self::map_response_body_error));
         Ok(StreamResponse {
             status,
             headers,

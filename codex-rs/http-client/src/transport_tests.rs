@@ -50,6 +50,35 @@ async fn connection_failures_are_classified_without_exposing_request_urls() {
     assert!(!error.to_string().contains("url-secret"));
 }
 
+#[tokio::test]
+async fn request_disconnects_after_connect_are_classified_as_connection_failures() {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+        .expect("request disconnect server should bind");
+    let server_addr = listener
+        .local_addr()
+        .expect("request disconnect server should have an address");
+    let server = std::thread::spawn(move || {
+        let (stream, _) = listener
+            .accept()
+            .expect("request disconnect server should accept a connection");
+        drop(stream);
+    });
+
+    let transport = ReqwestTransport::from_http_client(HttpClient::new(test_reqwest_client()));
+    let request = Request::new(Method::POST, format!("http://{server_addr}/responses"))
+        .with_raw_body(vec![0_u8; 1024 * 1024]);
+
+    let error = match transport.stream(request).await {
+        Err(TransportError::Connection(error)) => error,
+        Err(error) => panic!("expected a connection failure, got {error}"),
+        Ok(_) => panic!("a dropped request connection should not return a response"),
+    };
+    server
+        .join()
+        .expect("request disconnect server should exit cleanly");
+    assert!(error.is_request() || error.is_connect());
+}
+
 fn test_reqwest_client() -> reqwest::Client {
     reqwest::Client::builder()
         .no_proxy()
