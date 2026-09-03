@@ -92,6 +92,14 @@ PY
 printf 'Building Codex debug %s from %s\n' "$build_version" "$short_sha"
 (cd "$repo_root/codex-rs" && cargo build -p codex-cli --bin codex)
 
+if [ "$(uname -s)" = "Darwin" ]; then
+  if ! command -v codesign >/dev/null 2>&1; then
+    fail "codesign is required to make the debug binary executable on macOS"
+  fi
+  codesign --force --sign - "$binary"
+  codesign --verify --strict "$binary"
+fi
+
 actual_version=$("$binary" --version)
 expected_version="codex-cli $build_version"
 if [ "$actual_version" != "$expected_version" ]; then
