@@ -183,8 +183,9 @@ async fn websocket_fallback_switches_to_http_on_upgrade_required_connect() -> Re
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cli_asks_before_switching_from_websocket_to_http() -> Result<()> {
+async fn assert_session_asks_before_switching_from_websocket_to_http(
+    session_source: SessionSource,
+) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
@@ -195,7 +196,7 @@ async fn cli_asks_before_switching_from_websocket_to_http() -> Result<()> {
     .await;
 
     let mut builder = test_codex()
-        .with_session_source(SessionSource::Cli)
+        .with_session_source(session_source)
         .with_config({
             let base_url = format!("{}/v1", server.uri());
             move |config| {
@@ -247,6 +248,16 @@ async fn cli_asks_before_switching_from_websocket_to_http() -> Result<()> {
     assert_eq!(response_mock.requests().len(), 1);
 
     Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cli_asks_before_switching_from_websocket_to_http() -> Result<()> {
+    assert_session_asks_before_switching_from_websocket_to_http(SessionSource::Cli).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn app_server_asks_before_switching_from_websocket_to_http() -> Result<()> {
+    assert_session_asks_before_switching_from_websocket_to_http(SessionSource::Mcp).await
 }
 
 #[tokio::test]

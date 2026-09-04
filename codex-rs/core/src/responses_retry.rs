@@ -106,8 +106,10 @@ pub(crate) async fn handle_retryable_response_stream_error(
         && sess.services.model_client.responses_websocket_enabled()
     {
         let keep_reconnecting = if matches!(request, ResponsesStreamRequest::Sampling)
-            && matches!(&turn_context.session_source, SessionSource::Cli)
-        {
+            && matches!(
+                &turn_context.session_source,
+                SessionSource::Cli | SessionSource::Mcp
+            ) {
             let response = sess
                 .request_user_input(
                     turn_context,
