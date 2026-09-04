@@ -64,11 +64,15 @@ pub(super) async fn run_remote_compact_v2_attempt(
             });
     }
 
-    let trace_input_history = compaction_trace
-        .is_enabled()
-        .then(|| history.raw_items().cloned().collect());
-    let (mut input, prompt_input_metadata): (Vec<_>, Vec<_>) = history
-        .for_prompt_annotated(&turn_context.model_info().input_modalities)
+    let prompt_history =
+        history.for_compaction_prompt_annotated(&turn_context.model_info().input_modalities);
+    let trace_input_history = compaction_trace.is_enabled().then(|| {
+        prompt_history
+            .iter()
+            .map(|envelope| envelope.item.clone())
+            .collect()
+    });
+    let (mut input, prompt_input_metadata): (Vec<_>, Vec<_>) = prompt_history
         .into_iter()
         .map(|envelope| (envelope.item, envelope.metadata))
         .unzip();

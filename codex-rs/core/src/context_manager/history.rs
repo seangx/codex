@@ -30,6 +30,7 @@ use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
+use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ImageDetail;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::InputModality;
@@ -317,6 +318,37 @@ impl ContextManager {
             .into_iter()
             .map(ResponseItemEnvelope::into_item)
             .collect()
+    }
+
+    /// Returns history prepared for remote compaction without copying media payloads.
+    ///
+    /// Media inputs and generated-image results are persisted as raw base64 strings. They remain
+    /// useful in the canonical transcript, but remote compaction only needs the surrounding
+    /// textual history; cloning those strings into the compaction request can turn a small prompt
+    /// into a multi-GB JSON body. Stable placeholders preserve prompt structure and cacheability.
+    pub(crate) fn for_compaction_prompt(
+        self,
+        input_modalities: &[InputModality],
+    ) -> Vec<ResponseItem> {
+        self.for_compaction_prompt_annotated(input_modalities)
+            .into_iter()
+            .map(ResponseItemEnvelope::into_item)
+            .collect()
+    }
+
+    /// Annotated variant of [`Self::for_compaction_prompt`].
+    pub(crate) fn for_compaction_prompt_annotated(
+        mut self,
+        input_modalities: &[InputModality],
+    ) -> Vec<ResponseItemEnvelope> {
+        self.items = Arc::new(
+            self.items
+                .iter()
+                .map(clone_envelope_for_compaction_prompt)
+                .collect(),
+        );
+        self.normalize_history(input_modalities);
+        Arc::unwrap_or_clone(self.items)
     }
 
     /// Returns normalized history envelopes for internal consumers that must retain metadata.
@@ -674,6 +706,122 @@ impl ContextManager {
             }
         }
         cut_idx
+    }
+}
+
+fn clone_envelope_for_compaction_prompt(envelope: &ResponseItemEnvelope) -> ResponseItemEnvelope {
+    let item = match &envelope.item {
+        ResponseItem::Message {
+            id,
+            role,
+            content,
+            phase,
+            internal_chat_message_metadata_passthrough,
+        } => ResponseItem::Message {
+            id: id.clone(),
+            role: role.clone(),
+            content: content
+                .iter()
+                .map(clone_content_item_for_compaction_prompt)
+                .collect(),
+            phase: phase.clone(),
+            internal_chat_message_metadata_passthrough: internal_chat_message_metadata_passthrough
+                .clone(),
+        },
+        ResponseItem::FunctionCallOutput {
+            id,
+            call_id,
+            name,
+            namespace,
+            output,
+            internal_chat_message_metadata_passthrough,
+        } => ResponseItem::FunctionCallOutput {
+            id: id.clone(),
+            call_id: call_id.clone(),
+            name: name.clone(),
+            namespace: namespace.clone(),
+            output: clone_function_output_for_compaction_prompt(output),
+            internal_chat_message_metadata_passthrough: internal_chat_message_metadata_passthrough
+                .clone(),
+        },
+        ResponseItem::CustomToolCallOutput {
+            id,
+            call_id,
+            name,
+            output,
+            internal_chat_message_metadata_passthrough,
+        } => ResponseItem::CustomToolCallOutput {
+            id: id.clone(),
+            call_id: call_id.clone(),
+            name: name.clone(),
+            output: clone_function_output_for_compaction_prompt(output),
+            internal_chat_message_metadata_passthrough: internal_chat_message_metadata_passthrough
+                .clone(),
+        },
+        ResponseItem::ImageGenerationCall {
+            id,
+            status,
+            revised_prompt,
+            internal_chat_message_metadata_passthrough,
+            ..
+        } => ResponseItem::ImageGenerationCall {
+            id: id.clone(),
+            status: status.clone(),
+            revised_prompt: revised_prompt.clone(),
+            result: String::new(),
+            internal_chat_message_metadata_passthrough: internal_chat_message_metadata_passthrough
+                .clone(),
+        },
+        item => item.clone(),
+    };
+    ResponseItemEnvelope {
+        item,
+        metadata: envelope.metadata.clone(),
+    }
+}
+
+const COMPACTION_IMAGE_OMITTED_MESSAGE: &str = "image content omitted for remote compaction";
+const COMPACTION_AUDIO_OMITTED_MESSAGE: &str = "audio content omitted for remote compaction";
+
+fn clone_content_item_for_compaction_prompt(item: &ContentItem) -> ContentItem {
+    match item {
+        ContentItem::InputImage { .. } => ContentItem::InputText {
+            text: COMPACTION_IMAGE_OMITTED_MESSAGE.to_string(),
+        },
+        ContentItem::InputAudio { .. } => ContentItem::InputText {
+            text: COMPACTION_AUDIO_OMITTED_MESSAGE.to_string(),
+        },
+        item => item.clone(),
+    }
+}
+
+fn clone_function_output_for_compaction_prompt(
+    output: &FunctionCallOutputPayload,
+) -> FunctionCallOutputPayload {
+    let body = match &output.body {
+        FunctionCallOutputBody::Text(text) => FunctionCallOutputBody::Text(text.clone()),
+        FunctionCallOutputBody::ContentItems(items) => FunctionCallOutputBody::ContentItems(
+            items
+                .iter()
+                .map(|item| match item {
+                    FunctionCallOutputContentItem::InputImage { .. } => {
+                        FunctionCallOutputContentItem::InputText {
+                            text: COMPACTION_IMAGE_OMITTED_MESSAGE.to_string(),
+                        }
+                    }
+                    FunctionCallOutputContentItem::InputAudio { .. } => {
+                        FunctionCallOutputContentItem::InputText {
+                            text: COMPACTION_AUDIO_OMITTED_MESSAGE.to_string(),
+                        }
+                    }
+                    item => item.clone(),
+                })
+                .collect(),
+        ),
+    };
+    FunctionCallOutputPayload {
+        body,
+        success: output.success,
     }
 }
 

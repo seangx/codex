@@ -1069,6 +1069,104 @@ fn for_prompt_clears_image_generation_result_when_images_are_unsupported() {
 }
 
 #[test]
+fn for_compaction_prompt_omits_media_without_mutating_history() {
+    let image_generation = ResponseItem::ImageGenerationCall {
+        id: Some(ResponseItemId::with_suffix("ig", "123")),
+        status: "completed".to_string(),
+        revised_prompt: Some("lobster".to_string()),
+        result: "Zm9v".to_string(),
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let message = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputImage {
+            image_url: "data:image/png;base64,large-message-image".to_string(),
+            detail: None,
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let function_output = ResponseItem::FunctionCallOutput {
+        id: None,
+        call_id: Some("call-123".to_string()),
+        name: None,
+        namespace: None,
+        output: FunctionCallOutputPayload::from_content_items(vec![
+            FunctionCallOutputContentItem::InputImage {
+                image_url: "data:image/png;base64,large-tool-image".to_string(),
+                detail: None,
+            },
+        ]),
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let original_items = vec![message, function_output, image_generation];
+    let history = create_history_with_items(original_items.clone());
+
+    assert_eq!(
+        history
+            .clone()
+            .for_compaction_prompt(&default_input_modalities()),
+        vec![
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "image content omitted for remote compaction".to_string(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: Some(unknown_content_metadata()),
+            },
+            ResponseItem::FunctionCallOutput {
+                id: None,
+                call_id: Some("call-123".to_string()),
+                name: None,
+                namespace: None,
+                output: FunctionCallOutputPayload::from_content_items(vec![
+                    FunctionCallOutputContentItem::InputText {
+                        text: "image content omitted for remote compaction".to_string(),
+                    },
+                ]),
+                internal_chat_message_metadata_passthrough: None,
+            },
+            ResponseItem::ImageGenerationCall {
+                id: Some(ResponseItemId::with_suffix("ig", "123")),
+                status: "completed".to_string(),
+                revised_prompt: Some("lobster".to_string()),
+                result: String::new(),
+                internal_chat_message_metadata_passthrough: None,
+            },
+        ]
+    );
+    assert_eq!(
+        history.raw_items().cloned().collect::<Vec<_>>(),
+        original_items
+    );
+}
+
+#[test]
+fn for_compaction_prompt_uses_payload_independent_media_placeholders() {
+    let prompt_for = |image_url: &str| {
+        create_history_with_items(vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputImage {
+                image_url: image_url.to_string(),
+                detail: None,
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        }])
+        .for_compaction_prompt(&default_input_modalities())
+    };
+
+    assert_eq!(
+        prompt_for("data:image/png;base64,first-payload"),
+        prompt_for("data:image/png;base64,second-payload"),
+    );
+}
+
+#[test]
 fn estimate_token_count_with_base_instructions_uses_provided_text() {
     let history = create_history_with_items(vec![assistant_msg("hello from history")]);
     let short_base = BaseInstructions {
