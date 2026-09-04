@@ -3440,7 +3440,7 @@ impl ThreadRequestProcessor {
                 }
                 err => internal_error(format!("failed to list thread items: {err}")),
             })?;
-        let data = page
+        let mut data = page
             .items
             .into_iter()
             .map(|stored_item| {
@@ -3449,6 +3449,7 @@ impl ThreadRequestProcessor {
                 Ok(ThreadItemEntry { turn_id, item })
             })
             .collect::<Result<Vec<_>, _>>()?;
+        strip_thread_items_list_inline_media(&mut data);
 
         Ok(ThreadItemsListResponse {
             data,
@@ -5708,6 +5709,17 @@ fn deserialize_stored_thread_item(
             item.item_id
         ))
     })
+}
+
+fn strip_thread_items_list_inline_media(items: &mut [ThreadItemEntry]) {
+    for entry in items {
+        if let ThreadItem::ImageGeneration(item) = &mut entry.item {
+            // Historical rendering uses `saved_path`. Keep the stored item and model history
+            // untouched, but do not serialize its potentially enormous inline base64 result into
+            // every bounded history-page response.
+            item.result.clear();
+        }
+    }
 }
 
 fn stored_turn_to_api_turn(
