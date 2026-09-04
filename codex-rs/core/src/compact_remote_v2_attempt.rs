@@ -64,6 +64,12 @@ pub(super) async fn run_remote_compact_v2_attempt(
             });
     }
 
+    // Keep the normalized canonical history for the post-compaction retention pass. The
+    // compaction request itself uses a media-free copy so large inline payloads are never
+    // serialized over the wire. `ContextManager::clone` only clones the backing Arc here;
+    // once the request copy is consumed, normalization can unwrap the retained history
+    // without cloning its media strings.
+    let retained_history = history.clone();
     let prompt_history =
         history.for_compaction_prompt_annotated(&turn_context.model_info().input_modalities);
     let trace_input_history = compaction_trace.is_enabled().then(|| {
@@ -72,10 +78,10 @@ pub(super) async fn run_remote_compact_v2_attempt(
             .map(|envelope| envelope.item.clone())
             .collect()
     });
-    let (mut input, prompt_input_metadata): (Vec<_>, Vec<_>) = prompt_history
+    let mut input = prompt_history
         .into_iter()
-        .map(|envelope| (envelope.item, envelope.metadata))
-        .unzip();
+        .map(|envelope| envelope.item)
+        .collect();
     let tool_router = &step_context.tool_router;
     input.push(ResponseItem::CompactionTrigger {});
     let prompt = Prompt {
@@ -123,8 +129,12 @@ pub(super) async fn run_remote_compact_v2_attempt(
         response_id,
         token_usage,
     } = compaction_output_result?;
-    let mut prompt_input = prompt.input;
-    prompt_input.pop();
+    let retained_prompt_history =
+        retained_history.for_prompt_annotated(&turn_context.model_info().input_modalities);
+    let (prompt_input, prompt_input_metadata): (Vec<_>, Vec<_>) = retained_prompt_history
+        .into_iter()
+        .map(|envelope| (envelope.item, envelope.metadata))
+        .unzip();
     Ok(RemoteCompactV2Attempt {
         trace_input_history,
         prompt_input,
