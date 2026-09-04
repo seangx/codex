@@ -125,7 +125,7 @@ impl AppServerSession {
         limit: u32,
     ) -> Result<ThreadItemsListResponse> {
         let request_id = self.next_request_id();
-        let mut page = self
+        let mut page: ThreadItemsListResponse = self
             .client
             .request_typed(ClientRequest::ThreadItemsList {
                 request_id,
