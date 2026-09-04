@@ -78,7 +78,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
             .map(|envelope| envelope.item.clone())
             .collect()
     });
-    let mut input = prompt_history
+    let mut input: Vec<ResponseItem> = prompt_history
         .into_iter()
         .map(|envelope| envelope.item)
         .collect();
