@@ -24,7 +24,10 @@ use color_eyre::eyre::Result;
 use color_eyre::eyre::WrapErr;
 
 pub(crate) const INITIAL_HISTORY_TURN_LIMIT: u32 = 5;
-pub(crate) const HISTORY_ITEM_PAGE_LIMIT: u32 = 100;
+// Cold resume only needs a recent transcript tail; older items remain available through paging.
+pub(crate) const INITIAL_HISTORY_ITEM_LIMIT: usize = 20;
+// Thread items can contain multi-megabyte inline media, so keep each transport page small.
+pub(crate) const HISTORY_ITEM_PAGE_LIMIT: u32 = 16;
 pub(crate) const HISTORY_ITEM_SCAN_LIMIT: usize = 4 * HISTORY_ITEM_PAGE_LIMIT as usize;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -256,13 +259,9 @@ impl AppServerSession {
             .unwrap_or(/*default*/ 80);
         let row_budget = local_settings
             .and_then(|settings| resize_reflow_max_rows(settings.terminal_resize_reflow()));
-        let item_budget = match (scope, config, row_budget) {
-            (HistoryHydrationScope::Complete, _, _)
-            | (HistoryHydrationScope::Initial, Some(_), None) => None,
-            (HistoryHydrationScope::Initial, Some(_), Some(max_rows)) => {
-                Some(max_rows.saturating_add(HISTORY_ITEM_SCAN_LIMIT))
-            }
-            (HistoryHydrationScope::Initial, None, _) => Some(HISTORY_ITEM_PAGE_LIMIT as usize),
+        let item_budget = match scope {
+            HistoryHydrationScope::Initial => Some(INITIAL_HISTORY_ITEM_LIMIT),
+            HistoryHydrationScope::Complete => None,
         };
         let mut scanned_items = 0;
         let mut rendered_rows = 0;
