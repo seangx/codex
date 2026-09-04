@@ -1100,7 +1100,21 @@ fn for_compaction_prompt_omits_media_without_mutating_history() {
         ]),
         internal_chat_message_metadata_passthrough: None,
     };
-    let original_items = vec![message, function_output, image_generation];
+    let function_call = ResponseItem::FunctionCall {
+        id: None,
+        name: "view_image".to_string(),
+        namespace: None,
+        arguments: "{}".to_string(),
+        call_id: "call-123".to_string(),
+        encrypted_function_args: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let original_items = vec![
+        message,
+        function_call.clone(),
+        function_output,
+        image_generation,
+    ];
     let history = create_history_with_items(original_items.clone());
 
     assert_eq!(
@@ -1117,6 +1131,7 @@ fn for_compaction_prompt_omits_media_without_mutating_history() {
                 phase: None,
                 internal_chat_message_metadata_passthrough: Some(unknown_content_metadata()),
             },
+            function_call,
             ResponseItem::FunctionCallOutput {
                 id: None,
                 call_id: Some("call-123".to_string()),
