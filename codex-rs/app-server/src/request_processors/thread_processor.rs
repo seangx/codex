@@ -5722,6 +5722,61 @@ fn strip_thread_items_list_inline_media(items: &mut [ThreadItemEntry]) {
     }
 }
 
+#[cfg(test)]
+mod thread_items_list_inline_media_tests {
+    use super::*;
+    use codex_app_server_protocol::ImageGenerationItem;
+    use codex_utils_absolute_path::test_support::PathBufExt;
+    use codex_utils_absolute_path::test_support::test_path_buf;
+
+    #[test]
+    fn strips_only_inline_image_generation_result() {
+        let saved_path = test_path_buf("/tmp/generated.png").abs();
+        let mut items = vec![
+            ThreadItemEntry {
+                turn_id: "turn-1".to_string(),
+                item: ThreadItem::AgentMessage {
+                    id: "message-1".to_string(),
+                    text: "kept".to_string(),
+                    phase: None,
+                    memory_citation: None,
+                    delivery: None,
+                    questions: None,
+                },
+            },
+            ThreadItemEntry {
+                turn_id: "turn-1".to_string(),
+                item: ThreadItem::ImageGeneration(ImageGenerationItem {
+                    id: "image-1".to_string(),
+                    status: "completed".to_string(),
+                    revised_prompt: Some("revised prompt".to_string()),
+                    result: "large-inline-base64".repeat(1024),
+                    transparent_background: Some(true),
+                    failure: None,
+                    saved_path: Some(saved_path.clone()),
+                    imagegen_request_id: None,
+                }),
+            },
+        ];
+
+        strip_thread_items_list_inline_media(&mut items);
+
+        assert!(matches!(
+            &items[0].item,
+            ThreadItem::AgentMessage { text, .. } if text == "kept"
+        ));
+        let ThreadItem::ImageGeneration(image) = &items[1].item else {
+            panic!("expected image generation item");
+        };
+        assert_eq!(image.id, "image-1");
+        assert_eq!(image.status, "completed");
+        assert_eq!(image.revised_prompt.as_deref(), Some("revised prompt"));
+        assert_eq!(image.transparent_background, Some(true));
+        assert_eq!(image.saved_path.as_ref(), Some(&saved_path));
+        assert!(image.result.is_empty());
+    }
+}
+
 fn stored_turn_to_api_turn(
     turn: StoredTurn,
     items_view: TurnItemsView,
