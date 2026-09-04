@@ -1477,6 +1477,21 @@ async fn remote_compact_v2_charges_retained_images_to_token_budget(
             compact_request.inputs_of_type("compaction_trigger").len(),
             1
         );
+        assert!(compact_request.message_input_image_urls("user").is_empty());
+        let dropped_before_request = if image_budget_enabled.unwrap_or(true) {
+            cycle - 1
+        } else {
+            0
+        };
+        let expected_placeholders = 7 - dropped_before_request + usize::from(cycle > 1);
+        assert_eq!(
+            compact_request
+                .message_input_texts("user")
+                .iter()
+                .filter(|text| *text == "image content omitted for remote compaction")
+                .count(),
+            expected_placeholders,
+        );
 
         let follow_up_mock = mount_sse_once(
             harness.server(),
@@ -2163,7 +2178,7 @@ async fn remote_compact_filters_deferred_dynamic_tools() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remote_compact_does_not_charge_inline_audio_payload_as_text() -> Result<()> {
+async fn remote_compact_omits_inline_audio_payload_without_charging_it_as_text() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
@@ -2267,7 +2282,9 @@ async fn remote_compact_does_not_charge_inline_audio_payload_as_text() -> Result
         serde_json::from_value::<FunctionCallOutputPayload>(output)?,
         FunctionCallOutputPayload {
             body: FunctionCallOutputBody::ContentItems(vec![
-                FunctionCallOutputContentItem::InputAudio { audio_url },
+                FunctionCallOutputContentItem::InputText {
+                    text: "audio content omitted for remote compaction".to_string(),
+                },
             ]),
             success: None,
         }
