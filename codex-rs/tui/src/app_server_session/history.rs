@@ -24,10 +24,11 @@ use color_eyre::eyre::Result;
 use color_eyre::eyre::WrapErr;
 
 pub(crate) const INITIAL_HISTORY_TURN_LIMIT: u32 = 5;
-// Cold resume only needs a recent transcript tail; older items remain available through paging.
-pub(crate) const INITIAL_HISTORY_ITEM_LIMIT: usize = 20;
-// Thread items can contain multi-megabyte inline media, so keep each transport page small.
-pub(crate) const HISTORY_ITEM_PAGE_LIMIT: u32 = 16;
+const INITIAL_HISTORY_ROW_LIMIT: usize = 20;
+const INITIAL_HISTORY_ITEM_SCAN_LIMIT: usize = 128;
+// Thread items can contain multi-megabyte inline media, so keep initial transport pages small.
+pub(super) const INITIAL_HISTORY_ITEM_PAGE_LIMIT: u32 = 16;
+pub(crate) const HISTORY_ITEM_PAGE_LIMIT: u32 = 100;
 pub(crate) const HISTORY_ITEM_SCAN_LIMIT: usize = 4 * HISTORY_ITEM_PAGE_LIMIT as usize;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -124,13 +125,22 @@ impl AppServerSession {
         limit: u32,
     ) -> Result<ThreadItemsListResponse> {
         let request_id = self.next_request_id();
-        self.client
+        let mut page = self
+            .client
             .request_typed(ClientRequest::ThreadItemsList {
                 request_id,
                 params: thread_items_page_params(thread_id, turn_id, cursor, limit),
             })
             .await
-            .wrap_err("failed to load a bounded thread item page")
+            .wrap_err("failed to load a bounded thread item page")?;
+        for entry in &mut page.data {
+            if let ThreadItem::ImageGeneration(item) = &mut entry.item {
+                // Historical rendering uses `saved_path`; retaining the inline base64 result can
+                // multiply resume memory by hundreds of megabytes.
+                item.result.clear();
+            }
+        }
+        Ok(page)
     }
 
     pub(crate) async fn thread_turns_page(
@@ -257,11 +267,23 @@ impl AppServerSession {
         let width = crossterm::terminal::size()
             .map(|(width, _)| width.max(/*other*/ 1))
             .unwrap_or(/*default*/ 80);
-        let row_budget = local_settings
+        let configured_row_budget = local_settings
             .and_then(|settings| resize_reflow_max_rows(settings.terminal_resize_reflow()));
+        let row_budget = match scope {
+            HistoryHydrationScope::Initial => Some(
+                configured_row_budget
+                    .unwrap_or(/*default*/ 1)
+                    .min(INITIAL_HISTORY_ROW_LIMIT),
+            ),
+            HistoryHydrationScope::Complete => configured_row_budget,
+        };
         let item_budget = match scope {
-            HistoryHydrationScope::Initial => Some(INITIAL_HISTORY_ITEM_LIMIT),
+            HistoryHydrationScope::Initial => Some(INITIAL_HISTORY_ITEM_SCAN_LIMIT),
             HistoryHydrationScope::Complete => None,
+        };
+        let page_limit = match scope {
+            HistoryHydrationScope::Initial => INITIAL_HISTORY_ITEM_PAGE_LIMIT,
+            HistoryHydrationScope::Complete => HISTORY_ITEM_PAGE_LIMIT,
         };
         let mut scanned_items = 0;
         let mut rendered_rows = 0;
@@ -272,8 +294,8 @@ impl AppServerSession {
                 break;
             }
             let limit = remaining_items
-                .unwrap_or(HISTORY_ITEM_PAGE_LIMIT as usize)
-                .min(HISTORY_ITEM_PAGE_LIMIT as usize);
+                .unwrap_or(page_limit as usize)
+                .min(page_limit as usize);
             let limit = if rendered_rows == 0 && scanned_items != 0 {
                 limit
             } else {

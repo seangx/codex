@@ -3426,7 +3426,7 @@ mod tests {
         let codex_home = tempfile::tempdir().expect("tempdir");
         let mut config = build_config(&codex_home).await;
         config.terminal_resize_reflow.max_rows =
-            crate::legacy_core::config::TerminalResizeReflowMaxRows::Limit(100);
+            crate::legacy_core::config::TerminalResizeReflowMaxRows::Disabled;
         let filename_ts = "2025-01-05T12-00-00";
         let source_id = create_fake_paginated_rollout(
             codex_home.path(),
@@ -3489,7 +3489,7 @@ mod tests {
             )
             .await?;
         let loaded_items: usize = resumed.turns.iter().map(|turn| turn.items.len()).sum();
-        assert!(loaded_items <= super::history::INITIAL_HISTORY_ITEM_LIMIT);
+        assert!(loaded_items <= super::history::INITIAL_HISTORY_ITEM_PAGE_LIMIT as usize);
         assert!(app_server.has_older_history(source_thread_id));
 
         let mut side_config = config;
