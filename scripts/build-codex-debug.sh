@@ -7,6 +7,10 @@ manifest="$repo_root/codex-rs/Cargo.toml"
 lockfile="$repo_root/codex-rs/Cargo.lock"
 binary="$repo_root/codex-rs/target/debug/codex"
 host_binary="$repo_root/codex-rs/target/debug/codex-code-mode-host"
+install_dir=${CODEX_DEBUG_INSTALL_DIR:-"$HOME/.local/lib/codex"}
+bin_dir=${CODEX_DEBUG_BIN_DIR:-"$HOME/.local/bin"}
+installed_binary="$install_dir/codex-debug"
+installed_host_binary="$install_dir/codex-code-mode-host"
 
 fail() {
   printf 'error: %s\n' "$*" >&2
@@ -156,6 +160,34 @@ if [ "$actual_version" != "$expected_version" ]; then
 fi
 "$host_binary" --help >/dev/null
 
+mkdir -p "$install_dir" "$bin_dir"
+for link in "$bin_dir/codex-debug" "$bin_dir/codex-code-mode-host"; do
+  if [ -e "$link" ] && [ ! -L "$link" ]; then
+    fail "refusing to replace non-symlink executable: $link"
+  fi
+done
+
+install_artifact() {
+  source=$1
+  destination=$2
+  staged=$(mktemp "$install_dir/.codex-debug-install.XXXXXX")
+  install -m 755 "$source" "$staged"
+  mv -f "$staged" "$destination"
+}
+
+install_artifact "$binary" "$installed_binary"
+install_artifact "$host_binary" "$installed_host_binary"
+ln -sfn "$installed_binary" "$bin_dir/codex-debug"
+ln -sfn "$installed_host_binary" "$bin_dir/codex-code-mode-host"
+
+installed_version=$("$bin_dir/codex-debug" --version)
+if [ "$installed_version" != "$expected_version" ]; then
+  fail "installed binary reported '$installed_version'; expected '$expected_version'"
+fi
+"$bin_dir/codex-code-mode-host" --help >/dev/null
+
 printf 'Built %s\n' "$actual_version"
 printf 'Binary: %s\n' "$binary"
 printf 'Code mode host: %s\n' "$host_binary"
+printf 'Installed Codex debug: %s\n' "$installed_binary"
+printf 'Installed code mode host: %s\n' "$installed_host_binary"
