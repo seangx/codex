@@ -186,16 +186,16 @@ fn limit_remote_compaction_prompt_history(
                 call_id: Some(call_id),
                 ..
             } => {
-                function_call_ids.insert(call_id.as_str());
+                function_call_ids.insert(call_id.clone());
             }
             ResponseItem::CustomToolCall { call_id, .. } => {
-                custom_tool_call_ids.insert(call_id.as_str());
+                custom_tool_call_ids.insert(call_id.clone());
             }
             ResponseItem::ToolSearchCall {
                 call_id: Some(call_id),
                 ..
             } => {
-                tool_search_call_ids.insert(call_id.as_str());
+                tool_search_call_ids.insert(call_id.clone());
             }
             _ => {}
         }
@@ -204,15 +204,15 @@ fn limit_remote_compaction_prompt_history(
         ResponseItem::FunctionCallOutput {
             call_id: Some(call_id),
             ..
-        } => function_call_ids.contains(call_id.as_str()),
+        } => function_call_ids.contains(call_id),
         ResponseItem::CustomToolCallOutput { call_id, .. } => {
-            custom_tool_call_ids.contains(call_id.as_str())
+            custom_tool_call_ids.contains(call_id)
         }
         ResponseItem::ToolSearchOutput {
             call_id: Some(call_id),
             execution,
             ..
-        } if execution != "server" => tool_search_call_ids.contains(call_id.as_str()),
+        } if execution != "server" => tool_search_call_ids.contains(call_id),
         _ => true,
     });
     prompt_history
