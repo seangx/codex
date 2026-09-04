@@ -291,7 +291,7 @@ mod tests {
         let bounded = limit_remote_compaction_prompt_history(
             vec![
                 ResponseItemEnvelope::new(ResponseItem::FunctionCall {
-                    id: Some("fc-1".into()),
+                    id: None,
                     name: "shell".to_string(),
                     namespace: None,
                     arguments: "{}".to_string(),
@@ -300,7 +300,7 @@ mod tests {
                     internal_chat_message_metadata_passthrough: None,
                 }),
                 ResponseItemEnvelope::new(ResponseItem::FunctionCallOutput {
-                    id: Some("fco-1".into()),
+                    id: None,
                     call_id: Some("call-1".to_string()),
                     name: Some("shell".to_string()),
                     namespace: None,
