@@ -1596,7 +1596,7 @@ async fn older_pagination_reconciles_review_prompts_across_page_boundaries() -> 
         vec!["newer visible prompt"]
     );
     app.backtrack.overlay_preview_active = true;
-    app.backtrack.nth_user_message = 1;
+    app.backtrack.nth_user_message = 0;
     let mut tui = crate::tui::test_support::make_test_tui()?;
     app.open_transcript_overlay(&mut tui);
     app.apply_backtrack_selection_internal(app.backtrack.nth_user_message);
