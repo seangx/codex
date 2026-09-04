@@ -55,10 +55,8 @@ pub(super) async fn run_remote_compact_attempt(
                     .saturating_sub(estimated_deleted_tokens.min(max_local_deleted_tokens))
             });
     }
-    let trace_input_history = compaction_trace
-        .is_enabled()
-        .then(|| history.raw_items().cloned().collect());
-    let prompt_input = history.for_prompt(&turn_context.model_info().input_modalities);
+    let prompt_input = history.for_compaction_prompt(&turn_context.model_info().input_modalities);
+    let trace_input_history = compaction_trace.is_enabled().then(|| prompt_input.clone());
     let tool_router = &step_context.tool_router;
     let prompt = Prompt {
         input: prompt_input,
