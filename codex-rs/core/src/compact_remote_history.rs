@@ -42,6 +42,39 @@ where
     })
 }
 
+/// Keeps the newest complete history groups within an item-count limit.
+///
+/// The grouping keeps generated resize notices attached to their source item, so a stable tail
+/// slice never begins with a detached notice. Items remain in their original order.
+pub(crate) fn retain_recent_history_item_groups<T>(items: Vec<T>, max_items: usize) -> Vec<T>
+where
+    T: Borrow<ResponseItem>,
+{
+    if items.len() <= max_items {
+        return items;
+    }
+
+    let mut remaining = max_items;
+    let mut retained_reversed = Vec::new();
+    for group in history_item_groups(items)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+    {
+        let group_len = 1 + usize::from(group.attached_notice.is_some());
+        if group_len > remaining {
+            break;
+        }
+        remaining -= group_len;
+        retained_reversed.push(group);
+    }
+    retained_reversed.reverse();
+    retained_reversed
+        .into_iter()
+        .flat_map(HistoryItemGroup::into_items)
+        .collect()
+}
+
 fn is_attached_notice(notice: &ResponseItem) -> bool {
     matches!(
         notice,
