@@ -87,9 +87,9 @@ pub(crate) fn ensure_call_outputs_present(items: &mut Vec<ResponseItemEnvelope>)
             ResponseItem::CustomToolCall { id, call_id, .. }
                 if !custom_tool_output_ids.contains(call_id.as_str()) =>
             {
-                error_or_panic(format!(
-                    "Custom tool call output is missing for call id: {call_id}"
-                ));
+                // An interrupted tool can persist its call before its output reaches the writer.
+                // Repair this resumable history in debug builds as well as release builds.
+                info!("Custom tool call output is missing for call id: {call_id}");
                 missing_outputs_to_insert.push((
                     idx,
                     ResponseItemEnvelope::new(ResponseItem::CustomToolCallOutput {
@@ -107,9 +107,7 @@ pub(crate) fn ensure_call_outputs_present(items: &mut Vec<ResponseItemEnvelope>)
                 call_id: Some(call_id),
                 ..
             } if !function_output_ids.contains(call_id.as_str()) => {
-                error_or_panic(format!(
-                    "Local shell call output is missing for call id: {call_id}"
-                ));
+                info!("Local shell call output is missing for call id: {call_id}");
                 missing_outputs_to_insert.push((
                     idx,
                     ResponseItemEnvelope::new(ResponseItem::FunctionCallOutput {
