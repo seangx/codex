@@ -370,6 +370,73 @@ async fn wait_for_turn_complete(codex: &codex_core::CodexThread) {
     .await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_compact_v2_responses_lite_respects_input_item_limit() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let harness = TestCodexHarness::with_auto_env_builder(
+        test_codex()
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+            .with_model_info_override("gpt-5.4", |model_info| {
+                model_info.use_responses_lite = true;
+            })
+            .with_config(|config| {
+                config
+                    .features
+                    .enable(Feature::RemoteCompactionV2)
+                    .expect("remote compaction v2 should be configurable");
+            }),
+    )
+    .await?;
+    let initial_history = (0..16_390)
+        .map(|index| {
+            RolloutItem::ResponseItem(
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: format!("history-{index}"),
+                    }],
+                    phase: None,
+                    internal_chat_message_metadata_passthrough: None,
+                }
+                .into(),
+            )
+        })
+        .collect();
+    let codex = harness
+        .test()
+        .thread_manager
+        .start_thread(StartThreadOptions {
+            initial_history: InitialHistory::Forked(initial_history),
+            ..StartThreadOptions::new(harness.test().config.clone())
+        })
+        .await?
+        .thread;
+    let response_mock = mount_sse_once(
+        harness.server(),
+        sse(vec![
+            json!({
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "compaction",
+                    "encrypted_content": "BOUNDED_COMPACTION_SUMMARY",
+                }
+            }),
+            responses::ev_completed("compact"),
+        ]),
+    )
+    .await;
+
+    codex.submit(Op::Compact).await?;
+    wait_for_turn_complete(&codex).await;
+
+    let compact_request = response_mock.single_request();
+    assert_eq!(compact_request.input().len(), 16_384);
+    codex.shutdown_and_wait().await?;
+    Ok(())
+}
+
 fn amazon_bedrock_test_codex() -> TestCodexBuilder {
     let auth = CodexAuth::BedrockApiKey(BedrockApiKeyAuth {
         api_key: "bedrock-test-api-key".to_string(),
