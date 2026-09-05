@@ -2250,7 +2250,7 @@ fn interrupted_custom_tool_prompt_repair_is_stable_and_idempotent() {
         internal_chat_message_metadata_passthrough: None,
     };
     let history = create_history_with_items(vec![call.clone()]);
-    let first = history.for_prompt(&default_input_modalities());
+    let first = history.clone().for_prompt(&default_input_modalities());
     let resumed =
         create_history_with_items(vec![call.clone()]).for_prompt(&default_input_modalities());
     assert_eq!(first, resumed);
