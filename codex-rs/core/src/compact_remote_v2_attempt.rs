@@ -20,10 +20,9 @@ use codex_rollout_trace::CompactionTraceContext;
 use std::collections::HashSet;
 use tracing::info;
 
-// The Responses API accepts at most 16,384 top-level input items. Remote compaction v2 appends one
-// compaction trigger after the history, so reserve that slot before constructing the request.
+// The Responses API accepts at most 16,384 top-level input items.
 const RESPONSES_INPUT_ITEM_LIMIT: usize = 16_384;
-const REMOTE_COMPACTION_HISTORY_ITEM_LIMIT: usize = RESPONSES_INPUT_ITEM_LIMIT - 1;
+const COMPACTION_TRIGGER_INPUT_ITEM_COUNT: usize = 1;
 
 pub(super) struct RemoteCompactV2Attempt {
     pub(super) trace_input_history: Option<Vec<ResponseItem>>,
@@ -81,9 +80,26 @@ pub(super) async fn run_remote_compact_v2_attempt(
     let prompt_history =
         history.for_compaction_prompt_annotated(&turn_context.model_info().input_modalities);
     let original_prompt_item_count = prompt_history.len();
+    // Remote compaction appends one trigger. Responses Lite additionally prepends the tool
+    // inventory and, when present, the base instructions while constructing the wire request.
+    // Reserve every generated item before bounding history so the serialized `input` stays within
+    // the API limit rather than bounding only the pre-format Prompt.
+    let responses_lite_prefix_item_count = if turn_context.model_info().use_responses_lite {
+        let base_instructions_item_count = if base_instructions.text.is_empty() {
+            0
+        } else {
+            1
+        };
+        1 + base_instructions_item_count
+    } else {
+        0
+    };
+    let remote_compaction_history_item_limit = RESPONSES_INPUT_ITEM_LIMIT
+        .saturating_sub(COMPACTION_TRIGGER_INPUT_ITEM_COUNT)
+        .saturating_sub(responses_lite_prefix_item_count);
     let prompt_history = limit_remote_compaction_prompt_history(
         prompt_history,
-        REMOTE_COMPACTION_HISTORY_ITEM_LIMIT,
+        remote_compaction_history_item_limit,
     );
     if prompt_history.len() < original_prompt_item_count {
         info!(
@@ -250,22 +266,19 @@ mod tests {
         let original = (0..RESPONSES_INPUT_ITEM_LIMIT + 5)
             .map(|index| message("user", format!("message-{index}")))
             .collect::<Vec<_>>();
+        let max_items = RESPONSES_INPUT_ITEM_LIMIT - 3;
 
-        let first = limit_remote_compaction_prompt_history(
-            original.clone(),
-            REMOTE_COMPACTION_HISTORY_ITEM_LIMIT,
-        );
-        let second =
-            limit_remote_compaction_prompt_history(original, REMOTE_COMPACTION_HISTORY_ITEM_LIMIT);
+        let first = limit_remote_compaction_prompt_history(original.clone(), max_items);
+        let second = limit_remote_compaction_prompt_history(original, max_items);
 
         assert_eq!(first, second);
-        assert_eq!(first.len(), REMOTE_COMPACTION_HISTORY_ITEM_LIMIT);
-        assert_eq!(message_text(&first[0]), Some("message-6"));
+        assert_eq!(first.len(), max_items);
+        assert_eq!(message_text(&first[0]), Some("message-8"));
         assert_eq!(
             message_text(first.last().expect("last item")),
             Some("message-16388")
         );
-        assert!(first.len() + 1 <= RESPONSES_INPUT_ITEM_LIMIT);
+        assert!(first.len() + 3 <= RESPONSES_INPUT_ITEM_LIMIT);
     }
 
     #[test]
