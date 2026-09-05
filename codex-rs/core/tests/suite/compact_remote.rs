@@ -437,6 +437,67 @@ async fn remote_compact_v2_responses_lite_respects_input_item_limit() -> Result<
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_compact_v2_recovers_interrupted_custom_tool_call() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let harness = TestCodexHarness::with_auto_env_builder(
+        test_codex()
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+            .with_config(|config| {
+                config
+                    .features
+                    .enable(Feature::RemoteCompactionV2)
+                    .expect("remote compaction v2 should be configurable");
+            }),
+    )
+    .await?;
+    let call = ResponseItem::CustomToolCall {
+        id: Some(codex_protocol::ResponseItemId::with_suffix(
+            "ctc",
+            "interrupted",
+        )),
+        status: None,
+        call_id: "interrupted-call".to_string(),
+        name: "exec".to_string(),
+        namespace: None,
+        input: "interrupted command".to_string(),
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let codex = harness
+        .test()
+        .thread_manager
+        .start_thread(StartThreadOptions {
+            initial_history: InitialHistory::Forked(vec![RolloutItem::ResponseItem(call.into())]),
+            ..StartThreadOptions::new(harness.test().config.clone())
+        })
+        .await?
+        .thread;
+    let response_mock = mount_sse_once(
+        harness.server(),
+        sse(vec![
+            json!({
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "compaction",
+                    "encrypted_content": "RECOVERED_COMPACTION_SUMMARY",
+                }
+            }),
+            responses::ev_completed("compact-recovered"),
+        ]),
+    )
+    .await;
+
+    codex.submit(Op::Compact).await?;
+    wait_for_turn_complete(&codex).await;
+
+    let compact_request = response_mock.single_request();
+    let output = compact_request.custom_tool_call_output("interrupted-call");
+    assert_eq!(output["output"], json!("aborted"));
+    codex.shutdown_and_wait().await?;
+    Ok(())
+}
+
 fn amazon_bedrock_test_codex() -> TestCodexBuilder {
     let auth = CodexAuth::BedrockApiKey(BedrockApiKeyAuth {
         api_key: "bedrock-test-api-key".to_string(),
