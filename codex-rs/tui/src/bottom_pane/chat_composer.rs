@@ -1,14 +1,9 @@
 //! The chat composer is the bottom-pane text input state machine.
 //!
-//! It is responsible for:
-//!
-//! - Editing the input buffer (a [`TextArea`]), including placeholder "elements" for attachments.
-//! - Routing keys to the active popup (slash commands, file search, skill/apps/task mentions).
-//! - Promoting typed slash commands into atomic elements when the command name is completed.
-//! - Handling submit vs newline on Enter.
-//! - Showing a single yellow prompt arrow while the active model is Luna Reserve.
-//! - Turning raw key streams into explicit paste operations on platforms where terminals
-//!   don't provide reliable bracketed paste (notably Windows).
+//! It edits the [`TextArea`] buffer and attachment elements, routes popup keys, promotes
+//! completed slash commands to atomic elements, and handles Enter submission/newlines.
+//! It also shows Luna Reserve's yellow prompt arrow and detects unbracketed paste bursts
+//! from raw key streams, particularly on Windows.
 //!
 //! The plain-text preset keeps command prefixes literal, including `!`, so Enter and Tab
 //! submit ordinary text without enabling shell mode.
@@ -59,14 +54,12 @@
 //!   mention bindings, but attachments cannot be restored).
 //! - Local in-session history (full text + text elements + local/remote image attachments).
 //!
-//! When recalling a local entry, the composer rehydrates text elements and both attachment kinds
-//! (local image paths + remote image URLs).
+//! Plain-text history recall strips images and their placeholders.
 //! When recalling a persistent entry, encoded task links restore atomic elements and bindings.
-//! Recalled entries move the cursor to end-of-line so repeated Up/Down presses keep shell-like
-//! history traversal semantics instead of dropping to column 0.
-//! `Ctrl+R` opens a reverse incremental search mode. The footer becomes the search input; once the
-//! query is non-empty, the composer body previews the current match. `Enter` accepts the preview as
-//! an editable draft and `Esc` restores the draft that was active when search started.
+//! Recall moves the cursor to the end. Question editors copy primary history on recall/search;
+//! draft capture cancels previews, and restoration resets traversal.
+//! Ctrl+R searches history in the footer and previews matches in the composer.
+//! Enter accepts the preview; Esc restores the original draft.
 //! Vim undo/redo snapshots complete drafts and groups direct edits with active Vim transactions.
 //! An active edit keeps one separately capped snapshot; canceling does not evict committed history.
 //! Canceled history previews restore history and active commands; accepting another prompt resets them.
@@ -178,6 +171,8 @@
 //! Shift, or Windows AltGr) into
 //! [`PasteBurst`](super::paste_burst::PasteBurst), which buffers bursts and later flushes them
 //! through [`ChatComposer::handle_paste`].
+//! Parent views must keep flushing editors that lose focus while input is buffered; a hidden
+//! editor's pending burst can otherwise keep the shared draw loop waiting indefinitely.
 //!
 //! The burst detector intentionally treats ASCII and non-ASCII differently:
 //!
@@ -284,7 +279,6 @@ use super::paste_burst::PasteBurst;
 use super::prompt_args::parse_slash_name;
 use super::skill_popup::MentionItem;
 use super::skill_popup::SkillPopup;
-use super::slash_commands::BuiltinCommandFlags;
 use super::slash_commands::ServiceTierCommand;
 use super::slash_commands::SlashCommandItem;
 use crate::bottom_pane::paste_burst::FlushResult;
@@ -314,9 +308,11 @@ mod completion_target;
 mod draft_state;
 mod footer_state;
 mod history_search;
+mod inline_input;
 mod popup_state;
 mod reconnect;
 mod slash_input;
+mod sparkle;
 mod vim_history;
 mod vim_search;
 
@@ -485,6 +481,8 @@ pub(crate) struct ChatComposerConfig {
     pub(crate) image_paste_enabled: bool,
     /// Strip leading and trailing whitespace from submissions.
     pub(crate) trim_submission: bool,
+    /// Embedded editors reset Vim only when their owner accepts the answer.
+    pub(crate) reset_vim_on_submission: bool,
 }
 
 impl Default for ChatComposerConfig {
@@ -495,6 +493,7 @@ impl Default for ChatComposerConfig {
             shell_commands_enabled: true,
             image_paste_enabled: true,
             trim_submission: true,
+            reset_vim_on_submission: true,
         }
     }
 }
@@ -511,6 +510,7 @@ impl ChatComposerConfig {
             shell_commands_enabled: false,
             image_paste_enabled: false,
             trim_submission: true,
+            reset_vim_on_submission: true,
         }
     }
 }
@@ -527,6 +527,7 @@ pub(crate) struct ChatComposer {
     effort_tier: Option<EffortTier>,
     effort_animation_style: Option<IgnitionStyle>,
     effort_ignition: Option<EffortIgnition>,
+    astra_sparkle: Option<sparkle::Sparkle>,
     effort_status_line_transition: Option<EffortStatusLineTransition>,
     effort_observed: bool,
     luna_reserve_active: bool,
@@ -554,6 +555,7 @@ pub(crate) struct ChatComposer {
     mentions_v2_enabled: bool,
     goal_command_enabled: bool,
     personality_command_enabled: bool,
+    worktrees_enabled: bool,
     windows_degraded_sandbox_active: bool,
     side_conversation_active: bool,
     history_search: Option<HistorySearchSession>,
@@ -574,9 +576,9 @@ struct MentionCompletionTarget {
     prebuilt_mentions: Option<Vec<MentionItem>>,
 }
 
-#[derive(Clone, Debug)]
-struct ComposerDraft {
-    text: String,
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct ComposerDraft {
+    pub(super) text: String,
     text_elements: Vec<TextElement>,
     local_image_paths: Vec<PathBuf>,
     remote_image_urls: Vec<String>,
@@ -608,20 +610,6 @@ impl ChatComposer {
             self.builtin_command_flags(),
             &self.service_tier_commands,
         )
-    }
-
-    fn builtin_command_flags(&self) -> BuiltinCommandFlags {
-        BuiltinCommandFlags {
-            collaboration_modes_enabled: self.collaboration_modes_enabled,
-            connectors_enabled: self.connectors_enabled,
-            plugins_command_enabled: self.plugins_command_enabled,
-            token_activity_command_enabled: self.token_activity_command_enabled,
-            service_tier_commands_enabled: self.service_tier_commands_enabled,
-            goal_command_enabled: self.goal_command_enabled,
-            personality_command_enabled: self.personality_command_enabled,
-            allow_elevate_sandbox: self.windows_degraded_sandbox_active,
-            side_conversation_active: self.side_conversation_active,
-        }
     }
 
     pub fn new(
@@ -707,6 +695,7 @@ impl ChatComposer {
             effort_tier: None,
             effort_animation_style: None,
             effort_ignition: None,
+            astra_sparkle: None,
             effort_status_line_transition: None,
             effort_observed: false,
             luna_reserve_active: false,
@@ -730,6 +719,7 @@ impl ChatComposer {
             mentions_v2_enabled: false,
             goal_command_enabled: false,
             personality_command_enabled: false,
+            worktrees_enabled: false,
             windows_degraded_sandbox_active: false,
             side_conversation_active: false,
             history_search: None,
@@ -1462,7 +1452,7 @@ impl ChatComposer {
             .should_handle_vim_insert_escape(key_event)
     }
 
-    fn vim_mode_indicator_span(&self) -> Option<Span<'static>> {
+    pub(crate) fn vim_mode_indicator_span(&self) -> Option<Span<'static>> {
         self.draft.textarea.vim_mode_indicator_span()
     }
 
@@ -1580,18 +1570,7 @@ impl ChatComposer {
         );
     }
 
-    /// Replace the entire composer content while restoring mention link targets.
-    ///
-    /// Mention popup insertion stores both visible text (for example `$file`)
-    /// and hidden mention bindings used to resolve the canonical target during
-    /// submission. Use this method when restoring an interrupted or blocked
-    /// draft; if callers restore only text and images, mentions can appear
-    /// intact to users while resolving to the wrong target or dropping on
-    /// retry.
-    ///
-    /// This helper intentionally places the cursor at the start of the restored text. Callers
-    /// that need end-of-line restore behavior (for example shell-style history recall) should call
-    /// [`Self::move_cursor_to_end`] after this method.
+    /// Restore draft content; clear pending input and undo history. The cursor starts at zero.
     pub(crate) fn set_text_content_with_mention_bindings(
         &mut self,
         text: String,
@@ -1619,7 +1598,7 @@ impl ChatComposer {
         self.sync_popups();
     }
 
-    fn current_cursor(&self) -> usize {
+    pub(crate) fn current_cursor(&self) -> usize {
         self.draft.textarea.cursor() + if self.draft.is_bash_mode { 1 } else { 0 }
     }
 
@@ -1672,7 +1651,7 @@ impl ChatComposer {
         Some(element.map_range(|_| (start..end).into()))
     }
 
-    fn snapshot_draft(&self) -> ComposerDraft {
+    pub(super) fn snapshot_draft(&self) -> ComposerDraft {
         ComposerDraft {
             text: self.current_text(),
             text_elements: self.current_text_elements(),
@@ -1684,7 +1663,7 @@ impl ChatComposer {
         }
     }
 
-    fn restore_draft(&mut self, draft: ComposerDraft) {
+    pub(super) fn restore_draft(&mut self, draft: ComposerDraft) {
         let ComposerDraft {
             text,
             text_elements,
@@ -1797,13 +1776,8 @@ impl ChatComposer {
         }
     }
 
-    /// Rehydrate a history entry into the composer with shell-like cursor placement.
-    ///
-    /// This path restores text, elements, images, mention bindings, and pending paste payloads,
-    /// then moves the cursor to the active mode's history boundary. If a caller reused
-    /// [`Self::set_text_content_with_mention_bindings`] directly for history recall and forgot the
-    /// final cursor move, repeated Up/Down would stop navigating history because cursor-gating
-    /// treats interior positions as normal editing mode.
+    /// Recall content at its history boundary, preserving pending pastes and omitting images
+    /// in plain-text editors.
     fn apply_history_entry(&mut self, entry: HistoryEntry) {
         let HistoryEntry {
             text,
@@ -1821,6 +1795,20 @@ impl ChatComposer {
             mention_bindings,
         );
         self.set_pending_pastes(pending_pastes);
+        if !self.config.image_paste_enabled {
+            for image in self.attachments.local_images() {
+                if let Some(element) = self.draft.textarea.text_elements().into_iter().find(|e| {
+                    e.placeholder(self.draft.textarea.text()) == Some(image.placeholder.as_str())
+                }) {
+                    let range = element.byte_range;
+                    self.draft
+                        .textarea
+                        .replace_range(range.start..range.end, "");
+                }
+            }
+            self.attachments = AttachmentState::default();
+        }
+        self.history.record_recalled_text(self.current_text());
         self.move_cursor_to_history_entry_end();
     }
 
@@ -3203,9 +3191,9 @@ impl ChatComposer {
                 | InputResult::Command(_)
                 | InputResult::ServiceTierCommand(_)
                 | InputResult::CommandWithArgs(_, _, _)
-        ) {
-            self.vim_history = VimHistory::default();
-            self.draft.textarea.enter_vim_insert_mode();
+        ) && self.config.reset_vim_on_submission
+        {
+            self.reset_vim_mode();
         }
     }
 
@@ -5082,6 +5070,14 @@ impl ChatComposer {
             {
                 frame_requester.schedule_frame_in(IGNITION_FRAME_TICK);
             }
+        }
+        drop(state);
+        if self.astra_sparkle.is_some() {
+            self.render_sparkle(
+                composer_rect,
+                self.cursor_pos_with_textarea_right_reserve(area, textarea_right_reserve),
+                buf,
+            );
         }
     }
 }

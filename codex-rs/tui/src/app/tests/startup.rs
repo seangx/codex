@@ -945,6 +945,7 @@ async fn known_thread_started_preserves_session_without_reading_unmaterialized_r
             section: None,
             section_entered_at: None,
             project_id: None,
+            daybreak_enabled: None,
             history_mode: Default::default(),
             model_provider: "notification-provider".to_string(),
             model: None,
@@ -1240,6 +1241,13 @@ async fn owned_subagent_approval_before_thread_started_is_preserved() -> Result<
 async fn startup_thread_start_failure_returns_error() {
     let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
     app.pending_startup_thread_start = true;
+    let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+    app.insert_history_cell(
+        &mut tui,
+        Box::new(history_cell::StartupWarningsCell::new(vec![
+            "Skill manifest is invalid.".to_string(),
+        ])),
+    );
 
     let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
         app.chat_widget.config_ref(),
@@ -1251,10 +1259,12 @@ async fn startup_thread_start_failure_returns_error() {
         .await
         .expect_err("startup thread failure should exit instead of leaving chat unconfigured");
 
-    assert!(
-        err.to_string()
-            .contains("Failed to start a fresh session through the app server: boom")
-    );
+    insta::assert_snapshot!(err.to_string(), @"
+    Failed to start a fresh session through the app server: boom
+
+    Startup warnings:
+    Skill manifest is invalid.
+    ");
     assert!(!app.pending_startup_thread_start);
     assert_eq!(app.primary_thread_id, None);
 }

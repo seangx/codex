@@ -413,6 +413,10 @@ pub(crate) async fn run_turn(
                 .record_step_world_state_if_changed(&world_state, step_context.as_ref())
                 .await?;
 
+            // Keep the override after accepted input so ordinary turn rollback removes it too.
+            sess.record_reasoning_effort_override(step_context.as_ref())
+                .await;
+
             // Construct the input that we will send to the model.
             let sampling_request_input: Vec<ResponseItem> = async {
                 sess.clone_history()
@@ -1069,14 +1073,7 @@ async fn track_turn_resolved_config_analytics(
                 .services
                 .thread_extension_data
                 .get::<codex_extension_api::GuardianV2Enabled>()
-                .is_some_and(|state| {
-                    state.computer_use_only
-                        || !turn_context
-                            .config
-                            .config_layer_stack
-                            .requirements()
-                            .auto_review_required_for_model(&turn_context.model_info().slug)
-                }),
+                .is_some(),
             sandbox_network_access: turn_context.network_sandbox_policy().is_enabled(),
             collaboration_mode: turn_context.mode(),
             personality: turn_context.personality(),
@@ -1444,6 +1441,10 @@ async fn run_sampling_request(
     let mut original_input = None;
     let mut executed_tool_calls_by_output = HashMap::new();
     loop {
+        // A retry must not attribute the next tool call to the previous response.
+        turn_context
+            .extension_data
+            .remove::<codex_api::ResponseId>();
         let prompt_input = if let Some(input) = initial_input.take() {
             input
         } else {
@@ -2379,7 +2380,13 @@ async fn try_run_sampling_request(
         record_turn_ttft_metric(&turn_context, &event).await;
 
         match event {
-            ResponseEvent::Created => {}
+            ResponseEvent::Created { response_id } => {
+                if let Some(response_id) = response_id {
+                    turn_context
+                        .extension_data
+                        .insert(codex_api::ResponseId(response_id));
+                }
+            }
             ResponseEvent::OutputItemDone(mut item) => {
                 assign_missing_streamed_response_item_id(&mut item, active_item.as_ref());
                 if analytics_tool_call_ids.len() < MAX_ANALYTICS_TOOL_CALL_IDS_PER_RESPONSE {

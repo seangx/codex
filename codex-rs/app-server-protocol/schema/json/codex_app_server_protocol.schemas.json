@@ -8098,6 +8098,12 @@
               "null"
             ]
           },
+          "allowWebmcp": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
           "defaultOriginPolicy": {
             "anyOf": [
               {
@@ -12528,7 +12534,7 @@
                 "type": "string"
               },
               "cwd": {
-                "$ref": "#/definitions/v2/AbsolutePathBuf"
+                "$ref": "#/definitions/v2/LegacyAppPathString"
               },
               "source": {
                 "$ref": "#/definitions/v2/GuardianCommandSource"
@@ -12621,11 +12627,11 @@
           {
             "properties": {
               "cwd": {
-                "$ref": "#/definitions/v2/AbsolutePathBuf"
+                "$ref": "#/definitions/v2/LegacyAppPathString"
               },
               "files": {
                 "items": {
-                  "$ref": "#/definitions/v2/AbsolutePathBuf"
+                  "$ref": "#/definitions/v2/LegacyAppPathString"
                 },
                 "type": "array"
               },
@@ -14581,6 +14587,13 @@
               "$ref": "#/definitions/v2/Tool"
             },
             "type": "object"
+          },
+          "toolsError": {
+            "description": "Tool discovery failed and no catalog was returned. Null when a catalog is returned, including cached or empty catalogs.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -19034,7 +19047,7 @@
               }
             ],
             "default": null,
-            "description": "Where to run the review: inline (default) on the current thread or detached on a new thread (returned in `reviewThreadId`)."
+            "description": "Where to run the review: inline (default) on the current thread or detached on a new thread (returned in `reviewThreadId`). Detached delivery is deprecated and emits `deprecationNotice`. Use `thread/start` followed by an inline review for a separate review thread."
           },
           "target": {
             "$ref": "#/definitions/v2/ReviewTarget"

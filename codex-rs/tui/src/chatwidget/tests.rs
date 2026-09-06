@@ -234,6 +234,8 @@ mod app_server;
 mod approval_requests;
 #[path = "tests/backend_banners_tests.rs"]
 mod backend_banners_tests;
+#[path = "tests/bedrock_catalog_tests.rs"]
+mod bedrock_catalog_tests;
 #[path = "tests/collaboration_catalog_tests.rs"]
 mod collaboration_catalog_tests;
 #[path = "tests/compaction_tests.rs"]
@@ -271,8 +273,13 @@ mod status_command_tests;
 mod status_surface_previews;
 mod terminal_title;
 mod usage;
+#[path = "tests/worktree_picker_tests.rs"]
+mod worktree_picker;
 
 pub(crate) use helpers::make_chatwidget_manual_with_sender;
 pub(crate) use helpers::set_chatgpt_auth;
 pub(crate) use helpers::set_fast_mode_test_catalog;
 pub(super) use helpers::*;
+
+#[path = "tests/questions_tests.rs"]
+mod questions_tests;

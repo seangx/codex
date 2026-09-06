@@ -71,11 +71,13 @@ use std::ops::Range;
 use std::path::Path;
 use std::path::PathBuf;
 
+mod file_citations;
 mod local_links;
 mod streaming;
 mod table_key_value;
 mod web_links;
 
+use file_citations::FileCitations;
 use local_links::is_local_path_like_link;
 use local_links::local_file_browser_destination;
 use local_links::render_local_link_target;

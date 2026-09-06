@@ -22,8 +22,10 @@ async fn resolve_runtime_model_provider_base_url(provider: &ModelProviderInfo) -
 
 fn spawn_startup_thread_start(
     app_server: &AppServerSession,
+    local_settings: crate::local_settings::LocalSettings,
     config: Config,
     app_event_tx: AppEventSender,
+    worktree: Option<crate::ManagedTuiWorktree>,
 ) {
     let request_handle = app_server.request_handle();
     let thread_params_mode = app_server.thread_params_mode();
@@ -32,12 +34,19 @@ fn spawn_startup_thread_start(
     tokio::spawn(async move {
         let result = crate::app_server_session::start_thread_with_request_handle(
             request_handle,
+            &local_settings,
             config,
             thread_params_mode,
             remote_cwd_override,
             thread_tool_transport,
         )
-        .await;
+        .await
+        .and_then(|started| {
+            if let Some(worktree) = worktree.as_ref() {
+                worktree.bind(started.session.thread_id)?;
+            }
+            Ok(started)
+        });
         app_event_tx.send(AppEvent::StartupThreadStarted { result });
     });
 }
@@ -100,6 +109,7 @@ impl App {
         startup_bootstrap: Option<AppServerBootstrap>,
         startup_hooks_browser: Option<HooksListEntry>,
         mut startup_draft: StartupDraftPump,
+        managed_worktree: Option<crate::ManagedTuiWorktree>,
     ) -> Result<AppExitInfo> {
         use tokio_stream::StreamExt;
 
@@ -127,7 +137,11 @@ impl App {
         let startup_started_at = Instant::now();
         let (app_event_tx, mut app_event_rx) = unbounded_channel();
         let app_event_tx = AppEventSender::new(app_event_tx);
-        emit_project_config_warnings(&app_event_tx, &config);
+        if let Some(message) = project_config_warning(&config) {
+            app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
+                history_cell::StartupWarningsCell::new(vec![message]),
+            )));
+        }
         emit_system_bwrap_warning(&app_event_tx, &config);
         tui.set_notification_settings(
             local_settings.tui.notification_settings.method,
@@ -284,7 +298,13 @@ impl App {
             | SessionSelection::Exit
             | SessionSelection::AgentsOverview => {
                 if !start_in_agents_overview {
-                    spawn_startup_thread_start(&app_server, config.clone(), app_event_tx.clone());
+                    spawn_startup_thread_start(
+                        &app_server,
+                        local_settings.clone(),
+                        config.clone(),
+                        app_event_tx.clone(),
+                        managed_worktree.clone(),
+                    );
                 }
                 // Count a startup tooltip once the initial chat widget can render it.
                 let startup_tooltip_override = if start_in_agents_overview {
@@ -446,6 +466,11 @@ impl App {
                 else {
                     return Ok(cancel_session_start(app_server).await);
                 };
+                if let Some(worktree) = managed_worktree.as_ref()
+                    && let Err(err) = worktree.bind(forked.session.thread_id)
+                {
+                    return shutdown_on_startup_error(app_server, err).await;
+                }
                 let init = crate::chatwidget::ChatWidgetInit {
                     local_settings: local_settings.clone(),
                     config: config.clone(),
@@ -480,6 +505,10 @@ impl App {
         };
         chat_widget.note_rendered_width(tui.terminal.last_known_screen_size.width);
         chat_widget.remote_connection = remote_connection;
+        chat_widget.set_local_worktree_operations(!crate::uses_remote_workspace_or_environment(
+            &app_server_target,
+            environment_manager.as_ref(),
+        ));
         chat_widget.set_agents_navigation_enabled(matches!(
             app_server_target,
             AppServerTarget::LocalDaemon { .. }
@@ -501,6 +530,7 @@ See the Codex keymap documentation for supported actions and examples."
         let upgrade_version = crate::updates::get_upgrade_version(&config);
 
         let mut app = Self {
+            feature_write_lock: Arc::default(),
             model_catalog,
             session_telemetry: session_telemetry.clone(),
             app_event_tx,
@@ -547,6 +577,7 @@ See the Codex keymap documentation for supported actions and examples."
             windows_sandbox: WindowsSandboxState::default(),
             thread_event_channels: HashMap::new(),
             temporary_structured_requests: HashMap::new(),
+            pending_thread_titles: HashSet::new(),
             thread_event_listener_tasks: HashMap::new(),
             agent_navigation: AgentNavigationState::default(),
             agents_overview: Default::default(),
@@ -703,6 +734,11 @@ See the Codex keymap documentation for supported actions and examples."
         // already has data and available reset credits can be surfaced, without
         // delaying the initial frame render.
         if requires_openai_auth && has_chatgpt_account {
+            crate::daybreak::prefetch_notice(
+                &app.config,
+                &app_server,
+                app.chat_widget.cyber_policy_notice.clone(),
+            );
             let reset_hint_request_id = app.chat_widget.start_rate_limit_reset_startup_check();
             app.refresh_rate_limits(
                 &app_server,
@@ -900,6 +936,7 @@ See the Codex keymap documentation for supported actions and examples."
                         }
                     } => {
                         app.chat_widget.refresh_goal_status_indicator_for_time_tick();
+                        app.chat_widget.refresh_thread_title_progress_for_time_tick();
                         app.chat_widget.refresh_terminal_title();
                         AppRunControl::Continue
                     }

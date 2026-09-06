@@ -116,6 +116,7 @@ mod search;
 mod separators;
 mod session;
 mod tool_group;
+mod startup_warnings;
 
 pub(crate) use approvals::*;
 pub(crate) use base::*;
@@ -133,6 +134,7 @@ pub(crate) use search::*;
 pub(crate) use separators::*;
 pub(crate) use session::*;
 pub(crate) use tool_group::*;
+pub(crate) use startup_warnings::StartupWarningsCell;
 
 #[cfg(test)]
 mod tests;

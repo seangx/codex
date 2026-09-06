@@ -232,6 +232,7 @@ fn overview_thread(
         id: thread_id.to_string(),
         extra: None,
         project_id: None,
+        daybreak_enabled: None,
         session_id: parent_thread_id.unwrap_or(thread_id).to_string(),
         forked_from_id: None,
         parent_thread_id: None,
@@ -435,6 +436,17 @@ async fn shared_overview_seeds_metadata_and_retains_local_resumes() -> Result<()
             )
             .await?;
     }
+    // A newer rollout missing from the index must not trigger a startup filesystem scan.
+    app_test_support::create_fake_rollout_with_source(
+        &app.config.codex_home,
+        "2025-01-23T12-00-00",
+        "2025-01-23T12:00:00Z",
+        "Unindexed task",
+        Some(&app.config.model_provider_id),
+        /*git_info*/ None,
+        codex_protocol::protocol::SessionSource::Cli,
+    )
+    .expect("materialize unindexed session");
     app.app_server_target = AppServerTarget::LocalDaemon {
         endpoint: crate::RemoteAppServerEndpoint::UnixSocket {
             socket_path: test_path_buf("/tmp/unused.sock").abs(),

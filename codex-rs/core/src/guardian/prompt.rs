@@ -126,9 +126,9 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
     let trusted_user_inputs = session
         .services
         .thread_extension_data
-        .get::<GuardianReviewEvidence>()
-        .map(|evidence| evidence.user_input_fragments(history.as_ref()))
-        .unwrap_or_default();
+        .get_or_init(GuardianReviewEvidence::default)
+        .user_input_snapshot(history.as_ref())
+        .fragments;
     let ComposedContext {
         authorization,
         transcript: transcript_entries,
@@ -496,6 +496,10 @@ pub(super) fn collect_guardian_context(
 struct GuardianReviewHistory<'a>(&'a dyn ConversationHistorySnapshot);
 
 impl SectionHistory for GuardianReviewHistory<'_> {
+    fn retained_context(&self) -> Option<&codex_history::RetainedContext> {
+        self.0.retained_context()
+    }
+
     fn items(&self) -> Box<dyn Iterator<Item = &ResponseItem> + Send + '_> {
         self.0.review_items()
     }
@@ -504,6 +508,10 @@ impl SectionHistory for GuardianReviewHistory<'_> {
 struct FilteredGuardianHistory<'a>(&'a dyn SectionHistory);
 
 impl SectionHistory for FilteredGuardianHistory<'_> {
+    fn retained_context(&self) -> Option<&codex_history::RetainedContext> {
+        self.0.retained_context()
+    }
+
     fn items(&self) -> Box<dyn Iterator<Item = &ResponseItem> + Send + '_> {
         Box::new(self.0.items().filter(|item| {
             !matches!(

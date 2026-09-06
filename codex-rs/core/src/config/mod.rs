@@ -740,6 +740,9 @@ pub struct Config {
     /// Enable ASCII animations and shimmer effects in the TUI.
     pub animations: bool,
 
+    /// Enable decorative TUI effects such as Astra composer stars.
+    pub tui_whimsy: bool,
+
     /// Show startup tooltips in the TUI welcome screen.
     pub show_tooltips: bool,
 
@@ -751,6 +754,7 @@ pub struct Config {
 
     /// Start the composer in Vim mode (`Normal`) by default.
     pub tui_vim_mode_default: bool,
+    pub tui_question_esc_back: bool,
 
     /// Start the TUI in raw scrollback mode for copy-friendly transcript output.
     pub tui_raw_output_mode: bool,
@@ -4090,17 +4094,14 @@ impl Config {
         }) = filesystem_requirements.as_ref()
             && let Some(managed_file_system_policy) = managed_deny_read_policy.as_ref()
         {
-            let _initial_matcher =
-                ReadDenyMatcher::try_new(managed_file_system_policy, resolved_cwd.as_path())
+            let managed_deny_matcher =
+                ReadDenyMatcher::try_new_for_local_paths(managed_file_system_policy, resolved_cwd.as_path())
                     .map_err(std::io::Error::other)?;
             let managed_file_system_policy = Arc::clone(managed_file_system_policy);
-            let permission_cwd = resolved_cwd.clone();
             let requirement_source = requirement_source.clone();
             constrained_permission_profile
                 .value
                 .add_validator(move |permission_profile| {
-                    let managed_deny_matcher =
-                        ReadDenyMatcher::new(&managed_file_system_policy, permission_cwd.as_path());
                     let file_system_policy = permission_profile.file_system_sandbox_policy();
                     let missing_required_deny = managed_file_system_policy
                         .entries
@@ -4117,7 +4118,7 @@ impl Config {
                             let path = path.to_abs_path().ok()?;
                             managed_deny_matcher
                                 .as_ref()
-                                .is_some_and(|matcher| matcher.is_read_denied(path.as_path()))
+                                .is_some_and(|matcher| matcher.is_local_path_read_denied(path.as_path()))
                                 .then_some(path)
                         });
                     if missing_required_deny || violating_root.is_some() {
@@ -4345,6 +4346,7 @@ impl Config {
                 .map(|t| t.notification_settings.clone())
                 .unwrap_or_default(),
             animations: cfg.tui.as_ref().map(|t| t.animations).unwrap_or(true),
+            tui_whimsy: cfg.tui.as_ref().map(|t| t.whimsy).unwrap_or(true),
             show_tooltips: cfg.tui.as_ref().map(|t| t.show_tooltips).unwrap_or(true),
             tui_auto_recap: cfg.tui.as_ref().map(|t| t.auto_recap).unwrap_or(/*default*/ true),
             model_availability_nux: cfg
@@ -4352,6 +4354,7 @@ impl Config {
                 .as_ref()
                 .map(|t| t.model_availability_nux.clone())
                 .unwrap_or_default(),
+            tui_question_esc_back: cfg.tui.as_ref().map(|t| t.question_esc_back).unwrap_or(true),
             tui_vim_mode_default: cfg
                 .tui
                 .as_ref()

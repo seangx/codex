@@ -54,6 +54,7 @@ use crate::bottom_pane::TerminalTitleItem;
 use crate::chatwidget::ConnectorScopeGeneration;
 use crate::chatwidget::ThreadUsageOutcome;
 use crate::chatwidget::UserMessage;
+use crate::experimental_features::FeatureWriteResult;
 use crate::goal_files::GoalDraft;
 use codex_app_server_protocol::AskForApproval;
 use codex_config::types::ApprovalsReviewer;
@@ -64,6 +65,13 @@ use codex_protocol::config_types::Personality;
 use codex_protocol::models::ActivePermissionProfile;
 
 use crate::history_cell::HistoryCell;
+
+/// Whether a managed checkout starts fresh or preserves the current conversation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ManagedWorktreeMode {
+    New,
+    Fork,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ThreadGoalSetMode {
@@ -200,10 +208,10 @@ pub(crate) enum TranscriptExportDestination {
 }
 
 /// Deliver a generated title to its originating automatic rename or editable prompt.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum ThreadTitleDestination {
-    /// Replace the provisional name only if the user has not renamed the thread.
-    Automatic { expected_title: String },
+    /// Name the thread only if the user has not already named it.
+    Automatic,
     /// Prefill only the still-active rename prompt with the matching request ID.
     RenameSuggestion { request_id: Uuid },
 }
@@ -351,6 +359,7 @@ pub(crate) enum AppEvent {
     CopySelection {
         text: Arc<str>,
         label: String,
+        format: crate::clipboard_copy::CopyFormat,
     },
 
     /// Persist a submitted prompt in the cross-session message history.
@@ -382,6 +391,12 @@ pub(crate) enum AppEvent {
 
     /// Start a new session, optionally assigning it a name.
     NewSession {
+        name: Option<String>,
+    },
+
+    /// Create a managed checkout and start or fork a session into it.
+    StartManagedWorktree {
+        mode: ManagedWorktreeMode,
         name: Option<String>,
     },
 
@@ -1169,6 +1184,16 @@ pub(crate) enum AppEvent {
     UpdateFeatureFlags {
         updates: Vec<(Feature, bool)>,
     },
+
+    /// Save generic menu controls without changing running-task settings.
+    SaveExperimentalFeatures {
+        thread_id: ThreadId,
+        updates: Vec<(String, bool)>,
+        response_tx: tokio::sync::oneshot::Sender<Result<FeatureWriteResult, String>>,
+    },
+
+    /// Save an enable prompt on the app server without changing the current thread.
+    EnableFeatureForNewThreads(Feature),
 
     /// Update memory settings and persist them to config.toml.
     UpdateMemorySettings {

@@ -189,7 +189,7 @@ impl App {
                                         parent_thread_id: None,
                                         ancestor_thread_id: None,
                                         cwd: None,
-                                        use_state_db_only: false,
+                                        use_state_db_only: true,
                                         search_term: None,
                                     },
                                 })

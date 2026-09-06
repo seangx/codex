@@ -50,10 +50,61 @@ a shared Opus build with Rust consumers or a reduced dependency count.
 Rust `opus` 0.4.0 is available through Socket. Adding Rust transport dependencies
 and establishing a shared Opus build remain separate integration work.
 
+## Native development inputs
+
+The private native CI job also emits `sdk.tar.gz` from the same inspected prefix.
+It contains headers (including the target's GLib configuration), development
+library names, import/static libraries and pkg-config metadata. `sdk.json`
+records the target, source commit, pinned manifest and every exported file hash.
+Shared-library bytes must match the native inspection receipt; other development
+files are hashed during export. This is provenance, not an authenticity check.
+
+Meson generates relocatable pkg-config metadata using its standard option.
+Consumers must restrict `PKG_CONFIG_LIBDIR` to the SDK, clear `PKG_CONFIG_PATH`,
+and use `pkg-config --define-prefix` for libffi/PCRE2/zlib metadata too. Only the
+required native metadata is exported; capture Opus uses `opusic-sys`. Native
+library loader paths are not changed by SDK export. These build inputs do not replace the
+separate runtime projection and are never copied into users' Codex packages.
+Final helper linkage and moved-package execution remain separate integration
+work; exporting an SDK does not enable voice.
+
+The Rust GStreamer bindings also link GLib's GIO library. Its pkg-config metadata
+is included in the SDK, and runtime preparation treats its loader identity as an
+explicit dependency root alongside the seven plugins. GIO comes from the same
+pinned GLib build; it is not another source package or a GStreamer plugin. Its
+transitive imports must satisfy the same private-library and system-import checks.
+
 ## Native build recipe
 
+`bazel build //third_party/voice:native_prefix` runs this same recipe with
+Bazel-declared source archives, C/C++ compiler and SDK flags, LLVM ranlib,
+CMake, Make, pkg-config and Python. It supports matching native macOS and Linux
+GNU 2.28 toolchain targets on x64/ARM64; Windows continues to use the standalone
+recipe below. The macOS minimum comes from the selected CcToolchain. This manual
+target is not part of ordinary wildcard CLI builds.
+Mac libffi partial links require Apple's `/usr/bin/ld` from Command Line Tools;
+the LLVM compiler and normal final-link flags remain in use.
+
+The root registers the existing pinned built-Make toolchain for all foreign_cc
+Make consumers, including pkg-config's bootstrap, instead of selecting host Make.
+The recipe still needs the host's standard Unix utilities and `/bin/bash`;
+it is not a fully hermetic build.
+
+The target exports raw `prefix.tar` and a `built.json` receipt (the `receipt`
+output group). These are build inputs, not a relocatable SDK or runtime package.
+No Rust GStreamer build-script annotations or helper loader-path changes are
+provided by this target. Upstream build failure logs appear in the action output.
+
 `build_native.py` runs the unmodified upstream build systems in a new output
-directory, using the same archives. Specify the target and existing compiler,
+directory, using the same archives. Unix builds accept repeated `--c-flag=...`,
+`--cxx-flag=...`, `--link-flag=...` and optional `--ar`/`--ranlib` inputs.
+These overrides are rejected on Windows; ambient flags remain ignored.
+Libffi uses compiler response files to preserve literal definitions through
+configure, recursive Make and libtool. Response-file paths must not require shell
+quoting. Its
+Autoconf recipe cannot preserve flags containing whitespace; those are rejected.
+Declared archiver and ranlib paths must not require shell quoting for libffi.
+Specify the target and existing compiler,
 CMake, make, pkg-config and shell paths explicitly. It requires a matching
 native host: GNU Linux, macOS, or Windows MSVC, on x64 or ARM64.
 
@@ -63,6 +114,23 @@ Windows requires the normal Visual Studio SDK environment, Cygwin GNU make,
 bash/cygpath and Automake 1.18's standard `ar-lib` for upstream libffi,
 native Windows pkgconf, and `--bootstrap-make` pointing to NMake.
 The recipe does not install these build prerequisites or patch upstream sources.
+The optional `--windows-build-inputs <json>` argument records an explicit selection
+of these tools, the target-specific MSVC assembler, linker, library manager,
+inspector, Windows SDK resource/manifest tools, Python, and include/library roots.
+The existing private CI driver supplies this input from its provisioned VS/Cygwin
+setup. In this mode the recipe checks that named tools resolve to the selected
+files, puts MSVC ahead of Cygwin's different `link.exe`, and excludes unrelated
+inherited PATH and SDK entries. The exact selection is retained in build receipts.
+The JSON uses `schemaVersion: 1`, `target`, `tools` (role to absolute file path),
+`systemRoot`, and `INCLUDE`/`LIB` arrays of absolute directories. The CLI tool
+arguments must agree with the recorded selection. Without this argument, the
+standalone recipe keeps using the normal Visual Studio environment.
+
+This selects already installed inputs; it does not hash their support files,
+sandbox the build, supply a Bazel Windows provider, or publish build tools.
+Those still require a complete declared compiler/bootstrap closure and approved
+public-readable inputs. Existing private Cygwin release assets do not satisfy
+public self-build access. No Windows support is disabled to hide that gap.
 The private CI bootstrap verifies the official Cygwin installer and native pkgconf
 MSI hashes before use. It also verifies a retained Cygwin package snapshot against
 pinned archive and member hashes before installing it offline using signed
@@ -131,6 +199,31 @@ and `patchelf`; the latter constructs malformed inputs and is not needed during
 preparation or shipped in the runtime. The output is development-only, uses the
 host glibc, and does not establish musl or minimum-glibc support, dynamic-only
 dependency closure, helper loading policy or working voice.
+
+## Prepare Bazel's native build output
+
+`bazel build //third_party/voice:native_runtime` prepares the selected Mac or GNU
+Linux prefix archive using the existing platform inspection and preparation code.
+It checks the completed build receipt, records the current workspace build commit,
+inspects physical libraries, and prepares verified copies. These receipts describe
+build inputs and inspection; they are not signatures or release approval.
+
+This manual target requires the same host inspection/signing tools as the standalone
+platform preparer. It does not link Rust, change Windows builds, assemble a CLI
+package, or enable voice. The prepared runtime is the input to those later steps.
+
+The `native_sdk` output exports the existing development SDK from that same
+inspected build. Unix Bazel Rust bindings keep their upstream pkg-config version
+checks, restricted to this SDK and the declared pkg-config executable. The
+supported `system-deps` search-path override directs linking to `native_link`'s
+prepared libraries; its GStreamer linker-flag override removes the SDK's absolute
+rpath. Standard CcInfo supplies relative Bazel runpaths and explicit runfiles.
+Canonical ABI names and development aliases stay together, including transitive
+native dependencies. No host library fallback or version-probe bypass is used.
+Plugins and their manifest are exported beside those same canonical libraries;
+bindings and plugin imports must resolve to one physical copy of each library.
+Cargo still consumes an explicitly supplied SDK; Windows MSVC and final installed
+helper loader paths remain separate packaging steps. This does not enable voice.
 
 ## Private Windows runtime preparation
 

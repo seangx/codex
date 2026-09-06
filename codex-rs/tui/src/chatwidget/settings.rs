@@ -80,6 +80,9 @@ impl ChatWidget {
             self.refresh_effective_service_tier();
             self.sync_service_tier_commands();
         }
+        if feature == Feature::Worktrees {
+            self.sync_worktrees_enabled();
+        }
         if feature == Feature::Personality {
             self.sync_personality_command_enabled();
         }
@@ -296,6 +299,17 @@ impl ChatWidget {
             .unwrap_or_else(|| self.current_collaboration_mode.model())
     }
 
+    pub(crate) fn set_local_worktree_operations(&mut self, enabled: bool) {
+        self.local_worktree_operations = enabled;
+        self.sync_worktrees_enabled();
+    }
+
+    pub(super) fn sync_worktrees_enabled(&mut self) {
+        self.bottom_pane.set_worktrees_enabled(
+            self.config.features.enabled(Feature::Worktrees) && self.local_worktree_operations,
+        );
+    }
+
     pub(super) fn sync_personality_command_enabled(&mut self) {
         self.bottom_pane
             .set_personality_command_enabled(self.config.features.enabled(Feature::Personality));
@@ -442,6 +456,8 @@ impl ChatWidget {
     pub(super) fn refresh_model_display(&mut self) {
         let effective = self.effective_collaboration_mode();
         self.session_header.set_model(effective.model());
+        self.bottom_pane
+            .set_astra_sparkle(effective.model(), &self.local_settings.tui);
         // Keep composer paste affordances aligned with the currently effective model.
         self.sync_image_paste_enabled();
         self.sync_service_tier_commands();

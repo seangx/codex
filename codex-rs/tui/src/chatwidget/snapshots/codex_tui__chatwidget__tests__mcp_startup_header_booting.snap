@@ -4,7 +4,6 @@ assertion_line: 121
 expression: normalized_backend_snapshot(terminal.backend())
 ---
 "                                                                                "
-"• Booting MCP server: alpha (0s • esc to interrupt)                             "
 "                                                                                "
 "────────────────────────────────────────────────────────────────────────────────"
 "▌ Ask Codex to do anything                                                      "
