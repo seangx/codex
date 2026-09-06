@@ -1,6 +1,7 @@
 //! Embed the composer in question rows, resetting history navigation when drafts change.
 
 use super::*;
+use crate::style::user_message_style;
 
 impl ComposerDraft {
     pub(in crate::bottom_pane) fn text_with_pending(&self) -> String {

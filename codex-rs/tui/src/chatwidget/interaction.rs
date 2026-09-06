@@ -296,7 +296,7 @@ impl ChatWidget {
 
     pub(crate) fn copy_selected_text(&mut self, text: String) {
         let character_count = text.chars().count();
-        match crate::clipboard_copy::copy_to_clipboard(&text) {
+        match crate::clipboard_copy::copy_to_clipboard(&text, CopyFormat::PlainText) {
             Ok(lease) => {
                 self.clipboard_lease = lease;
                 self.bottom_pane.show_footer_flash(
