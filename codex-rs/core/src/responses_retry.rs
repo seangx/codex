@@ -145,6 +145,7 @@ pub(crate) async fn handle_retryable_response_stream_error(
                 return Err(err);
             };
             response
+                .response
                 .answers
                 .get(WEBSOCKET_FALLBACK_QUESTION_ID)
                 .and_then(|answer| answer.answers.first())
