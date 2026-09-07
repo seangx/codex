@@ -3201,6 +3201,7 @@ async fn remote_resume_rejects_explicit_permission_override() -> Result<()> {
         SessionTarget {
             thread_id: ThreadId::new(),
             path: None,
+            cwd: None,
             history_mode: None,
         },
     )

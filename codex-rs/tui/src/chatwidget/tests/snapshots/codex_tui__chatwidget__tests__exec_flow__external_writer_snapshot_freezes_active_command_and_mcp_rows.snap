@@ -5,4 +5,4 @@ expression: "rendered.join(\"\\n---\\n\")"
 • Running sleep 5
 
 ---
-• Calling server.tool()
+• server.tool

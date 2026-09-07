@@ -100,7 +100,9 @@ fn confirmation_requires_an_accept_key() {
 
 #[test]
 fn mouse_events_do_not_change_the_prompt_choice() {
-    let mut screen = prompt(SessionStartAction::Fork);
+    let mut screen = prompt(SessionStartAction::Fork(
+        crate::app_server_session::ForkPermissionMode::InheritSaved,
+    ));
     let mouse = MouseEvent {
         kind: MouseEventKind::Moved,
         column: 4,
