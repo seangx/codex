@@ -16,6 +16,7 @@
 //! mutates in place or when its transcript output is time-dependent.
 
 mod height_index;
+mod progressive_layout;
 mod scrolling;
 
 #[cfg(test)]
@@ -534,6 +535,8 @@ pub(crate) struct TranscriptOverlay {
     view: PagerView,
     /// Committed transcript cells (does not include the live tail).
     cells: Vec<Arc<dyn HistoryCell>>,
+    /// Older compact cells stay unmeasured until navigation approaches them.
+    materialized_start: usize,
     highlight_cell: Option<usize>,
     /// Cache key for the render-only live tail appended after committed cells.
     live_tail_key: Option<LiveTailKey>,
@@ -571,12 +574,14 @@ impl TranscriptOverlay {
                     /*highlight_cell*/ None,
                     TranscriptContent::Full,
                     TranscriptHistoryState::Idle,
+                    /*materialized_start*/ 0,
                 ),
                 "T R A N S C R I P T".to_string(),
                 usize::MAX,
                 keymap,
             ),
             cells: transcript_cells,
+            materialized_start: 0,
             highlight_cell: None,
             live_tail_key: None,
             history_state: TranscriptHistoryState::Idle,
@@ -590,6 +595,9 @@ impl TranscriptOverlay {
         transcript_cells: Vec<Arc<dyn HistoryCell>>,
         keymap: PagerKeymap,
     ) -> Self {
+        let materialized_start = transcript_cells
+            .len()
+            .saturating_sub(progressive_layout::LAYOUT_BATCH_CELLS);
         Self {
             view: PagerView::new(
                 Self::render_cells(
@@ -597,12 +605,14 @@ impl TranscriptOverlay {
                     /*highlight_cell*/ None,
                     TranscriptContent::Compact,
                     TranscriptHistoryState::Idle,
+                    materialized_start,
                 ),
                 "T R A N S C R I P T".to_string(),
                 usize::MAX,
                 keymap,
             ),
             cells: transcript_cells,
+            materialized_start,
             highlight_cell: None,
             live_tail_key: None,
             history_state: TranscriptHistoryState::Idle,
@@ -617,7 +627,9 @@ impl TranscriptOverlay {
     }
 
     pub(crate) fn scroll_up(&mut self, area: Rect, rows: usize) {
-        self.view.scroll_up(self.scroll_area(area), rows);
+        let area = self.scroll_area(area);
+        self.prepare_upward_scroll(area, rows);
+        self.view.scroll_up(area, rows);
     }
 
     pub(crate) fn scroll_down(&mut self, area: Rect, rows: usize) {
@@ -669,11 +681,18 @@ impl TranscriptOverlay {
         highlight_cell: Option<usize>,
         content: TranscriptContent,
         history_state: TranscriptHistoryState,
+        materialized_start: usize,
     ) -> Vec<Box<dyn Renderable>> {
         cells
             .iter()
             .enumerate()
-            .map(|(i, cell)| Self::render_cell(cell, i, highlight_cell, content, history_state))
+            .map(|(i, cell)| {
+                if i < materialized_start {
+                    Box::new(progressive_layout::DeferredCell) as Box<dyn Renderable>
+                } else {
+                    Self::render_cell(cell, i, highlight_cell, content, history_state)
+                }
+            })
             .collect()
     }
 
@@ -762,8 +781,9 @@ impl TranscriptOverlay {
     /// Returns whether an upward navigation is close enough to request older history.
     pub(crate) fn should_load_older(&self, key_event: KeyEvent) -> bool {
         self.should_load_from_start(key_event)
-            || (self.view.scroll_offset
-                <= self.view.last_content_height.unwrap_or(/*default*/ 0)
+            || (self.materialized_start == 0
+                && self.view.scroll_offset
+                    <= self.view.last_content_height.unwrap_or(/*default*/ 0)
                 && (self.view.keymap.scroll_up.is_pressed(key_event)
                     || self.view.keymap.page_up.is_pressed(key_event)
                     || self.view.keymap.half_page_up.is_pressed(key_event)))
@@ -788,6 +808,9 @@ impl TranscriptOverlay {
             .rposition(|cell| cell.as_any().is::<SessionInfoCell>())
             .map_or(/*default*/ 0, |index| index.saturating_add(/*rhs*/ 1));
         self.cells.splice(insert_at..insert_at, cells);
+        if insert_at < self.materialized_start {
+            self.materialized_start += added_cells;
+        }
         for index in [
             &mut self.highlight_cell,
             &mut self.view.pending_scroll_chunk,
@@ -820,6 +843,9 @@ impl TranscriptOverlay {
         let follow_bottom = self.view.is_scrolled_to_bottom();
         let live_tail = self.take_live_tail_renderable();
         self.cells = cells;
+        // Replacement can remove arbitrary prefix cells; reset this exceptional path rather
+        // than applying an old source index to a different transcript.
+        self.materialized_start = 0;
         if self
             .highlight_cell
             .is_some_and(|idx| idx >= self.cells.len())
@@ -863,6 +889,11 @@ impl TranscriptOverlay {
             }
             self.cells
                 .splice(clamped_start..clamped_end, std::iter::once(consolidated));
+            if clamped_end <= self.materialized_start {
+                self.materialized_start = self.materialized_start.saturating_sub(removed - 1);
+            } else if clamped_start < self.materialized_start {
+                self.materialized_start = clamped_start;
+            }
             if self
                 .highlight_cell
                 .is_some_and(|highlight_cell| highlight_cell >= self.cells.len())
@@ -926,6 +957,9 @@ impl TranscriptOverlay {
     }
 
     pub(crate) fn set_highlight_cell(&mut self, cell: Option<usize>) {
+        if let Some(index) = cell {
+            self.materialize_to(index);
+        }
         let previous = self.highlight_cell;
         self.highlight_cell = cell;
         // Highlighting changes only these cells' styling. Keep the other renderables and their
@@ -963,6 +997,7 @@ impl TranscriptOverlay {
             self.highlight_cell,
             self.content,
             self.history_state,
+            self.materialized_start,
         );
         if let Some(tail) = tail_renderable {
             self.view.renderables.push(tail);
@@ -1038,8 +1073,10 @@ impl TranscriptOverlay {
         self.render_hints(bottom, buf);
     }
 
-    pub(crate) fn render_embedded(&mut self, area: Rect, buf: &mut Buffer) {
+    pub(crate) fn render_embedded(&mut self, area: Rect, buf: &mut Buffer) -> bool {
+        let needs_layout = self.prepare_upward_scroll(area, /*rows*/ 0);
         self.view.render_content_only(area, buf);
+        needs_layout
     }
 
     fn render_history_state(&self, area: Rect, buf: &mut Buffer) {
@@ -1076,7 +1113,18 @@ impl TranscriptOverlay {
                     self.is_done = true;
                     Ok(())
                 }
-                other => self.view.handle_key_event(tui, other),
+                other => {
+                    let area = self.scroll_area(tui.terminal.viewport_area);
+                    if self.view.keymap.jump_top.is_pressed(other) {
+                        self.materialize_to(/*start*/ 0);
+                    } else if self.view.keymap.scroll_up.is_pressed(other)
+                        || self.view.keymap.page_up.is_pressed(other)
+                        || self.view.keymap.half_page_up.is_pressed(other)
+                    {
+                        self.prepare_upward_scroll(area, usize::from(area.height));
+                    }
+                    self.view.handle_key_event(tui, other)
+                }
             },
             TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) | TuiEvent::FocusGained => {
                 tui.draw(u16::MAX, |frame| {

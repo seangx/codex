@@ -18,6 +18,24 @@ struct HeightIndexState {
 }
 
 impl HeightIndex {
+    /// Preserve a source-cell anchor when a compact viewport changes width, without remeasuring
+    /// the old layout. A bottom sentinel remains bottom-pinned instead.
+    pub(super) fn resize_anchor(&self, width: u16, offset: usize) -> Option<(usize, usize)> {
+        let state = self.state.borrow();
+        if state.width == Some(width) || offset == usize::MAX {
+            return None;
+        }
+        let total = *state.cumulative_heights.last()?;
+        if offset >= total {
+            return None;
+        }
+        let index = state
+            .cumulative_heights
+            .partition_point(|top| *top <= offset)
+            - 1;
+        Some((index, offset - state.cumulative_heights[index]))
+    }
+
     pub(super) fn invalidate(&mut self) {
         *self.state.get_mut() = HeightIndexState::default();
     }

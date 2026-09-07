@@ -426,10 +426,11 @@ impl App {
         {
             if t.is_embedded() {
                 let chat_widget = &self.chat_widget;
+                let mut needs_layout = false;
                 tui.draw(u16::MAX, |frame| {
                     let (transcript_area, chat_area) =
                         embedded_transcript_areas_for(chat_widget, frame.area());
-                    t.render_embedded(transcript_area, frame.buffer);
+                    needs_layout = t.render_embedded(transcript_area, frame.buffer);
                     chat_widget.render(chat_area, frame.buffer);
                     chat_widget.note_rendered_width(chat_area.width);
                     if let Some((x, y)) = chat_widget.cursor_pos(chat_area) {
@@ -437,6 +438,10 @@ impl App {
                         frame.set_cursor_position((x, y));
                     }
                 })?;
+                if needs_layout {
+                    tui.frame_requester()
+                        .schedule_frame_in(std::time::Duration::from_millis(16));
+                }
                 return Ok(());
             }
             let active_key = self.chat_widget.active_cell_transcript_key();
