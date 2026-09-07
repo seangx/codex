@@ -107,6 +107,20 @@ fn approx_token_count(text: &str) -> i64 {
     i64::try_from(text.len().saturating_add(3) / 4).unwrap_or(i64::MAX)
 }
 
+fn valid_png_data_url() -> Result<String> {
+    let image = image::ImageBuffer::from_pixel(
+        /*width*/ 1,
+        /*height*/ 1,
+        image::Rgb([0u8, 0, 0]),
+    );
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image.write_to(&mut bytes, image::ImageFormat::Png)?;
+    Ok(format!(
+        "data:image/png;base64,{}",
+        BASE64_STANDARD.encode(bytes.get_ref())
+    ))
+}
+
 fn estimate_compact_input_tokens(request: &responses::ResponsesRequest) -> i64 {
     request.input().into_iter().fold(0i64, |acc, item| {
         acc.saturating_add(approx_token_count(&item.to_string()))
@@ -1708,7 +1722,7 @@ async fn remote_compact_archives_old_images_only_at_the_compaction_boundary(
     )
     .await?;
     let codex = &harness.test().codex;
-    let image_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=";
+    let image_url = valid_png_data_url()?;
     let conclusion = "Visual inspection: the sword grip is aligned; the left sleeve clips.";
     let initial_mock = mount_sse_once(
         harness.server(),
@@ -1960,7 +1974,7 @@ async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<(
             }),
     )
     .await?;
-    let image_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=";
+    let image_url = valid_png_data_url()?;
     let user_notice = "<image_resize_notice>retained user image</image_resize_notice>";
     let tool_notice = "<image_resize_notice>discarded tool image</image_resize_notice>";
     let unlisted_notice = "<unlisted_notice>discarded developer notice</unlisted_notice>";
