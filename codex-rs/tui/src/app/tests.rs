@@ -15,6 +15,8 @@ mod backend_banner_recovery_tests;
 mod backend_banner_startup_tests;
 #[path = "tests/background_exit_tests.rs"]
 mod background_exit_tests;
+#[path = "tests/background_task_defaults_tests.rs"]
+mod background_task_defaults_tests;
 #[path = "tests/buffered_replay.rs"]
 mod buffered_replay;
 #[path = "tests/connector_policy.rs"]
@@ -61,6 +63,12 @@ use crate::app_backtrack::BacktrackSelection;
 use crate::app_backtrack::BacktrackState;
 use crate::app_backtrack::user_count;
 use crate::app_event::HistoryBatchEntryResponse;
+
+async fn drain_managed_worktree_start(app: &mut App, server: &mut AppServerSession) {
+    if let Some((mode, name)) = app.pending_start_managed_worktree.take() {
+        app.start_managed_worktree(server, mode, name).await;
+    }
+}
 use codex_utils_absolute_path::test_support::PathExt;
 
 use crate::chatwidget::ChatWidgetInit;
@@ -289,6 +297,97 @@ async fn middle_click_returns_from_embedded_and_full_transcripts_to_latest() -> 
     assert!(matches!(app.overlay.as_ref(), Some(Overlay::Transcript(_))));
     assert!(app.return_to_latest_from_transcript(&mut tui));
     assert!(app.overlay.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn duplicate_named_resume_renders_error_without_replacing_current_session() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let label = format!("duplicate-{}", ThreadId::new());
+    let runtime = codex_state::StateRuntime::init(
+        app.config.sqlite.clone(),
+        app.config.model_provider_id.clone(),
+    )
+    .await
+    .map_err(std::io::Error::other)?;
+    runtime
+        .mark_backfill_complete(/*last_watermark*/ None)
+        .await
+        .map_err(std::io::Error::other)?;
+    let mut thread_ids = Vec::new();
+    for _ in 0..2 {
+        let filename_ts = "2025-02-01T10-00-00";
+        let timestamp = "2025-02-01T10:00:00Z";
+        let thread_id = app_test_support::create_fake_rollout(
+            app.config.codex_home.as_path(),
+            filename_ts,
+            timestamp,
+            &label,
+            Some(&app.config.model_provider_id),
+            /*git_info*/ None,
+        )
+        .expect("materialized rollout should be created");
+        let path = app_test_support::rollout_path(
+            app.config.codex_home.as_path(),
+            filename_ts,
+            &thread_id,
+        );
+        let thread_id = ThreadId::from_string(&thread_id)?;
+        thread_ids.push(thread_id);
+        let created_at =
+            chrono::DateTime::parse_from_rfc3339(timestamp)?.with_timezone(&chrono::Utc);
+        let mut metadata = codex_state::ThreadMetadataBuilder::new(
+            thread_id,
+            path.to_path_buf(),
+            created_at,
+            serde_json::from_value(serde_json::json!("cli"))?,
+        )
+        .build(&app.config.model_provider_id);
+        metadata.title = label.clone();
+        metadata.first_user_message = Some(label.clone());
+        metadata.preview = Some(label.clone());
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .map_err(std::io::Error::other)?;
+    }
+
+    let current = ThreadId::new();
+    app.active_thread_id = Some(current);
+    app.transcript_cells = vec![plain_line_cell("Existing conversation")];
+    let mut app_server = crate::start_embedded_app_server_for_picker(&app.config).await?;
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    app.handle_event(
+        &mut tui,
+        &mut app_server,
+        AppEvent::ResumeSessionByIdOrName(label.clone()),
+    )
+    .await?;
+    while let Ok(event) = app_event_rx.try_recv() {
+        if let AppEvent::InsertHistoryCell(cell) = event {
+            app.transcript_cells.push(Arc::from(cell));
+        }
+    }
+    let rendered = app
+        .render_transcript_lines_for_reflow(/*width*/ 80)
+        .lines
+        .iter()
+        .map(rendered_line_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        thread_ids
+            .iter()
+            .all(|id| rendered.contains(&id.to_string()))
+    );
+    let rendered = thread_ids
+        .iter()
+        .fold(rendered.replace(&label, "duplicate-label"), |text, id| {
+            text.replace(&id.to_string(), "<session UUID>")
+        });
+    assert_app_snapshot!("duplicate_named_resume_error", rendered);
+    assert_eq!(app.active_thread_id, Some(current));
+    app_server.shutdown().await?;
     Ok(())
 }
 
@@ -675,11 +774,7 @@ async fn resolved_buffered_approval_does_not_become_actionable_after_drain() -> 
     Ok(())
 }
 
-#[tokio::test]
-async fn enqueue_primary_thread_session_replays_turns_before_initial_prompt_submit() -> Result<()> {
-    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
-    let thread_id = ThreadId::new();
-    let initial_prompt = "follow-up after replay".to_string();
+fn set_test_initial_prompt(app: &mut App, initial_prompt: String) {
     let config = app.config.clone();
     let model = get_model_offline_for_tests(config.model.as_deref());
     app.chat_widget = ChatWidget::new_with_app_event(ChatWidgetInit {
@@ -690,7 +785,7 @@ async fn enqueue_primary_thread_session_replays_turns_before_initial_prompt_subm
         app_event_tx: app.app_event_tx.clone(),
         workspace_command_runner: None,
         initial_user_message: create_initial_user_message(
-            Some(initial_prompt.clone()),
+            Some(initial_prompt),
             Vec::new(),
             Vec::new(),
         ),
@@ -701,7 +796,6 @@ async fn enqueue_primary_thread_session_replays_turns_before_initial_prompt_subm
         feedback: codex_feedback::CodexFeedback::new(),
         is_first_run: false,
         status_account_display: None,
-        runtime_model_provider_base_url: None,
         initial_plan_type: None,
         model: Some(model),
         startup_tooltip_override: None,
@@ -709,6 +803,14 @@ async fn enqueue_primary_thread_session_replays_turns_before_initial_prompt_subm
         terminal_title_invalid_items_warned: app.terminal_title_invalid_items_warned.clone(),
         session_telemetry: app.session_telemetry.clone(),
     });
+}
+
+#[tokio::test]
+async fn enqueue_primary_thread_session_replays_turns_before_initial_prompt_submit() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let thread_id = ThreadId::new();
+    let initial_prompt = "follow-up after replay".to_string();
+    set_test_initial_prompt(&mut app, initial_prompt.clone());
 
     app.enqueue_primary_thread_session(
         test_thread_session(thread_id, test_path_buf("/tmp/project")),
@@ -791,6 +893,15 @@ async fn reset_thread_event_state_aborts_listener_tasks() {
         std::future::pending::<()>().await;
     });
     app.thread_event_listener_tasks.insert(thread_id, handle);
+    app.pending_server_profiles.insert(
+        thread_id,
+        PermissionProfileSelection {
+            profile_id: "server-only".into(),
+            approval_policy: None,
+            approvals_reviewer: None,
+            display_label: "server-only".into(),
+        },
+    );
     started_rx
         .await
         .expect("listener task should report it started");
@@ -798,6 +909,7 @@ async fn reset_thread_event_state_aborts_listener_tasks() {
     app.reset_thread_event_state();
 
     assert_eq!(app.thread_event_listener_tasks.is_empty(), true);
+    assert!(app.pending_server_profiles.is_empty());
     time::timeout(Duration::from_millis(50), dropped_rx)
         .await
         .expect("timed out waiting for listener task abort")
@@ -2901,6 +3013,214 @@ async fn reset_memories_clears_local_memory_directories() -> Result<()> {
 }
 
 #[tokio::test]
+async fn server_only_profile_selection_keeps_turns_on_the_selected_profile() -> Result<()> {
+    let (mut app, mut events, mut ops) = make_test_app_with_channels().await;
+    app.config.ephemeral = false;
+    let home = tempdir()?;
+    std::fs::write(
+        home.path().join("config.toml"),
+        "default_permissions = \":workspace\"\n[permissions.server-only]\nextends = \":read-only\"\n",
+    )?;
+    let server_config = ConfigBuilder::default()
+        .codex_home(home.path().into())
+        .build()
+        .await?;
+    let mut server = crate::start_embedded_app_server_for_picker(&server_config).await?;
+    let selection = PermissionProfileSelection {
+        profile_id: "server-only".into(),
+        approval_policy: None,
+        approvals_reviewer: None,
+        display_label: "server-only".into(),
+    };
+    app.select_permission_profile(&mut server, selection.clone())
+        .await;
+    insta::assert_snapshot!(
+        next_history_message(&mut events),
+        @"■ Wait for the task to connect before selecting permissions."
+    );
+    let started = server.start_thread(&app.config).await?;
+    let thread_id = started.session.thread_id;
+    app.enqueue_primary_thread_session(started.session, started.turns)
+        .await?;
+    while events.try_recv().is_ok() {}
+    app.select_permission_profile(&mut server, selection.clone())
+        .await;
+    insta::assert_snapshot!(
+        next_history_message(&mut events),
+        @"• Permission selection requested: server-only"
+    );
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    app.select_permission_profile(&mut server, selection).await;
+    insta::assert_snapshot!(
+        next_history_message(&mut events),
+        @"■ Wait for permissions to update before changing permissions."
+    );
+    app.handle_event(
+        &mut tui,
+        &mut server,
+        AppEvent::ForkCurrentSession { name: None },
+    )
+    .await?;
+    let _ = next_history_message(&mut events);
+    insta::assert_snapshot!(
+        next_history_message(&mut events),
+        @"■ Wait for permissions to update before forking."
+    );
+    app.chat_widget
+        .restore_user_message_to_composer("use the selected profile".into());
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let turn = next_user_turn_op(&mut ops);
+    app.submit_thread_op(&mut server, thread_id, turn).await?;
+    server.startup_interrupt(thread_id).await?;
+    let settings = next_thread_settings_updated(&mut server, thread_id).await;
+    app.enqueue_thread_notification(
+        thread_id,
+        ServerNotification::ThreadSettingsUpdated(settings),
+    )
+    .await?;
+    assert!(!app.pending_server_profiles.contains_key(&thread_id));
+    let endpoint = crate::resolve_remote_addr("ws://127.0.0.1:8765")?;
+    app.app_server_target = crate::AppServerTarget::Remote { endpoint };
+    while events.try_recv().is_ok() {}
+    app.change_working_directory(&mut tui, &mut server, home.path().abs())
+        .await;
+    insta::assert_snapshot!(
+        next_history_message(&mut events),
+        @"■ Changing directories with a named profile is not supported."
+    );
+    app.handle_thread_event_now(ThreadBufferedEvent::Notification(Box::new(
+        turn_completed_notification(thread_id, "first", TurnStatus::Interrupted),
+    )));
+    while events.try_recv().is_ok() {}
+    app.chat_widget
+        .restore_user_message_to_composer("busy".into());
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let mut turn = next_user_turn_op(&mut ops);
+    if let Op::UserTurn {
+        active_permission_profile,
+        ..
+    } = &mut turn
+    {
+        *active_permission_profile = Some(ActivePermissionProfile::new("stale-profile"));
+    }
+    app.submit_thread_op(&mut server, thread_id, turn).await?;
+    let thread = server
+        .thread_read(thread_id, /*include_turns*/ true)
+        .await?;
+    assert_eq!(thread.turns.len(), 2);
+    while events.try_recv().is_ok() {}
+    app.chat_widget
+        .set_queue_autosend_suppressed(/*suppressed*/ true);
+    app.chat_widget
+        .restore_user_message_to_composer("queued follow-up".into());
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let selection = app
+        .confirmed_server_profile(thread_id)
+        .expect("server profile");
+    app.select_permission_profile(&mut server, selection).await;
+    insta::assert_snapshot!(
+        next_history_message(&mut events),
+        @"■ Wait for the current turn to finish before changing permissions."
+    );
+    app.handle_event(&mut tui, &mut server, AppEvent::SettingsSelectionSettled)
+        .await?;
+    app.handle_thread_event_now(ThreadBufferedEvent::Notification(Box::new(
+        turn_completed_notification(thread_id, "second", TurnStatus::Completed),
+    )));
+    assert!(app.chat_widget.has_queued_follow_up_messages());
+    server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn resume_rejects_selected_config_profile_permission_definitions() -> Result<()> {
+    let home = tempdir()?;
+    std::fs::write(
+        home.path().join("config.toml"),
+        "default_permissions = \":workspace\"\n",
+    )?;
+    let selected = home.path().join("work.config.toml");
+    std::fs::write(
+        &selected,
+        "default_permissions = \":workspace\"\n[permissions.unused]\nextends = \":read-only\"\n",
+    )?;
+    let mut loader = codex_config::LoaderOverrides::without_managed_config_for_tests();
+    loader.user_config_path = Some(selected.abs());
+    loader.user_config_profile = Some("work".parse()?);
+    let config = ConfigBuilder::default()
+        .codex_home(home.path().to_path_buf())
+        .loader_overrides(loader)
+        .build()
+        .await?;
+    assert!(config_persistence::has_explicit_resume_permission_override(
+        &config,
+        &ConfigOverrides::default()
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn remote_resume_rejects_explicit_permission_override() -> Result<()> {
+    let (mut app, mut events, _ops) = make_test_app_with_channels().await;
+    let endpoint = crate::resolve_remote_addr("ws://127.0.0.1:8765")?;
+    app.app_server_target = crate::AppServerTarget::Remote { endpoint };
+    let home = tempdir()?;
+    std::fs::write(
+        home.path().join("config.toml"),
+        "default_permissions = \":workspace\"\n",
+    )?;
+    app.config.codex_home = home.path().to_path_buf().abs();
+    let mut server = crate::start_embedded_app_server_for_picker(&app.config).await?;
+    let selected = home.path().join("work.config.toml");
+    std::fs::write(
+        &selected,
+        "[permissions.unused]\nextends = \":read-only\"\n",
+    )?;
+    app.loader_overrides.user_config_path = Some(selected.abs());
+    app.loader_overrides.user_config_profile = Some("work".parse()?);
+    assert!(
+        !config_persistence::has_explicit_resume_permission_override(
+            &app.config,
+            &app.harness_overrides
+        )
+    );
+    let refreshed = app
+        .rebuild_config_for_cwd(app.config.cwd.to_path_buf())
+        .await?;
+    assert!(config_persistence::has_explicit_resume_permission_override(
+        &refreshed,
+        &app.harness_overrides
+    ));
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    app.resume_target_session(
+        &mut tui,
+        &mut server,
+        SessionTarget {
+            thread_id: ThreadId::new(),
+            path: None,
+            history_mode: None,
+        },
+    )
+    .await?;
+    assert_eq!(app.active_thread_id, None);
+    let cell = std::iter::from_fn(|| events.try_recv().ok())
+        .find_map(|event| match event {
+            AppEvent::InsertHistoryCell(cell) => Some(cell),
+            _ => None,
+        })
+        .expect("permission override error");
+    insta::assert_snapshot!(
+        lines_to_single_string(&cell.display_lines(/*width*/ 80)),
+        @"■ Permission overrides are not supported when resuming a remote task."
+    );
+    server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn apply_permission_profile_selection_preserves_loader_overrides() -> Result<()> {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let codex_home = tempdir()?;
@@ -4141,18 +4461,6 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
     );
 
     let rollout_path = temp_dir.path().join("agent-rollout.jsonl");
-    let rollout = serde_json::json!({
-        "timestamp": "t0",
-        "type": "turn_context",
-        "payload": {
-            "cwd": test_path_buf("/tmp/agent"),
-            "model": "gpt-agent",
-        },
-    });
-    std::fs::write(
-        &rollout_path,
-        format!("{}\n", serde_json::to_string(&rollout)?),
-    )?;
     app.enqueue_thread_notification(
         agent_thread_id,
         ServerNotification::ThreadStarted(ThreadStartedNotification {
@@ -4172,7 +4480,7 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
                 daybreak_enabled: None,
                 history_mode: Default::default(),
                 model_provider: "agent-provider".to_string(),
-                model: None,
+                model: Some("gpt-agent".to_string()),
                 reasoning_effort: None,
                 created_at: 1,
                 updated_at: 2,
@@ -4347,7 +4655,7 @@ async fn thread_read_session_state_does_not_reuse_primary_permission_profile() {
         daybreak_enabled: None,
         history_mode: Default::default(),
         model_provider: "read-provider".to_string(),
-        model: None,
+        model: Some("server-reported-model".to_string()),
         reasoning_effort: None,
         created_at: 1,
         updated_at: 2,
@@ -4371,6 +4679,7 @@ async fn thread_read_session_state_does_not_reuse_primary_permission_profile() {
         .await;
 
     assert_eq!(session.thread_id, read_thread_id);
+    assert_eq!(session.model, "server-reported-model");
     assert_eq!(session.cwd.as_path(), test_path_buf("/tmp/read").as_path());
     assert_eq!(
         session.runtime_workspace_roots,
@@ -4387,6 +4696,17 @@ async fn thread_read_session_state_does_not_reuse_primary_permission_profile() {
         "thread/read does not return fresh server permissions; the fallback profile must use the \
          active widget permissions rather than reusing the cached primary session profile"
     );
+
+    app.enqueue_primary_thread_session(session, Vec::new())
+        .await
+        .expect("switch to read thread");
+    let header =
+        lines_to_single_string(&app.clear_ui_header_lines_with_version(/*width*/ 80, "<VERSION>"));
+    let model_line = header
+        .lines()
+        .find(|line| line.contains("model:"))
+        .expect("rendered model line");
+    assert_app_snapshot!("thread_read_model_after_switch", model_line);
 }
 
 #[test]
@@ -5627,6 +5947,7 @@ async fn make_test_app() -> App {
         pending_thread_titles: HashSet::new(),
         thread_event_listener_tasks: HashMap::new(),
         agent_navigation: AgentNavigationState::default(),
+        pending_server_profiles: HashMap::new(),
         agents_overview: Default::default(),
         side_threads: HashMap::new(),
         abandoned_side_threads: HashSet::new(),
@@ -5640,6 +5961,11 @@ async fn make_test_app() -> App {
         dynamic_tool_status_updates: tokio::sync::broadcast::channel(/*capacity*/ 64).0,
         dynamic_tool_tasks: HashMap::new(),
         pending_startup_thread_start: false,
+        pending_managed_worktree_creation: false,
+        pending_start_managed_worktree: None,
+        pending_managed_worktree_created: None,
+        pending_managed_worktree_transition: None,
+        pending_managed_worktree_attach: None,
         startup_protected_input_boundary: false,
         startup_pending_protected_request: false,
         rate_limit_hard_stop_generation: 0,
@@ -5713,6 +6039,7 @@ pub(super) async fn make_test_app_with_channels() -> (
             pending_thread_titles: HashSet::new(),
             thread_event_listener_tasks: HashMap::new(),
             agent_navigation: AgentNavigationState::default(),
+            pending_server_profiles: HashMap::new(),
             agents_overview: Default::default(),
             side_threads: HashMap::new(),
             abandoned_side_threads: HashSet::new(),
@@ -5726,6 +6053,11 @@ pub(super) async fn make_test_app_with_channels() -> (
             dynamic_tool_status_updates: tokio::sync::broadcast::channel(/*capacity*/ 64).0,
             dynamic_tool_tasks: HashMap::new(),
             pending_startup_thread_start: false,
+            pending_managed_worktree_creation: false,
+            pending_start_managed_worktree: None,
+            pending_managed_worktree_created: None,
+            pending_managed_worktree_transition: None,
+            pending_managed_worktree_attach: None,
             startup_protected_input_boundary: false,
             startup_pending_protected_request: false,
             rate_limit_hard_stop_generation: 0,
@@ -6675,6 +7007,16 @@ async fn feedback_submission_for_inactive_thread_replays_into_origin_thread() {
     }));
 }
 
+fn next_history_message(events: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>) -> String {
+    let cell = std::iter::from_fn(|| events.try_recv().ok())
+        .find_map(|event| match event {
+            AppEvent::InsertHistoryCell(cell) => Some(cell),
+            _ => None,
+        })
+        .expect("history message");
+    lines_to_single_string(&cell.display_lines(/*width*/ 80))
+}
+
 fn next_user_turn_op(op_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Op>) -> Op {
     let mut seen = Vec::new();
     while let Ok(op) = op_rx.try_recv() {
@@ -7028,6 +7370,7 @@ async fn remote_resume_current_cwd_rejection_snapshot() -> Result<()> {
             crate::resume_picker::SessionTarget {
                 path: None,
                 thread_id: ThreadId::new(),
+                cwd: None,
                 history_mode: None,
             },
         )
@@ -7071,6 +7414,7 @@ async fn remote_exec_resume_current_cwd_is_rejected() -> Result<()> {
             crate::resume_picker::SessionTarget {
                 path: None,
                 thread_id: ThreadId::new(),
+                cwd: None,
                 history_mode: None,
             },
         )
@@ -7109,6 +7453,7 @@ async fn in_app_resume_session_cwd_without_metadata_is_non_fatal() -> Result<()>
             crate::resume_picker::SessionTarget {
                 path: None,
                 thread_id: ThreadId::new(),
+                cwd: None,
                 history_mode: None,
             },
         )
@@ -7163,7 +7508,25 @@ async fn remote_resume_keeps_server_only_cwd_out_of_local_config() -> Result<()>
     let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(&app.config))
         .await?
         .with_remote_cwd_override(Some(remote_cwd.clone()));
+    app_server
+        .resume_thread(
+            &crate::local_settings::LocalSettings::from(&app.config),
+            app.config.clone(),
+            ThreadId::from_string(&thread_id)?,
+            crate::app_server_session::ResumeModelSettings::RestoreFromThread,
+        )
+        .await?;
     let mut tui = crate::tui::test_support::make_test_tui()?;
+    app.runtime_approval_policy_override = Some(RuntimeApprovalPolicyOverride::Restored(
+        AskForApproval::Never,
+    ));
+    let mut prior_config = app.config.clone();
+    prior_config
+        .permissions
+        .set_permission_profile(PermissionProfile::read_only())?;
+    app.runtime_permission_profile_override = Some(
+        RuntimePermissionProfileOverride::from_restored_config(&prior_config),
+    );
 
     let control = app
         .resume_target_session(
@@ -7172,6 +7535,7 @@ async fn remote_resume_keeps_server_only_cwd_out_of_local_config() -> Result<()>
             crate::resume_picker::SessionTarget {
                 path: Some(rollout_path),
                 thread_id: ThreadId::from_string(&thread_id)?,
+                cwd: None,
                 history_mode: None,
             },
         )
@@ -7184,6 +7548,8 @@ async fn remote_resume_keeps_server_only_cwd_out_of_local_config() -> Result<()>
         &local_cwd,
     ));
     assert_eq!(app.config.workspace_roots, local_workspace_roots);
+    assert_eq!(app.runtime_approval_policy_override, None);
+    assert!(app.runtime_permission_profile_override.is_none());
     app_server.shutdown().await?;
     Ok(())
 }
@@ -7311,6 +7677,7 @@ async fn in_app_resume_uses_configured_or_explicit_cwd() -> Result<()> {
                 crate::resume_picker::SessionTarget {
                     path: Some(rollout_path),
                     thread_id,
+                    cwd: None,
                     history_mode: None,
                 },
             )
@@ -7416,6 +7783,7 @@ async fn remembered_current_cwd_stays_at_launch_across_in_app_resumes() -> Resul
         targets.push(crate::resume_picker::SessionTarget {
             path: Some(rollout_path),
             thread_id: ThreadId::from_string(&thread_id)?,
+            cwd: None,
             history_mode: None,
         });
     }
@@ -7656,7 +8024,16 @@ async fn prompt_edit_before_first_prompt_starts_fresh_thread() -> Result<()> {
     )
     .expect("materialized rollout should be created");
     let source_thread_id = ThreadId::from_string(&source_thread_id)?;
-    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(&config)).await?;
+    std::fs::write(
+        config.codex_home.join("config.toml"),
+        "default_permissions = \":workspace\"\n[permissions.server-only]\nextends = \":read-only\"\n",
+    )?;
+    let server_config = ConfigBuilder::default()
+        .codex_home(config.codex_home.to_path_buf())
+        .build()
+        .await?;
+    let mut app_server =
+        Box::pin(crate::start_embedded_app_server_for_picker(&server_config)).await?;
     let started = app_server
         .resume_thread(
             &crate::local_settings::LocalSettings::from(&config),
@@ -7667,8 +8044,50 @@ async fn prompt_edit_before_first_prompt_starts_fresh_thread() -> Result<()> {
         .await?;
     app.enqueue_primary_thread_session(started.session, started.turns)
         .await?;
+    app.select_permission_profile(
+        &mut app_server,
+        PermissionProfileSelection {
+            profile_id: "server-only".into(),
+            approval_policy: None,
+            approvals_reviewer: None,
+            display_label: "server-only".into(),
+        },
+    )
+    .await;
     while app_event_rx.try_recv().is_ok() {}
     let mut tui = crate::tui::test_support::make_test_tui()?;
+    Box::pin(app.handle_event(
+        &mut tui,
+        &mut app_server,
+        AppEvent::ForkSessionForPromptEdit {
+            thread_id: source_thread_id,
+            nth_user_message: 0,
+            prompt: crate::chatwidget::UserMessage::from("first prompt"),
+        },
+    ))
+    .await?;
+    assert_eq!(app.chat_widget.thread_id(), Some(source_thread_id));
+    assert_eq!(app.chat_widget.composer_text_with_pending(), "first prompt");
+    insta::assert_snapshot!(
+        next_history_message(&mut app_event_rx),
+        @"■ Wait for permissions to update before editing this prompt."
+    );
+    let settings = next_thread_settings_updated(&mut app_server, source_thread_id).await;
+    app.enqueue_thread_notification(
+        source_thread_id,
+        ServerNotification::ThreadSettingsUpdated(settings),
+    )
+    .await?;
+    while app_event_rx.try_recv().is_ok() {}
+    let endpoint = crate::resolve_remote_addr("ws://127.0.0.1:8765")?;
+    app.app_server_target = crate::AppServerTarget::Remote { endpoint };
+    let local_only_root = tempdir()?;
+    let local_only_root_path = local_only_root.path().abs();
+    app.harness_overrides
+        .additional_writable_roots
+        .push(local_only_root.path().to_path_buf());
+    app.refresh_in_memory_config_from_disk().await?;
+    assert!(app.config.workspace_roots.contains(&local_only_root_path));
 
     let control = Box::pin(app.handle_event(
         &mut tui,
@@ -7687,6 +8106,19 @@ async fn prompt_edit_before_first_prompt_starts_fresh_thread() -> Result<()> {
         .thread_id()
         .expect("first prompt edit should start a fresh thread");
     assert_ne!(fresh_thread_id, source_thread_id);
+    let active = app
+        .chat_widget
+        .config_ref()
+        .permissions
+        .active_permission_profile()
+        .unwrap();
+    assert_eq!(active.id, "server-only");
+    let session = app
+        .primary_session_configured
+        .as_ref()
+        .expect("new session");
+    let roots = &session.runtime_workspace_roots;
+    assert!(!roots.contains(&local_only_root_path));
     assert_eq!(app.chat_widget.composer_text_with_pending(), "first prompt");
     let history = std::iter::from_fn(|| app_event_rx.try_recv().ok())
         .filter_map(|event| match event {
@@ -7822,10 +8254,6 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
         feedback: app.feedback.clone(),
         is_first_run: false,
         status_account_display: app.chat_widget.status_account_display().cloned(),
-        runtime_model_provider_base_url: app
-            .chat_widget
-            .runtime_model_provider_base_url()
-            .map(str::to_string),
         initial_plan_type: app.chat_widget.current_plan_type(),
         model: Some(app.chat_widget.current_model().to_string()),
         startup_tooltip_override: None,
@@ -8294,6 +8722,28 @@ async fn selecting_cyber_model_defaults_active_thread_to_auto_review() {
             .expect("primary thread should be registered");
 
         let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+        let previous_model = app.chat_widget.current_model().to_string();
+        app.pending_server_profiles.insert(
+            thread_id,
+            PermissionProfileSelection {
+                profile_id: "server-only".into(),
+                approval_policy: None,
+                approvals_reviewer: None,
+                display_label: "server-only".into(),
+            },
+        );
+        app.handle_event(
+            &mut tui,
+            &mut app_server,
+            AppEvent::ApplyAdvancedReasoning {
+                model: "gpt-5.4".to_string(),
+                effort: ReasoningEffortConfig::High,
+            },
+        )
+        .await
+        .expect("pending permission selection should block the cyber model");
+        assert_eq!(app.chat_widget.current_model(), previous_model);
+        app.pending_server_profiles.remove(&thread_id);
         app.handle_event(
             &mut tui,
             &mut app_server,
@@ -8302,6 +8752,7 @@ async fn selecting_cyber_model_defaults_active_thread_to_auto_review() {
         .await
         .expect("model selection should succeed");
 
+        assert!(app.pending_server_profiles.contains_key(&thread_id));
         let notification = next_thread_settings_updated(&mut app_server, thread_id).await;
         assert_eq!(
             notification.thread_settings.approval_policy,
@@ -8315,10 +8766,18 @@ async fn selecting_cyber_model_defaults_active_thread_to_auto_review() {
             notification
                 .thread_settings
                 .active_permission_profile
+                .as_ref()
                 .expect("active permission profile")
                 .id,
             codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE
         );
+        app.enqueue_thread_notification(
+            thread_id,
+            ServerNotification::ThreadSettingsUpdated(notification),
+        )
+        .await
+        .expect("settings notification should apply");
+        assert!(!app.pending_server_profiles.contains_key(&thread_id));
     })
     .await;
 }
