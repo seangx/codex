@@ -2,6 +2,7 @@
 
 mod approved_command_prefix_saved;
 mod apps_instructions;
+mod archived_image_reference;
 mod available_plugins_instructions;
 mod base_instructions;
 mod compaction_summary;
@@ -51,6 +52,7 @@ pub(crate) mod world_state;
 pub(crate) use approved_command_prefix_saved::APPROVED_COMMAND_PREFIX_SAVED_MESSAGE_PREFIX;
 pub(crate) use approved_command_prefix_saved::ApprovedCommandPrefixSaved;
 pub(crate) use apps_instructions::AppsInstructions;
+pub(crate) use archived_image_reference::ArchivedImageReference;
 pub(crate) use available_plugins_instructions::AvailablePluginsInstructions;
 pub(crate) use base_instructions::BaseInstructionsFragment;
 pub(crate) use codex_context_fragments::AdditionalContextDeveloperFragment;

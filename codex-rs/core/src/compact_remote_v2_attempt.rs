@@ -44,7 +44,11 @@ pub(super) async fn run_remote_compact_v2_attempt(
     analytics_details: &mut CompactionAnalyticsDetails,
 ) -> CodexResult<RemoteCompactV2Attempt> {
     let turn_context = &step_context.turn;
-    let mut history = sess.clone_history().await;
+    let mut history = crate::compact_image_references::prepare_history_for_compaction(
+        sess.clone_history().await,
+        turn_context.config.codex_home.to_path_buf(),
+    )
+    .await?;
     let base_instructions = sess.get_prompt_base_instructions().await;
     let (rewritten_outputs, estimated_deleted_tokens) =
         trim_function_call_history_to_fit_context_window(
@@ -71,11 +75,8 @@ pub(super) async fn run_remote_compact_v2_attempt(
             });
     }
 
-    // Keep the normalized canonical history for the post-compaction retention pass. The
-    // compaction request itself uses a media-free copy so large inline payloads are never
-    // serialized over the wire. `ContextManager::clone` only clones the backing Arc here;
-    // once the request copy is consumed, normalization can unwrap the retained history
-    // without cloning its media strings.
+    // Both the request and post-compaction retention use the archived snapshot. Keeping
+    // canonical images here would reintroduce their bytes immediately after compaction.
     let retained_history = history.clone();
     let prompt_history =
         history.for_compaction_prompt_annotated(&turn_context.model_info().input_modalities);

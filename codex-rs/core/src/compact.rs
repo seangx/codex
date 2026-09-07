@@ -257,7 +257,11 @@ async fn run_compact_task_inner_impl(
         .await;
     let initial_input_for_turn: ResponseInputItem = ResponseInputItem::from(input);
 
-    let mut history = sess.clone_history().await;
+    let mut history = crate::compact_image_references::prepare_history_for_compaction(
+        sess.clone_history().await,
+        turn_context.config.codex_home.to_path_buf(),
+    )
+    .await?;
     history.record_items(
         &[initial_input_for_turn.into()],
         turn_context.model_info().truncation_policy.into(),
@@ -352,7 +356,11 @@ async fn run_compact_task_inner_impl(
         }
     };
 
-    let history_snapshot = sess.clone_history().await;
+    let history_snapshot = crate::compact_image_references::prepare_history_for_compaction(
+        sess.clone_history().await,
+        turn_context.config.codex_home.to_path_buf(),
+    )
+    .await?;
     let history_items = history_snapshot.annotated_items();
     let summary_suffix =
         get_last_assistant_message_from_turn(history_snapshot.raw_items()).unwrap_or_default();

@@ -140,6 +140,31 @@ impl ViewImageHandler {
             }
         };
 
+        let can_request_original_detail = can_request_original_image_detail(turn.model_info());
+        let use_original_detail = self.options.unified_image_budget
+            || can_request_original_detail && matches!(detail, Some(ViewImageDetail::Original));
+        let image_detail = if use_original_detail {
+            ImageDetail::Original
+        } else {
+            DEFAULT_IMAGE_DETAIL
+        };
+        if let Some(image_url) =
+            crate::compact_image_references::load_archived_image(&turn.config.codex_home, &path)
+                .await
+                .map_err(|_| {
+                    FunctionCallError::RespondToModel(
+                        "unable to read archived image; the local archive is missing or invalid"
+                            .to_string(),
+                    )
+                })?
+        {
+            return Ok(boxed_tool_output(ViewImageOutput {
+                image_url,
+                image_detail,
+                unified_image_budget: self.options.unified_image_budget,
+            }));
+        }
+
         let Some(turn_environment) =
             resolve_tool_environment(&step_context.environments, environment_id.as_deref())?
         else {
@@ -184,15 +209,6 @@ impl ViewImageHandler {
         image::load_from_memory(&file_bytes).map_err(|_| {
             FunctionCallError::RespondToModel(VIEW_IMAGE_INVALID_MESSAGE.to_string())
         })?;
-
-        let can_request_original_detail = can_request_original_image_detail(turn.model_info());
-        let use_original_detail = self.options.unified_image_budget
-            || can_request_original_detail && matches!(detail, Some(ViewImageDetail::Original));
-        let image_detail = if use_original_detail {
-            ImageDetail::Original
-        } else {
-            DEFAULT_IMAGE_DETAIL
-        };
 
         // The history insertion path owns image preparation and resizing.
         let image_url = data_url_from_bytes("application/octet-stream", &file_bytes);

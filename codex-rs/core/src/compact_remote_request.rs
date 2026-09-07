@@ -29,7 +29,11 @@ pub(super) async fn run_remote_compact_attempt(
     analytics_details: &mut CompactionAnalyticsDetails,
 ) -> CodexResult<RemoteCompactAttempt> {
     let turn_context = &step_context.turn;
-    let mut history = sess.clone_history().await;
+    let mut history = crate::compact_image_references::prepare_history_for_compaction(
+        sess.clone_history().await,
+        turn_context.config.codex_home.to_path_buf(),
+    )
+    .await?;
     let base_instructions = sess.get_prompt_base_instructions().await;
     let (rewritten_outputs, estimated_deleted_tokens) =
         trim_function_call_history_to_fit_context_window(

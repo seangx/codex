@@ -1528,11 +1528,11 @@ async fn remote_manual_compact_chatgpt_auth_reuses_service_tier_and_prompt_cache
     Ok(())
 }
 
-#[test_case(None; "default_trims_images")]
-#[test_case(Some(false); "disabled_preserves_images")]
-#[test_case(Some(true); "enabled_trims_images")]
+#[test_case(None; "default_archives_images")]
+#[test_case(Some(false); "disabled_budget_archives_images")]
+#[test_case(Some(true); "enabled_budget_archives_images")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remote_compact_v2_charges_retained_images_to_token_budget(
+async fn remote_compact_v2_archives_images_independently_of_token_budget(
     image_budget_enabled: Option<bool>,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
@@ -1613,19 +1613,13 @@ async fn remote_compact_v2_charges_retained_images_to_token_budget(
             1
         );
         assert!(compact_request.message_input_image_urls("user").is_empty());
-        let dropped_before_request = if image_budget_enabled.unwrap_or(true) {
-            cycle - 1
-        } else {
-            0
-        };
-        let expected_placeholders = 7 - dropped_before_request + usize::from(cycle > 1);
         assert_eq!(
             compact_request
                 .message_input_texts("user")
                 .iter()
-                .filter(|text| *text == "image content omitted for remote compaction")
+                .filter(|text| text.contains("codex-image:"))
                 .count(),
-            expected_placeholders,
+            7 + usize::from(cycle > 1),
         );
 
         let follow_up_mock = mount_sse_once(
@@ -1648,19 +1642,19 @@ async fn remote_compact_v2_charges_retained_images_to_token_budget(
             follow_up.inputs_of_type("compaction")[0]["encrypted_content"],
             "IMAGE_BUDGET_SUMMARY"
         );
-        let dropped = if image_budget_enabled.unwrap_or(true) {
-            cycle
-        } else {
-            0
-        };
-        let mut expected_images = prepared_images[dropped..].to_vec();
-        if cycle == 2 {
-            let UserInput::Image { image_url, .. } = &image_inputs[7] else {
-                unreachable!()
-            };
-            expected_images.push(image_url.clone());
-        }
-        assert_eq!(follow_up.message_input_image_urls("user"), expected_images);
+        assert!(follow_up.message_input_image_urls("user").is_empty());
+        assert_eq!(
+            follow_up
+                .message_input_texts("user")
+                .into_iter()
+                .filter(|text| text.contains("codex-image:"))
+                .collect::<Vec<_>>(),
+            compact_request
+                .message_input_texts("user")
+                .into_iter()
+                .filter(|text| text.contains("codex-image:"))
+                .collect::<Vec<_>>(),
+        );
         assert!(
             follow_up
                 .message_input_texts("user")
@@ -1681,9 +1675,276 @@ async fn remote_compact_v2_charges_retained_images_to_token_budget(
                 .start_or_steer_turn(TurnInputRequest::user_input(vec![image_inputs[7].clone()]))
                 .await?;
             wait_for_turn_complete(codex).await;
-            let _ = append_mock.single_request();
+            assert_eq!(
+                append_mock
+                    .single_request()
+                    .message_input_image_urls("user")
+                    .len(),
+                1
+            );
         }
     }
+    Ok(())
+}
+
+#[test_case(false; "legacy")]
+#[test_case(true; "v2")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_compact_archives_old_images_only_at_the_compaction_boundary(
+    use_v2: bool,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let harness = TestCodexHarness::with_auto_env_builder(
+        test_codex()
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+            .with_config(move |config| {
+                let _ = config
+                    .features
+                    .set_enabled(Feature::RemoteCompactionV2, use_v2);
+                config.model_provider.request_max_retries = Some(0);
+                config.model_provider.stream_max_retries = Some(0);
+            }),
+    )
+    .await?;
+    let codex = &harness.test().codex;
+    let image_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=";
+    let conclusion = "Visual inspection: the sword grip is aligned; the left sleeve clips.";
+    let initial_mock = mount_sse_once(
+        harness.server(),
+        sse(vec![
+            responses::ev_assistant_message("inspection", conclusion),
+            responses::ev_completed("inspection"),
+        ]),
+    )
+    .await;
+    codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![
+            UserInput::Text {
+                text: "Inspect this combat frame".to_string(),
+                text_elements: Vec::new(),
+            },
+            UserInput::Image {
+                image_url: image_url.to_string(),
+                detail: None,
+            },
+        ]))
+        .await?;
+    wait_for_turn_complete(codex).await;
+    let original_images = initial_mock
+        .single_request()
+        .message_input_image_urls("user");
+    assert_eq!(original_images.len(), 1);
+
+    let ordinary_mock = mount_sse_once(
+        harness.server(),
+        sse(vec![
+            responses::ev_assistant_message("ordinary", "Continue with the sleeve fix."),
+            responses::ev_completed("ordinary"),
+        ]),
+    )
+    .await;
+    harness
+        .test()
+        .submit_turn("What should be fixed next?")
+        .await?;
+    let ordinary_request = ordinary_mock.single_request();
+    assert_eq!(
+        ordinary_request.message_input_image_urls("user"),
+        original_images
+    );
+    assert!(
+        !ordinary_request
+            .body_json()
+            .to_string()
+            .contains("codex-image:")
+    );
+
+    let failed_mock = if use_v2 {
+        mount_sse_once(
+            harness.server(),
+            sse(vec![responses::ev_completed("missing-compaction-output")]),
+        )
+        .await
+    } else {
+        responses::mount_compact_json_once(
+            harness.server(),
+            json!({ "output": "invalid compact payload shape" }),
+        )
+        .await
+    };
+    codex.submit(Op::Compact).await?;
+    wait_for_event(codex, |event| matches!(event, EventMsg::Error(_))).await;
+    wait_for_turn_complete(codex).await;
+    let failed_request = failed_mock.single_request();
+    assert!(failed_request.message_input_image_urls("user").is_empty());
+    let after_failure_mock = mount_sse_once(
+        harness.server(),
+        sse(vec![
+            responses::ev_assistant_message(
+                "after-failure",
+                "The original frame is still available.",
+            ),
+            responses::ev_completed("after-failure"),
+        ]),
+    )
+    .await;
+    harness
+        .test()
+        .submit_turn("Continue after failed compaction")
+        .await?;
+    let after_failure_request = after_failure_mock.single_request();
+    assert_eq!(
+        after_failure_request.message_input_image_urls("user"),
+        original_images
+    );
+    assert!(
+        !after_failure_request
+            .body_json()
+            .to_string()
+            .contains("codex-image:")
+    );
+
+    let summary = "ARCHIVED_IMAGE_VISUAL_CONCLUSION";
+    let compact_mock = if use_v2 {
+        mount_sse_once(
+            harness.server(),
+            sse(vec![
+                json!({
+                    "type": "response.output_item.done",
+                    "item": { "type": "compaction", "encrypted_content": summary },
+                }),
+                responses::ev_completed("archived-image-compact"),
+            ]),
+        )
+        .await
+    } else {
+        responses::mount_compact_user_history_with_summary_once(harness.server(), summary).await
+    };
+    codex.submit(Op::Compact).await?;
+    wait_for_turn_complete(codex).await;
+    let compact_request = compact_mock.single_request();
+    assert!(compact_request.message_input_image_urls("user").is_empty());
+    assert!(
+        compact_request
+            .message_input_texts("assistant")
+            .iter()
+            .any(|text| text == conclusion)
+    );
+
+    let after_mock = mount_sse_once(
+        harness.server(),
+        sse(vec![
+            responses::ev_assistant_message("after", "The saved inspection remains available."),
+            responses::ev_completed("after"),
+        ]),
+    )
+    .await;
+    harness
+        .test()
+        .submit_turn("Continue after compaction")
+        .await?;
+    let after_request = after_mock.single_request();
+    assert!(after_request.message_input_image_urls("user").is_empty());
+    assert_eq!(
+        after_request.inputs_of_type("compaction")[0]["encrypted_content"],
+        summary
+    );
+    let reference_text = after_request
+        .message_input_texts("user")
+        .into_iter()
+        .find(|text| text.contains("codex-image:"))
+        .context("compacted image archive reference")?;
+    let (_, suffix) = reference_text
+        .split_once("codex-image:")
+        .context("archive reference prefix")?;
+    let digest = suffix.chars().take(40).collect::<String>();
+    assert_eq!(digest.len(), 40);
+    assert!(
+        digest
+            .chars()
+            .all(|character| character.is_ascii_digit() || ('a'..='f').contains(&character))
+    );
+    let reference = format!("codex-image:{digest}");
+
+    let call_id = "reread-archived-image";
+    let reread_responses = vec![
+        sse(vec![
+            responses::ev_function_call(
+                call_id,
+                "view_image",
+                &json!({ "path": reference }).to_string(),
+            ),
+            responses::ev_completed("request-archived-image"),
+        ]),
+        sse(vec![
+            responses::ev_assistant_message("rechecked", conclusion),
+            responses::ev_completed("rechecked"),
+        ]),
+    ];
+    let reread_mock = responses::mount_sse_sequence(harness.server(), reread_responses).await;
+    harness
+        .test()
+        .submit_turn("Recheck the saved frame")
+        .await?;
+    let reread_requests = reread_mock.requests();
+    assert_eq!(reread_requests.len(), 2);
+    let output = reread_requests[1].function_call_output(call_id);
+    let restored_images = output["output"]
+        .as_array()
+        .context("view_image output content")?
+        .iter()
+        .filter_map(|item| item["image_url"].as_str().map(str::to_string))
+        .collect::<Vec<_>>();
+    assert_eq!(restored_images, original_images);
+
+    // The first retrieval uses auto_env (including remote executors). A fresh local
+    // session then verifies that the archive reference survives persisted history.
+    let resumed = test_codex()
+        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+        .with_config(move |config| {
+            let _ = config
+                .features
+                .set_enabled(Feature::RemoteCompactionV2, use_v2);
+        })
+        .restart(harness.server(), harness.test())
+        .await?;
+    let resumed_call_id = "reread-archived-image-after-resume";
+    let resumed_mock = responses::mount_sse_sequence(
+        harness.server(),
+        vec![
+            sse(vec![
+                responses::ev_function_call(
+                    resumed_call_id,
+                    "view_image",
+                    &json!({ "path": reference }).to_string(),
+                ),
+                responses::ev_completed("request-image-after-resume"),
+            ]),
+            sse(vec![responses::ev_completed("rechecked-after-resume")]),
+        ],
+    )
+    .await;
+    resumed
+        .submit_turn("Recheck the archived frame after restart")
+        .await?;
+    let resumed_requests = resumed_mock.requests();
+    assert_eq!(resumed_requests.len(), 2);
+    assert!(
+        resumed_requests[0]
+            .message_input_image_urls("user")
+            .is_empty()
+    );
+    assert!(
+        resumed_requests[0]
+            .body_json()
+            .to_string()
+            .contains(&reference)
+    );
+    assert_eq!(
+        resumed_requests[1].function_call_output(resumed_call_id)["output"],
+        output["output"],
+    );
     Ok(())
 }
 
@@ -2017,14 +2278,24 @@ async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<(
         "expected v2 follow-up request to preserve retained original user messages"
     );
     assert!(
-        follow_up_request.input().windows(2).any(|items| {
-            items[0]["role"] == "user"
-                && items[0]["content"][0]["text"] == "retained image source"
-                && items[1]["role"] == "developer"
-                && items[1]["content"][0]["text"] == user_notice
-        }),
-        "expected v2 compaction to retain the user image and its adjacent resize notice"
+        follow_up_request
+            .inputs_of_type("message")
+            .iter()
+            .any(|item| {
+                item["role"] == "user"
+                    && item["content"][0]["text"] == "retained image source"
+                    && item["content"][1]["text"]
+                        .as_str()
+                        .is_some_and(|text| text.contains("codex-image:"))
+            }),
+        "expected v2 compaction to retain the image source text and an archive reference"
     );
+    assert!(
+        follow_up_request
+            .message_input_image_urls("user")
+            .is_empty()
+    );
+    assert!(!follow_up_body.contains(user_notice));
     assert!(
         !follow_up_body.contains(unlisted_notice),
         "expected v2 compaction to drop unlisted developer notices"

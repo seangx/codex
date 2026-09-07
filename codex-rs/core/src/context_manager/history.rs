@@ -829,7 +829,9 @@ impl ContextManager {
     }
 }
 
-fn clone_envelope_for_compaction_prompt(envelope: &ResponseItemEnvelope) -> ResponseItemEnvelope {
+pub(crate) fn clone_envelope_for_compaction_prompt(
+    envelope: &ResponseItemEnvelope,
+) -> ResponseItemEnvelope {
     let item = match &envelope.item {
         ResponseItem::Message {
             id,
