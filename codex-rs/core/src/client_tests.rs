@@ -362,7 +362,8 @@ async fn only_completed_websocket_response_resets_fallback_budget() {
     let session_telemetry = test_session_telemetry();
 
     assert!(client.force_http_fallback(&session_telemetry, &model_info));
-    let incomplete_stream = futures::stream::iter([Ok(ResponseEvent::Created)]);
+    let incomplete_stream =
+        futures::stream::iter([Ok(ResponseEvent::Created { response_id: None })]);
     let (mut stream, _) = super::map_response_events(
         /*upstream_request_id*/ None,
         incomplete_stream,
