@@ -1841,9 +1841,12 @@ async fn remote_compact_archives_old_images_only_at_the_compaction_boundary(
     assert!(compact_request.message_input_image_urls("user").is_empty());
     assert!(
         compact_request
-            .message_input_texts("assistant")
+            .inputs_of_type("message")
             .iter()
-            .any(|text| text == conclusion)
+            .any(|item| item["role"] == "assistant"
+                && item["content"].as_array().is_some_and(|content| content
+                    .iter()
+                    .any(|part| part["type"] == "output_text" && part["text"] == conclusion)))
     );
 
     let after_mock = mount_sse_once(
