@@ -171,7 +171,7 @@ async fn queued_mail_preserves_websocket_incremental_continuation(
     test.codex
         .submit(Op::InterAgentCommunication {
             communication: InterAgentCommunication::new(
-                AgentPath::try_from("/root/worker")?,
+                AgentPath::try_from("/root/worker").expect("valid worker path"),
                 AgentPath::root(),
                 Vec::new(),
                 "queued child result".to_string(),
