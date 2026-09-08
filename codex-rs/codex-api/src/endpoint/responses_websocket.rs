@@ -47,6 +47,10 @@ use tungstenite::extensions::compression::deflate::DeflateConfig;
 use tungstenite::protocol::WebSocketConfig;
 use url::Url;
 
+#[path = "responses_websocket_diagnostics.rs"]
+mod diagnostics;
+use diagnostics::RequestDiagnostics;
+
 struct WsStream {
     tx_command: mpsc::Sender<WsCommand>,
     rx_message: mpsc::UnboundedReceiver<Result<Message, WsError>>,
@@ -195,6 +199,7 @@ struct ResponsesWebsocketTimingLogContext {
     request_start_ms: Option<String>,
     warmup: bool,
     connection_reused: bool,
+    input_items: usize,
 }
 
 pub struct ResponsesWebsocketConnection {
@@ -290,6 +295,7 @@ impl ResponsesWebsocketConnection {
                 .cloned(),
             warmup: ws_request.generate == Some(false),
             connection_reused,
+            input_items: ws_request.input.len(),
         };
         let request_text = serialize_websocket_request(&request)?;
 
@@ -547,13 +553,25 @@ async fn connect_websocket(
 
     let connector = WebSocketConnector::new(http_client_factory)
         .map_err(|err| ApiError::Stream(format!("failed to configure websocket TLS: {err}")))?;
+    let connect_start = Instant::now();
     let response = connector.connect(request, websocket_config()).await;
 
     let (stream, response) = match response {
         Ok((stream, response)) => {
             info!(
-                "successfully connected to websocket: {url}, headers: {:?}",
-                response.headers()
+                status = response.status().as_u16(),
+                handshake_ms = connect_start.elapsed().as_millis() as u64,
+                permessage_deflate = response
+                    .headers()
+                    .get(http::header::SEC_WEBSOCKET_EXTENSIONS)
+                    .and_then(|value| value.to_str().ok())
+                    .is_some_and(|value| value.split(',').any(|extension| {
+                        extension
+                            .split(';')
+                            .next()
+                            .is_some_and(|name| name.trim() == "permessage-deflate")
+                    })),
+                "successfully connected to websocket"
             );
             (stream, response)
         }
@@ -729,12 +747,13 @@ async fn run_websocket_response_stream(
 ) -> Result<(), ApiError> {
     let mut last_server_model: Option<String> = None;
     let mut safety_buffering_treatment = SafetyBufferingTreatment::default();
+    let mut diagnostics = RequestDiagnostics::new(timing_log_context, request_text.len());
     send_websocket_request(
         ws_stream,
         request_text,
         idle_timeout,
         telemetry.as_ref(),
-        timing_log_context.connection_reused,
+        &mut diagnostics,
     )
     .await?;
 
@@ -749,17 +768,24 @@ async fn run_websocket_response_stream(
         let message = match response {
             Ok(Some(Ok(msg))) => msg,
             Ok(Some(Err(err))) => {
+                diagnostics.outcome = "receive_error";
+                if let WsError::Io(io_error) = &err {
+                    diagnostics.os_error = io_error.raw_os_error();
+                }
                 return Err(ApiError::Stream(err.to_string()));
             }
             Ok(None) => {
+                diagnostics.outcome = "stream_eof";
                 return Err(ApiError::Stream(
                     "stream closed before response.completed".into(),
                 ));
             }
             Err(err) => {
+                diagnostics.outcome = "receive_timeout";
                 return Err(err);
             }
         };
+        diagnostics.observe_message();
 
         match message {
             Message::Text(text) => {
@@ -767,16 +793,26 @@ async fn run_websocket_response_stream(
                     && let Some(error) =
                         map_wrapped_websocket_error_event(wrapped_error, text.to_string())
                 {
+                    diagnostics.outcome = "server_error";
                     return Err(error);
                 }
 
                 let event = match serde_json::from_str::<ResponsesStreamEvent>(&text) {
                     Ok(event) => event,
                     Err(err) => {
-                        debug!("failed to parse websocket event: {err}, data: {text}");
+                        debug!(
+                            event_bytes = text.len(),
+                            error_category = ?err.classify(),
+                            error_line = err.line(),
+                            error_column = err.column(),
+                            "failed to parse websocket event"
+                        );
                         continue;
                     }
                 };
+                if event.kind() == "response.created" {
+                    diagnostics.response_created = true;
+                }
                 emit_responses_websocket_timing_event(
                     event.kind(),
                     text.as_str(),
@@ -855,19 +891,23 @@ async fn run_websocket_response_stream(
                         let is_completed = matches!(event, ResponseEvent::Completed { .. });
                         let _ = tx_event.send(Ok(event)).await;
                         if is_completed {
+                            diagnostics.outcome = "completed";
                             break;
                         }
                     }
                     Ok(None) => {}
                     Err(error) => {
+                        diagnostics.outcome = "response_error";
                         return Err(error.into_api_error());
                     }
                 }
             }
             Message::Binary(_) => {
+                diagnostics.outcome = "unexpected_binary";
                 return Err(ApiError::Stream("unexpected binary websocket event".into()));
             }
-            Message::Close(_) => {
+            Message::Close(frame) => {
+                diagnostics.observe_close(frame.as_ref());
                 return Err(ApiError::Stream(
                     "websocket closed by server before response.completed".into(),
                 ));
@@ -927,7 +967,7 @@ async fn send_websocket_request(
     request_text: String,
     idle_timeout: Duration,
     telemetry: Option<&Arc<dyn WebsocketTelemetry>>,
-    connection_reused: bool,
+    diagnostics: &mut RequestDiagnostics,
 ) -> Result<(), ApiError> {
     let request_start = Instant::now();
     let result = tokio::time::timeout(
@@ -935,16 +975,26 @@ async fn send_websocket_request(
         ws_stream.send(Message::Text(request_text.into())),
     )
     .await
-    .map_err(|_| ApiError::Stream("idle timeout sending websocket request".into()))
+    .map_err(|_| {
+        diagnostics.outcome = "send_timeout";
+        ApiError::Stream("idle timeout sending websocket request".into())
+    })
     .and_then(|result| {
-        result.map_err(|err| ApiError::Stream(format!("failed to send websocket request: {err}")))
+        result.map_err(|err| {
+            diagnostics.outcome = "send_error";
+            if let WsError::Io(io_error) = &err {
+                diagnostics.os_error = io_error.raw_os_error();
+            }
+            ApiError::Stream(format!("failed to send websocket request: {err}"))
+        })
     });
+    diagnostics.observe_send(request_start.elapsed(), result.is_ok());
 
     if let Some(t) = telemetry.as_ref() {
         t.on_ws_request(
             request_start.elapsed(),
             result.as_ref().err(),
-            connection_reused,
+            diagnostics.connection_reused,
         );
     }
 
