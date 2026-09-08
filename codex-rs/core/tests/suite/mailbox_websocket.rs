@@ -31,8 +31,11 @@ use tokio::net::TcpStream;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 use tokio_tungstenite::WebSocketStream;
-use tokio_tungstenite::accept_async;
+use tokio_tungstenite::accept_async_with_config;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::extensions::ExtensionsConfig;
+use tokio_tungstenite::tungstenite::extensions::compression::deflate::DeflateConfig;
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
 #[derive(Clone, Copy)]
 enum ItemBoundary {
@@ -81,8 +84,12 @@ async fn queued_mail_preserves_websocket_incremental_continuation(
     let mut server = tokio::spawn(async move {
         let mut socket = loop {
             let (stream, _) = listener.accept().await?;
+            let mut extensions = ExtensionsConfig::default();
+            extensions.permessage_deflate = Some(DeflateConfig::default());
+            let mut config = WebSocketConfig::default();
+            config.extensions = extensions;
             // As with the shared WS fixture, model probes must not consume the connection.
-            if let Ok(socket) = accept_async(stream).await {
+            if let Ok(socket) = accept_async_with_config(stream, Some(config)).await {
                 break socket;
             }
         };
