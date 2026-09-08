@@ -50,8 +50,12 @@ use url::Url;
 #[path = "responses_websocket_diagnostics.rs"]
 mod diagnostics;
 use diagnostics::RequestDiagnostics;
+#[path = "responses_websocket_connection_diagnostics.rs"]
+mod connection_diagnostics;
+use connection_diagnostics::ConnectionDiagnostics;
 
 struct WsStream {
+    connection_id: u64,
     tx_command: mpsc::Sender<WsCommand>,
     rx_message: mpsc::UnboundedReceiver<Result<Message, WsError>>,
     pump_task: tokio::task::JoinHandle<()>,
@@ -68,6 +72,8 @@ impl WsStream {
     fn new(inner: WebSocketConnection, keepalive_interval: Duration) -> Self {
         let (tx_command, mut rx_command) = mpsc::channel::<WsCommand>(32);
         let (tx_message, rx_message) = mpsc::unbounded_channel::<Result<Message, WsError>>();
+        let mut diagnostics = ConnectionDiagnostics::new(keepalive_interval);
+        let connection_id = diagnostics.connection_id;
 
         let pump_task = tokio::spawn(async move {
             let mut inner = inner;
@@ -77,12 +83,16 @@ impl WsStream {
                 tokio::select! {
                     command = rx_command.recv() => {
                         let Some(command) = command else {
+                            diagnostics.finish("command_channel_closed");
                             break;
                         };
                         match command {
                             WsCommand::Send { message, tx_result } => {
                                 let result = inner.send(message).await;
                                 let should_break = result.is_err();
+                                if let Err(error) = &result {
+                                    diagnostics.observe_error("send_error", error);
+                                }
                                 keepalive.as_mut().reset(Instant::now() + keepalive_interval);
                                 let _ = tx_result.send(result);
                                 if should_break {
@@ -93,23 +103,34 @@ impl WsStream {
                     }
                     message = inner.next() => {
                         let Some(message) = message else {
+                            diagnostics.finish("stream_eof");
                             break;
                         };
+                        if message.is_ok() {
+                            diagnostics.received();
+                        }
                         keepalive.as_mut().reset(Instant::now() + keepalive_interval);
                         match message {
                             Ok(Message::Ping(payload)) => {
                                 if let Err(err) = inner.send(Message::Pong(payload)).await {
+                                    diagnostics.observe_error("pong_send_error", &err);
                                     let _ = tx_message.send(Err(err));
                                     break;
                                 }
                             }
-                            Ok(Message::Pong(_)) => {}
+                            Ok(Message::Pong(_)) => diagnostics.pong_received(),
                             Ok(message @ (Message::Text(_)
                             | Message::Binary(_)
                             | Message::Close(_)
                             | Message::Frame(_))) => {
                                 let is_close = matches!(message, Message::Close(_));
+                                if let Message::Close(frame) = &message {
+                                    diagnostics.observe_close(frame.as_ref());
+                                }
                                 if tx_message.send(Ok(message)).is_err() {
+                                    if !is_close {
+                                        diagnostics.finish("message_consumer_dropped");
+                                    }
                                     break;
                                 }
                                 if is_close {
@@ -117,6 +138,7 @@ impl WsStream {
                                 }
                             }
                             Err(err) => {
+                                diagnostics.observe_error("receive_error", &err);
                                 let _ = tx_message.send(Err(err));
                                 break;
                             }
@@ -124,9 +146,11 @@ impl WsStream {
                     }
                     _ = &mut keepalive => {
                         if let Err(err) = inner.send(Message::Ping(Vec::new().into())).await {
+                            diagnostics.observe_error("ping_send_error", &err);
                             let _ = tx_message.send(Err(err));
                             break;
                         }
+                        diagnostics.ping_sent();
                         keepalive.as_mut().reset(Instant::now() + keepalive_interval);
                     }
                 }
@@ -134,6 +158,7 @@ impl WsStream {
         });
 
         Self {
+            connection_id,
             tx_command,
             rx_message,
             pump_task,
@@ -203,6 +228,7 @@ struct ResponsesWebsocketTimingLogContext {
 }
 
 pub struct ResponsesWebsocketConnection {
+    connection_id: u64,
     stream: Arc<Mutex<Option<WsStream>>>,
     endpoint: ResponsesEndpoint,
     // TODO (pakrym): is this the right place for timeout?
@@ -235,6 +261,7 @@ impl ResponsesWebsocketConnection {
         endpoint: ResponsesEndpoint,
     ) -> Self {
         Self {
+            connection_id: stream.connection_id,
             stream: Arc::new(Mutex::new(Some(stream))),
             endpoint,
             idle_timeout,
@@ -250,6 +277,11 @@ impl ResponsesWebsocketConnection {
             .await
             .as_ref()
             .is_none_or(WsStream::is_closed)
+    }
+
+    /// Process-local diagnostic ID linking requests, idle closure, and reconnect decisions.
+    pub fn connection_id(&self) -> u64 {
+        self.connection_id
     }
 
     #[instrument(
@@ -747,7 +779,11 @@ async fn run_websocket_response_stream(
 ) -> Result<(), ApiError> {
     let mut last_server_model: Option<String> = None;
     let mut safety_buffering_treatment = SafetyBufferingTreatment::default();
-    let mut diagnostics = RequestDiagnostics::new(timing_log_context, request_text.len());
+    let mut diagnostics = RequestDiagnostics::new(
+        timing_log_context,
+        request_text.len(),
+        ws_stream.connection_id,
+    );
     send_websocket_request(
         ws_stream,
         request_text,

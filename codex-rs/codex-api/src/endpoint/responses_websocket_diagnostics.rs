@@ -13,6 +13,7 @@ static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 pub(super) struct RequestDiagnostics {
     request_id: u64,
+    connection_id: u64,
     started: Instant,
     request_bytes: usize,
     input_items: usize,
@@ -32,9 +33,14 @@ pub(super) struct RequestDiagnostics {
 }
 
 impl RequestDiagnostics {
-    pub(super) fn new(context: &ResponsesWebsocketTimingLogContext, request_bytes: usize) -> Self {
+    pub(super) fn new(
+        context: &ResponsesWebsocketTimingLogContext,
+        request_bytes: usize,
+        connection_id: u64,
+    ) -> Self {
         let diagnostics = Self {
             request_id: NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed),
+            connection_id,
             started: Instant::now(),
             request_bytes,
             input_items: context.input_items,
@@ -53,6 +59,7 @@ impl RequestDiagnostics {
         tracing::info!(
             target: "codex_api::ws_diagnostics",
             ws_request_id = diagnostics.request_id,
+            ws_connection_id = diagnostics.connection_id,
             request_bytes,
             input_items = diagnostics.input_items,
             has_previous_response_id = diagnostics.has_previous_response_id,
@@ -68,6 +75,7 @@ impl RequestDiagnostics {
         tracing::info!(
             target: "codex_api::ws_diagnostics",
             ws_request_id = self.request_id,
+            ws_connection_id = self.connection_id,
             send_ms = self.send_ms,
             success,
             "websocket request send finished"
@@ -84,22 +92,7 @@ impl RequestDiagnostics {
         if let Some(frame) = frame {
             self.close_code = Some(frame.code.into());
             self.close_reason_bytes = frame.reason.len();
-            // WebSocket control frames are bounded by the protocol. Only fixed categories leave
-            // this method, never a substring or a hash of arbitrary server-provided text.
-            let reason = frame.reason.to_ascii_lowercase();
-            self.close_reason_category = if reason.is_empty() {
-                "empty"
-            } else if reason.contains("too large") || reason.contains("size limit") {
-                "size_limit"
-            } else if reason.contains("timeout") || reason.contains("timed out") {
-                "timeout"
-            } else if reason.contains("rate limit") {
-                "rate_limit"
-            } else if reason.contains("overload") || reason.contains("try again") {
-                "overload"
-            } else {
-                "other_redacted"
-            };
+            self.close_reason_category = close_reason_category(&frame.reason);
         }
     }
 }
@@ -111,6 +104,7 @@ impl Drop for RequestDiagnostics {
         tracing::info!(
             target: "codex_api::ws_diagnostics",
             ws_request_id = self.request_id,
+            ws_connection_id = self.connection_id,
             request_bytes = self.request_bytes,
             input_items = self.input_items,
             has_previous_response_id = self.has_previous_response_id,
@@ -127,6 +121,26 @@ impl Drop for RequestDiagnostics {
             close_reason_bytes = self.close_reason_bytes,
             "websocket request finished"
         );
+    }
+}
+
+pub(super) fn close_reason_category(reason: &str) -> &'static str {
+    // Close frames are bounded control frames. Never expose arbitrary peer text.
+    let reason = reason.to_ascii_lowercase();
+    if reason.is_empty() {
+        "empty"
+    } else if reason.contains("too large") || reason.contains("size limit") {
+        "size_limit"
+    } else if reason.contains("connection limit") || reason.contains("60 minutes") {
+        "connection_lifetime_limit"
+    } else if reason.contains("timeout") || reason.contains("timed out") {
+        "timeout"
+    } else if reason.contains("rate limit") {
+        "rate_limit"
+    } else if reason.contains("overload") || reason.contains("try again") {
+        "overload"
+    } else {
+        "other_redacted"
     }
 }
 

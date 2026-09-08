@@ -1545,14 +1545,27 @@ impl ModelClientSession {
             request_route_telemetry,
             endpoint,
         } = params;
-        let needs_new = match self.websocket_session.connection.as_ref() {
-            Some(conn) => {
-                self.websocket_session.endpoint != Some(endpoint) || conn.is_closed().await
+        let reconnect_reason = match self.websocket_session.connection.as_ref() {
+            Some(_) if self.websocket_session.endpoint != Some(endpoint) => {
+                Some("endpoint_changed")
             }
-            None => true,
+            Some(conn) if conn.is_closed().await => Some("connection_closed"),
+            Some(_) => None,
+            None => Some("no_connection"),
         };
 
-        if needs_new {
+        if let Some(reconnect_reason) = reconnect_reason {
+            let previous_ws_connection_id = self
+                .websocket_session
+                .connection
+                .as_ref()
+                .map(ApiWebSocketConnection::connection_id);
+            tracing::info!(
+                target: "codex_api::ws_diagnostics",
+                previous_ws_connection_id,
+                reconnect_reason,
+                "websocket connection replacement requested"
+            );
             self.reset_websocket_session();
             let new_conn = match self
                 .client
@@ -1569,12 +1582,26 @@ impl ModelClientSession {
             {
                 Ok(new_conn) => new_conn,
                 Err(err) => {
+                    tracing::info!(
+                        target: "codex_api::ws_diagnostics",
+                        previous_ws_connection_id,
+                        reconnect_reason,
+                        timed_out = matches!(err, ApiError::Transport(TransportError::Timeout)),
+                        "websocket connection replacement failed"
+                    );
                     if matches!(err, ApiError::Transport(TransportError::Timeout)) {
                         self.reset_websocket_session();
                     }
                     return Err(err);
                 }
             };
+            tracing::info!(
+                target: "codex_api::ws_diagnostics",
+                previous_ws_connection_id,
+                ws_connection_id = new_conn.connection_id(),
+                reconnect_reason,
+                "websocket connection replacement completed"
+            );
             self.websocket_session.connection = Some(new_conn);
             self.websocket_session.endpoint = Some(endpoint);
             self.websocket_session
