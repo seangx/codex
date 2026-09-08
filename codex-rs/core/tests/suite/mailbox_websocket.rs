@@ -127,15 +127,7 @@ async fn queued_mail_preserves_websocket_incremental_continuation(
         // Real server output has an item ID. Omitting it would make local history assign a
         // synthetic ID and break prefix equality independently of mailbox delivery.
         tool_call["item"]["id"] = json!("fc-plan-preserved");
-        send_events(
-            &mut socket,
-            vec![
-                done,
-                tool_call,
-                ev_completed("resp-1"),
-            ],
-        )
-        .await?;
+        send_events(&mut socket, vec![done, tool_call, ev_completed("resp-1")]).await?;
         let follow_up = read_request(&mut socket).await?;
         send_events(
             &mut socket,
@@ -161,7 +153,7 @@ async fn queued_mail_preserves_websocket_incremental_continuation(
             config
                 .features
                 .enable(Feature::ResponsesWebsocketsV2)
-                .unwrap();
+                .expect("test config allows websocket feature");
         })
         .build_with_auto_env(&http)
         .await?;
