@@ -78,7 +78,7 @@ async fn queued_mail_preserves_websocket_incremental_continuation(
     let (mail_queued_tx, mail_queued_rx) = oneshot::channel();
     let (finished_tx, finished_rx) = oneshot::channel();
     // The test deliberately accepts only one connection: the follow-up must use this socket.
-    let server = tokio::spawn(async move {
+    let mut server = tokio::spawn(async move {
         let mut socket = loop {
             let (stream, _) = listener.accept().await?;
             // As with the shared WS fixture, model probes must not consume the connection.
@@ -160,14 +160,19 @@ async fn queued_mail_preserves_websocket_incremental_continuation(
             text_elements: Vec::new(),
         }]))
         .await?;
-    wait_for_event(&test.codex, |event| {
+    tokio::select! {
+    _ = wait_for_event(&test.codex, |event| {
+        if let EventMsg::Error(error) = event {
+            panic!("model request failed before the item boundary: {error:?}");
+        }
         matches!(event, EventMsg::ItemStarted(started) if matches!(
             (&boundary, &started.item),
             (ItemBoundary::Reasoning, TurnItem::Reasoning(_))
                 | (ItemBoundary::Commentary, TurnItem::AgentMessage(_))
         ))
-    })
-    .await;
+    }) => {},
+    result = &mut server => anyhow::bail!("WS fixture ended before the item boundary: {result:?}"),
+    }
     test.codex
         .submit(Op::InterAgentCommunication {
             communication: InterAgentCommunication::new(
