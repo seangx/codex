@@ -119,15 +119,19 @@ async fn queued_mail_preserves_websocket_incremental_continuation(
         mail_queued_rx.await?;
         // Mail is already pending when the item ends. The tool call after it must survive,
         // and response.completed must be consumed before sending the queued mail.
+        let mut tool_call = ev_function_call(
+            "plan-preserved",
+            "update_plan",
+            r#"{"plan":[{"step":"review child result","status":"in_progress"}]}"#,
+        );
+        // Real server output has an item ID. Omitting it would make local history assign a
+        // synthetic ID and break prefix equality independently of mailbox delivery.
+        tool_call["item"]["id"] = json!("fc-plan-preserved");
         send_events(
             &mut socket,
             vec![
                 done,
-                ev_function_call(
-                    "plan-preserved",
-                    "update_plan",
-                    r#"{"plan":[{"step":"review child result","status":"in_progress"}]}"#,
-                ),
+                tool_call,
                 ev_completed("resp-1"),
             ],
         )
