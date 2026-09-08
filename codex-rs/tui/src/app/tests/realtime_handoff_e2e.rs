@@ -60,6 +60,7 @@ async fn delegated_core_events_keep_private_output_hidden_and_deliver_final_spee
         .await;
     let realtime_server =
         responses::start_websocket_server_with_headers(vec![WebSocketConnectionConfig {
+            idle_timeout: None,
             requests: vec![
                 vec![
                     json!({

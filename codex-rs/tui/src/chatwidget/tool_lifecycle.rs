@@ -125,7 +125,6 @@ impl ChatWidget {
         if should_flush {
             self.flush_active_cell();
         }
-        self.transcript.had_work_activity = true;
         self.request_redraw();
     }
 
