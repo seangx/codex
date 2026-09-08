@@ -868,7 +868,7 @@ async fn injected_user_input_triggers_follow_up_request_with_deltas() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn queued_inter_agent_mail_triggers_follow_up_after_reasoning_item() {
+async fn queued_inter_agent_mail_preserves_response_after_reasoning_item() {
     let (gate_reasoning_done_tx, gate_reasoning_done_rx) = oneshot::channel();
 
     let first_chunks = vec![
@@ -879,13 +879,13 @@ async fn queued_inter_agent_mail_triggers_follow_up_after_reasoning_item() {
             vec![
                 ev_reasoning_item("reason-1", &["thinking"], &[]),
                 ev_function_call(
-                    "call-stale",
+                    "call-preserved",
                     "shell",
-                    r#"{"command":"echo stale tool call"}"#,
+                    r#"{"command":"echo preserved tool call"}"#,
                 ),
-                ev_message_item_added("msg-stale", ""),
-                ev_output_text_delta("stale final"),
-                ev_message_item_done("msg-stale", "stale final"),
+                ev_message_item_added("msg-preserved", ""),
+                ev_output_text_delta("preserved answer"),
+                ev_message_item_done("msg-preserved", "preserved answer"),
                 ev_completed("resp-1"),
             ],
         ),
@@ -904,6 +904,7 @@ async fn queued_inter_agent_mail_triggers_follow_up_after_reasoning_item() {
 
     let _ = gate_reasoning_done_tx.send(());
 
+    wait_for_agent_message(&codex, "preserved answer").await;
     wait_for_turn_complete(&codex).await;
 
     let requests = server.requests().await;
@@ -913,7 +914,7 @@ async fn queued_inter_agent_mail_triggers_follow_up_after_reasoning_item() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn queued_inter_agent_mail_triggers_follow_up_after_commentary_message_item() {
+async fn queued_inter_agent_mail_preserves_response_after_commentary_message_item() {
     let (gate_message_done_tx, gate_message_done_rx) = oneshot::channel();
 
     let first_chunks = vec![
@@ -934,13 +935,13 @@ async fn queued_inter_agent_mail_triggers_follow_up_after_commentary_message_ite
                     }
                 }),
                 ev_function_call(
-                    "call-stale",
+                    "call-preserved",
                     "shell",
-                    r#"{"command":"echo stale tool call"}"#,
+                    r#"{"command":"echo preserved tool call"}"#,
                 ),
-                ev_message_item_added("msg-stale", ""),
-                ev_output_text_delta("stale final"),
-                ev_message_item_done("msg-stale", "stale final"),
+                ev_message_item_added("msg-preserved", ""),
+                ev_output_text_delta("preserved answer"),
+                ev_message_item_done("msg-preserved", "preserved answer"),
                 ev_completed("resp-1"),
             ],
         ),
@@ -967,6 +968,7 @@ async fn queued_inter_agent_mail_triggers_follow_up_after_commentary_message_ite
     let _ = gate_message_done_tx.send(());
 
     wait_for_agent_message(&codex, "first answer").await;
+    wait_for_agent_message(&codex, "preserved answer").await;
 
     wait_for_turn_complete(&codex).await;
 
