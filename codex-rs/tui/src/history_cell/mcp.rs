@@ -10,6 +10,10 @@ use codex_protocol::mcp::is_node_repl_backed_server;
 #[path = "mcp_result.rs"]
 mod result;
 
+#[path = "computer_activity.rs"]
+mod computer_activity;
+pub(crate) use computer_activity::ComputerActivityCell;
+
 use crate::style::StatusTone;
 use crate::style::accent_style;
 use crate::style::status_style;
@@ -57,6 +61,12 @@ pub(crate) struct McpInvocation {
     pub(crate) server: String,
     pub(crate) tool: String,
     pub(crate) arguments: Option<serde_json::Value>,
+}
+
+impl McpInvocation {
+    pub(crate) fn is_computer_activity(&self) -> bool {
+        self.server == "cua_repl"
+    }
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -173,7 +183,9 @@ impl McpToolCallCell {
     }
 
     fn result_kind(&self) -> McpResultKind {
-        if is_node_repl_backed_server(&self.invocation.server) && self.invocation.tool == "js" {
+        if self.invocation.is_computer_activity()
+            || (is_node_repl_backed_server(&self.invocation.server) && self.invocation.tool == "js")
+        {
             McpResultKind::NodeRepl
         } else {
             McpResultKind::Standard

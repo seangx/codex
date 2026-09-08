@@ -288,6 +288,11 @@ impl McpConnectionSet {
             .filter(|(_, server)| server.enabled())
         {
             let registration = config.mcp_server_catalog.server(&server_name);
+            let client_mcp_extensions = crate::client_capabilities::server_mcp_extensions(
+                &client_mcp_extensions,
+                &server_name,
+                registration,
+            );
             let is_host_owned_codex_apps = registration.is_some_and(|server| {
                 server
                     .source()
@@ -548,6 +553,15 @@ impl McpConnectionSet {
                 runtime_auth_provider,
                 client_elicitation_capability.clone(),
                 client_mcp_extensions.clone(),
+                auth_manager
+                    .as_ref()
+                    .filter(|_| {
+                        matches!(
+                            &configured_config.transport,
+                            McpServerTransportConfig::Stdio { .. }
+                        )
+                    })
+                    .map(|manager| manager.auth_change_state_receiver()),
                 protocol_mode,
                 catalog_item_limit,
             );

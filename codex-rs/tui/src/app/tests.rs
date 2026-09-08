@@ -34,12 +34,20 @@ mod misalignment_policy;
 mod model_catalog;
 #[path = "tests/model_defaults_tests.rs"]
 mod model_defaults;
+#[path = "tests/pagination_completion_tests.rs"]
+mod pagination_completion_tests;
 #[path = "tests/patch_approval_tests.rs"]
 mod patch_approval_tests;
 #[path = "tests/permission_shortcuts_tests.rs"]
 mod permission_shortcuts_tests;
 mod plugin_catalog;
 mod rate_limits;
+#[path = "tests/realtime_handoff_e2e.rs"]
+mod realtime_handoff_e2e;
+#[path = "tests/realtime_requests.rs"]
+mod realtime_requests;
+#[path = "tests/realtime_start.rs"]
+mod realtime_start;
 #[path = "tests/recap_generation_tests.rs"]
 mod recap_generation;
 mod safety_buffering;
@@ -57,6 +65,8 @@ mod thread_usage;
 mod transcript_composer;
 #[path = "tests/turn_submission.rs"]
 mod turn_submission;
+#[path = "tests/user_verification_routes_tests.rs"]
+mod user_verification_routes;
 
 use super::*;
 use crate::app_backtrack::BacktrackSelection;
@@ -1439,6 +1449,7 @@ async fn replayed_turn_complete_submits_restored_queued_follow_up() {
     while new_op_rx.try_recv().is_ok() {}
     app.replay_thread_snapshot(
         ThreadEventSnapshot {
+            delegated_turns: Vec::new(),
             session: None,
             turns: Vec::new(),
             events: vec![ThreadBufferedEvent::Notification(Box::new(
@@ -1492,6 +1503,7 @@ async fn replay_only_thread_keeps_restored_queue_visible() {
 
     app.replay_thread_snapshot(
         ThreadEventSnapshot {
+            delegated_turns: Vec::new(),
             session: None,
             turns: Vec::new(),
             events: vec![ThreadBufferedEvent::Notification(Box::new(
@@ -1543,6 +1555,7 @@ async fn replay_thread_snapshot_keeps_queue_when_running_state_only_comes_from_s
 
     app.replay_thread_snapshot(
         ThreadEventSnapshot {
+            delegated_turns: Vec::new(),
             session: None,
             turns: Vec::new(),
             events: vec![],
@@ -1592,6 +1605,7 @@ async fn replay_thread_snapshot_in_progress_turn_restores_running_queue_state() 
 
     app.replay_thread_snapshot(
         ThreadEventSnapshot {
+            delegated_turns: Vec::new(),
             session: None,
             turns: vec![test_turn("turn-1", TurnStatus::InProgress, Vec::new())],
             events: Vec::new(),
@@ -1621,6 +1635,7 @@ async fn replay_thread_snapshot_in_progress_turn_restores_running_state_without_
 
     app.replay_thread_snapshot(
         ThreadEventSnapshot {
+            delegated_turns: Vec::new(),
             session: None,
             turns: vec![test_turn("turn-1", TurnStatus::InProgress, Vec::new())],
             events: Vec::new(),
@@ -1663,6 +1678,7 @@ async fn replay_thread_snapshot_does_not_submit_queue_before_replay_catches_up()
 
     app.replay_thread_snapshot(
         ThreadEventSnapshot {
+            delegated_turns: Vec::new(),
             session: None,
             turns: Vec::new(),
             events: vec![
@@ -1804,6 +1820,7 @@ async fn replay_thread_snapshot_restores_collaboration_mode_for_draft_submit() {
 
     app.replay_thread_snapshot(
         ThreadEventSnapshot {
+            delegated_turns: Vec::new(),
             session: None,
             turns: Vec::new(),
             events: vec![],
@@ -1884,6 +1901,7 @@ async fn replay_thread_snapshot_restores_collaboration_mode_without_input() {
 
     app.replay_thread_snapshot(
         ThreadEventSnapshot {
+            delegated_turns: Vec::new(),
             session: None,
             turns: Vec::new(),
             events: vec![],
@@ -1934,6 +1952,7 @@ async fn replayed_interrupted_turn_restores_queued_input_to_composer() {
 
     app.replay_thread_snapshot(
         ThreadEventSnapshot {
+            delegated_turns: Vec::new(),
             session: None,
             turns: Vec::new(),
             events: vec![ThreadBufferedEvent::Notification(Box::new(
@@ -3819,6 +3838,7 @@ async fn replay_snapshot_with_pending_request_suppresses_replay_notices() {
 
     app.replay_thread_snapshot(
         ThreadEventSnapshot {
+            delegated_turns: Vec::new(),
             session: Some(test_thread_session(thread_id, test_path_buf("/tmp/main"))),
             turns: Vec::new(),
             events: vec![
@@ -4201,6 +4221,7 @@ async fn replayed_file_change_approval_recovers_snapshot_changes() {
     let cwd = test_path_buf("/tmp/project").abs();
     app.replay_thread_snapshot(
         ThreadEventSnapshot {
+            delegated_turns: Vec::new(),
             session: Some(test_thread_session(thread_id, cwd.clone().into_path_buf())),
             turns: vec![test_turn(
                 "turn-replayed-approval",
@@ -5158,6 +5179,7 @@ async fn side_thread_snapshot_does_not_refresh_from_fork_history() {
         .insert(side_thread_id, SideThreadState::new(parent_thread_id));
 
     let snapshot = ThreadEventSnapshot {
+        delegated_turns: Vec::new(),
         session: Some(ThreadSessionState {
             rollout_path: None,
             ..test_thread_session(side_thread_id, test_path_buf("/tmp/side"))
@@ -5186,6 +5208,7 @@ async fn side_thread_snapshot_skips_session_header_preamble() {
         .insert(side_thread_id, SideThreadState::new(parent_thread_id));
 
     let snapshot = ThreadEventSnapshot {
+        delegated_turns: Vec::new(),
         session: Some(ThreadSessionState {
             forked_from_id: Some(parent_thread_id),
             fork_parent_title: None,
@@ -5361,6 +5384,7 @@ async fn active_side_thread_renders_live_mcp_startup_notifications() {
     app.activate_thread_channel(side_thread_id).await;
     app.replay_thread_snapshot(
         ThreadEventSnapshot {
+            delegated_turns: Vec::new(),
             session: Some(test_thread_session(
                 side_thread_id,
                 test_path_buf("/tmp/side"),
@@ -5750,6 +5774,7 @@ async fn render_clear_ui_header_after_long_transcript_for_snapshot() -> String {
 
     let user_cell = |text: &str| -> Arc<dyn HistoryCell> {
         Arc::new(UserHistoryCell {
+            spoken: false,
             message: text.to_string(),
             text_elements: Vec::new(),
             local_image_paths: Vec::new(),
@@ -5944,6 +5969,9 @@ async fn make_test_app() -> App {
         pending_shutdown_exit_thread_id: None,
         windows_sandbox: WindowsSandboxState::default(),
         thread_event_channels: HashMap::new(),
+        pending_realtime_speech_replay: HashMap::new(),
+        pending_realtime_transcript_replay: HashMap::new(),
+        realtime_replay_order: VecDeque::new(),
         temporary_structured_requests: HashMap::new(),
         pending_thread_titles: HashSet::new(),
         thread_event_listener_tasks: HashMap::new(),
@@ -5962,7 +5990,10 @@ async fn make_test_app() -> App {
         dynamic_tool_status_updates: tokio::sync::broadcast::channel(/*capacity*/ 64).0,
         dynamic_tool_tasks: HashMap::new(),
         pending_startup_thread_start: false,
+        pending_server_version_notice: None,
+        pending_open_resume_picker: false,
         pending_managed_worktree_creation: false,
+        pending_working_directory_change: None,
         pending_start_managed_worktree: None,
         pending_managed_worktree_created: None,
         pending_managed_worktree_transition: None,
@@ -6036,6 +6067,9 @@ pub(super) async fn make_test_app_with_channels() -> (
             pending_shutdown_exit_thread_id: None,
             windows_sandbox: WindowsSandboxState::default(),
             thread_event_channels: HashMap::new(),
+            pending_realtime_speech_replay: HashMap::new(),
+            pending_realtime_transcript_replay: HashMap::new(),
+            realtime_replay_order: VecDeque::new(),
             temporary_structured_requests: HashMap::new(),
             pending_thread_titles: HashSet::new(),
             thread_event_listener_tasks: HashMap::new(),
@@ -6054,7 +6088,10 @@ pub(super) async fn make_test_app_with_channels() -> (
             dynamic_tool_status_updates: tokio::sync::broadcast::channel(/*capacity*/ 64).0,
             dynamic_tool_tasks: HashMap::new(),
             pending_startup_thread_start: false,
+            pending_server_version_notice: None,
+            pending_open_resume_picker: false,
             pending_managed_worktree_creation: false,
+            pending_working_directory_change: None,
             pending_start_managed_worktree: None,
             pending_managed_worktree_created: None,
             pending_managed_worktree_transition: None,
@@ -7169,6 +7206,7 @@ async fn backtrack_selection_preserves_selected_prompt_and_requests_branch() {
                      remote_image_urls: Vec<String>|
      -> Arc<dyn HistoryCell> {
         Arc::new(UserHistoryCell {
+            spoken: false,
             message: text.to_string(),
             text_elements,
             local_image_paths,
@@ -8150,6 +8188,7 @@ async fn replay_thread_snapshot_replays_turn_history_in_order() {
     let thread_id = ThreadId::new();
     app.replay_thread_snapshot(
         ThreadEventSnapshot {
+            delegated_turns: Vec::new(),
             session: Some(test_thread_session(
                 thread_id,
                 test_path_buf("/home/user/project"),
@@ -8266,6 +8305,7 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
 
     app.replay_thread_snapshot(
         ThreadEventSnapshot {
+            delegated_turns: Vec::new(),
             session: None,
             turns: Vec::new(),
             events: vec![ThreadBufferedEvent::Notification(Box::new(
@@ -8346,6 +8386,7 @@ async fn refreshed_snapshot_session_persists_resumed_turns() {
         ..initial_session.clone()
     };
     let mut snapshot = ThreadEventSnapshot {
+        delegated_turns: Vec::new(),
         session: Some(initial_session),
         turns: Vec::new(),
         events: Vec::new(),
@@ -9182,6 +9223,7 @@ async fn clear_only_ui_reset_preserves_chat_session_state() {
     app.chat_widget
         .apply_external_edit("draft prompt".to_string());
     app.transcript_cells = vec![Arc::new(UserHistoryCell {
+        spoken: false,
         message: "old message".to_string(),
         text_elements: Vec::new(),
         local_image_paths: Vec::new(),

@@ -34,6 +34,7 @@ use codex_protocol::openai_models::AutoReviewMessages;
 use codex_protocol::openai_models::MODEL_SPECIALTY_CYBER;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::permissions::FileSystemAccessMode;
+use codex_protocol::permissions::FileSystemPath;
 use codex_protocol::permissions::FileSystemSandboxEntry;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::NetworkSandboxPolicy;
@@ -287,10 +288,11 @@ async fn guardian_session_inherits_parent_http_fallback(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[test_case(60_000; "reviewer_window_is_already_exhausted")]
-#[test_case(49_990; "followup_reminder_exhausts_reviewer_window")]
+#[test_case(60_000, false; "legacy_reviewer_window_is_already_exhausted")]
+#[test_case(49_990, true; "retained_followup_reminder_exhausts_reviewer_window")]
 async fn guardian_review_resends_full_transcript_after_reviewer_context_rollover(
     first_review_total_tokens: i64,
+    thread_owned: bool,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_wine_exec!(
@@ -303,7 +305,11 @@ async fn guardian_review_resends_full_transcript_after_reviewer_context_rollover
         .with_model_info_override("gpt-5.5", |model| {
             model.auto_review_model_override = Some(model.slug.clone());
         })
-        .with_config(|config| {
+        .with_config(move |config| {
+            config
+                .features
+                .set_enabled(Feature::GuardianThreadContext, thread_owned)
+                .expect("configure Guardian context mode");
             config.model_context_window = Some(100_000);
             config.model_auto_compact_token_limit = Some(50_000);
             config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
@@ -939,6 +945,12 @@ async fn guardian_session_is_reused_for_consecutive_tool_reviews_without_prewarm
                 secret_file.into(),
                 FileSystemAccessMode::Deny,
             ));
+            file_system_policy.entries.push(FileSystemSandboxEntry::new(
+                FileSystemPath::GlobPattern {
+                    pattern: "guardian-*.key".to_string(),
+                },
+                FileSystemAccessMode::Deny,
+            ));
             config
                 .permissions
                 .set_permission_profile(PermissionProfile::from_runtime_permissions(
@@ -1112,6 +1124,28 @@ async fn guardian_session_is_reused_for_consecutive_tool_reviews_without_prewarm
         })
         .collect::<Vec<_>>();
     assert_eq!(guardian_requests.len(), 3);
+    let permission_section = [
+        "\n>>> PARENT TURN PERMISSION CONTEXT START\n".to_string(),
+        format!(
+            "The parent turn's active permission profile denies reading these paths/globs. These are policy restrictions; do not approve escalation whose purpose is to read them.\n- path `{}`\n- glob `{}`\n",
+            fs::canonicalize(&secret_file)?.display(),
+            test.config.cwd.join("guardian-*.key").display(),
+        ),
+        ">>> PARENT TURN PERMISSION CONTEXT END\n".to_string(),
+    ];
+    // Both the full request and the next review's delta must carry the resolved policy.
+    for request in [guardian_requests[0], guardian_requests[2]] {
+        let user_messages = request.message_input_text_groups("user");
+        let latest_input = user_messages.last().expect("Guardian assessment input");
+        let section_start = latest_input
+            .iter()
+            .position(|text| text == &permission_section[0])
+            .expect("parent permission section");
+        assert_eq!(
+            &latest_input[section_start..section_start + permission_section.len()],
+            permission_section.as_slice()
+        );
+    }
     let first_guardian_request = guardian_requests[0].body_json();
     let second_guardian_request = guardian_requests[2].body_json();
     let first_parent_request = requests[0].body_json();
@@ -1561,14 +1595,17 @@ async fn guardian_timeout_rejects_tool_call_with_acting_model_instructions(
     struct TimedOutReviewContributor;
 
     impl codex_extension_api::ApprovalReviewContributor for TimedOutReviewContributor {
-        fn fast_decision<'a>(
+        fn decide<'a>(
             &'a self,
-            _session_store: &'a codex_extension_api::ExtensionData,
-            _thread_store: &'a codex_extension_api::ExtensionData,
-            _prompt: &'a str,
-            _extension_metrics: Option<Arc<dyn codex_extension_api::ExtensionMetrics>>,
-        ) -> codex_extension_api::ExtensionFuture<'a, Option<ReviewDecision>> {
-            Box::pin(async { Some(ReviewDecision::TimedOut) })
+            input: &'a codex_extension_api::ApprovalDecisionInput<'_>,
+        ) -> codex_extension_api::ExtensionFuture<'a, Option<codex_extension_api::ApprovalDecision>>
+        {
+            assert_eq!(input.tool_call_id, Some("exec-call-timed-out"));
+            Box::pin(async {
+                Some(codex_extension_api::ApprovalDecision::Reviewed(
+                    ReviewDecision::TimedOut,
+                ))
+            })
         }
     }
 

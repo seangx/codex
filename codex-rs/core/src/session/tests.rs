@@ -12,6 +12,7 @@ use crate::config::ConfigOverrides;
 use crate::config::test_config;
 use crate::context::ContextualUserFragment;
 use crate::context::DeveloperInstructions;
+use crate::context::GuardianContextMode;
 use crate::context::TurnAborted;
 use crate::environment_selection::EnvironmentConfigOrigin;
 use crate::environment_selection::ThreadEnvironments;
@@ -6620,6 +6621,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         thread_settings_persistence: Semaphore::new(/*permits*/ 1),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
         features: config.features.clone(),
+        guardian_context_mode: GuardianContextMode::from_features(&config.features),
         windows_sandbox_proxy_settings_mode:
             codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
         multi_agent_version: OnceLock::from(config.multi_agent_version_from_features()),
@@ -6634,7 +6636,6 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         active_turn: Mutex::new(None),
         async_hook_results,
         input_queue: super::input_queue::InputQueue::new(),
-        guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
         services,
         git_enrichment_policy: GitEnrichmentPolicy::Fresh,
         fork_persistence: ForkPersistence::Copied,
@@ -8572,7 +8573,7 @@ async fn shutdown_and_wait_shuts_down_cached_guardian_subagent() {
         session_loop_termination: session_loop_termination_from_handle(child_session_loop_handle),
     };
     parent_session
-        .guardian_review_session
+        .guardian_review_session()
         .cache_for_test(child_session, child_io)
         .await;
 
@@ -8604,13 +8605,13 @@ async fn cached_guardian_subagent_exposes_its_rollout_path() {
         session_loop_termination: session_loop_termination_from_handle(child_session_loop_handle),
     };
     parent_session
-        .guardian_review_session
+        .guardian_review_session()
         .cache_for_test(child_session, child_io)
         .await;
 
     assert_eq!(
         parent_session
-            .guardian_review_session
+            .guardian_review_session()
             .trunk_rollout_path()
             .await,
         Some(child_rollout_path)
@@ -8657,7 +8658,7 @@ async fn shutdown_and_wait_shuts_down_tracked_ephemeral_guardian_review() {
         session_loop_termination: session_loop_termination_from_handle(child_session_loop_handle),
     };
     parent_session
-        .guardian_review_session
+        .guardian_review_session()
         .register_ephemeral_for_test(child_session, child_io)
         .await;
 
@@ -8784,9 +8785,10 @@ where
     );
 
     let mut state = SessionState::new(session_configuration.clone());
-    if config.features.enabled(Feature::GuardianThreadContext) {
-        state.history.enable_user_message_retention();
-    }
+    state.history = ContextManager::with_guardian_context_mode(
+        GuardianContextMode::from_features(&config.features),
+        &session_configuration.session_source,
+    );
     let (environment_manager, resolved_turn_environments) =
         resolved_environments_for_configuration(&session_configuration, &default_environments)
             .await;
@@ -8925,6 +8927,7 @@ where
         thread_settings_persistence: Semaphore::new(/*permits*/ 1),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
         features: config.features.clone(),
+        guardian_context_mode: GuardianContextMode::from_features(&config.features),
         windows_sandbox_proxy_settings_mode:
             codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
         multi_agent_version: OnceLock::from(config.multi_agent_version_from_features()),
@@ -8939,7 +8942,6 @@ where
         active_turn: Mutex::new(None),
         async_hook_results,
         input_queue: super::input_queue::InputQueue::new(),
-        guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
         services,
         git_enrichment_policy: GitEnrichmentPolicy::Fresh,
         fork_persistence: ForkPersistence::Copied,

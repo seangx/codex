@@ -10,7 +10,6 @@ impl ChatWidget {
         let Some(wait) = self.unified_exec_wait_streak.take() else {
             return;
         };
-        self.transcript.needs_final_message_separator = true;
         let cell = history_cell::new_unified_exec_interaction(wait.command_display, String::new());
         self.app_event_tx
             .send(AppEvent::InsertHistoryCell(Box::new(cell)));
@@ -465,7 +464,13 @@ impl ChatWidget {
                     ExecEndTarget::AppendToGroup
                 }
             }
-            Some(cell) if cell.as_any().is::<McpToolCallCell>() => {
+            Some(cell)
+                if cell.as_any().is::<McpToolCallCell>()
+                    || cell
+                        .as_any()
+                        .downcast_ref::<history_cell::ComputerActivityCell>()
+                        .is_some_and(history_cell::ComputerActivityCell::is_active) =>
+            {
                 ExecEndTarget::OrphanHistoryWhileDirectExec
             }
             Some(_) | None => ExecEndTarget::NewCell,
@@ -538,7 +543,6 @@ impl ChatWidget {
                 );
                 let completed = orphan.complete_call(&id, output, duration);
                 debug_assert!(completed, "new orphan exec cell should contain {id}");
-                self.transcript.needs_final_message_separator = true;
                 self.app_event_tx
                     .send(AppEvent::InsertHistoryCell(Box::new(orphan)));
                 self.request_redraw();
@@ -582,8 +586,6 @@ impl ChatWidget {
                 }
             }
         }
-        // Mark that actual work was done (command executed)
-        self.transcript.had_work_activity = true;
         if is_user_shell {
             self.maybe_send_next_queued_input();
         }

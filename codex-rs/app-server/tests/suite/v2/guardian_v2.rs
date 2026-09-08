@@ -76,11 +76,20 @@ use super::mcp_tool::TEST_TOOL_NAME;
 use super::mcp_tool::start_mcp_server;
 use super::mcp_tool::start_mcp_server_with_tools;
 
+#[path = "guardian_sync_session_tests.rs"]
+mod sync_sessions;
+
 #[path = "guardian_v2_history_tests.rs"]
 mod history;
 
 #[path = "guardian_v2_model_tests.rs"]
 mod model_tests;
+
+#[path = "guardian_policy_tests.rs"]
+mod policy;
+
+#[path = "guardian_code_mode_tests.rs"]
+mod code_mode;
 
 const TIMEOUT: Duration = Duration::from_secs(30);
 const MODEL: &str = "mock-model";
@@ -371,7 +380,9 @@ async fn parent_response(
     State(state): State<Arc<MockResponsesState>>,
     Json(request): Json<Value>,
 ) -> impl IntoResponse {
-    let events = if request
+    let events = if request["model"] == "gpt-5.6-luna" {
+        luna_response(&state, request).await
+    } else if request
         .pointer("/client_metadata/x-openai-subagent")
         .and_then(Value::as_str)
         == Some("guardian")
@@ -550,6 +561,39 @@ async fn parent_response(
     )
 }
 
+async fn luna_response(state: &MockResponsesState, request: Value) -> Vec<Value> {
+    let is_root_sample = state.root_worker
+        && state
+            .root_thread_id
+            .lock()
+            .expect("root thread lock should not be poisoned")
+            .as_ref()
+            .is_some_and(|thread_id| {
+                request["prompt_cache_key"] == format!("guardian-v2:{thread_id}")
+            });
+    if !is_root_sample {
+        state
+            .luna_requests
+            .lock()
+            .expect("Luna request lock should not be poisoned")
+            .push(request);
+        state.allow_luna.notified().await;
+    }
+    let classification = if state.invalid_classification {
+        "invalid"
+    } else if state.luna_score < 0.5 {
+        "low"
+    } else {
+        "high"
+    };
+    vec![
+        responses::ev_response_created("luna-score"),
+        responses::ev_output_text_delta(classification),
+        responses::ev_assistant_message("luna-score-message", classification),
+        responses::ev_completed("luna-score"),
+    ]
+}
+
 async fn luna_websocket(
     State(state): State<Arc<MockResponsesState>>,
     websocket: WebSocketUpgrade,
@@ -561,36 +605,7 @@ async fn luna_websocket(
                 continue;
             };
             let request: Value = serde_json::from_str(&text).expect("valid Luna request");
-            let is_root_sample = state.root_worker
-                && state
-                    .root_thread_id
-                    .lock()
-                    .expect("root thread lock should not be poisoned")
-                    .as_ref()
-                    .is_some_and(|thread_id| {
-                        request["prompt_cache_key"] == format!("guardian-v2:{thread_id}")
-                    });
-            if !is_root_sample {
-                state
-                    .luna_requests
-                    .lock()
-                    .expect("Luna request lock should not be poisoned")
-                    .push(request);
-                state.allow_luna.notified().await;
-            }
-            let classification = if state.invalid_classification {
-                "invalid"
-            } else if state.luna_score < 0.5 {
-                "low"
-            } else {
-                "high"
-            };
-            for event in [
-                responses::ev_response_created("luna-score"),
-                responses::ev_output_text_delta(classification),
-                responses::ev_assistant_message("luna-score-message", classification),
-                responses::ev_completed("luna-score"),
-            ] {
+            for event in luna_response(&state, request).await {
                 if socket
                     .send(Message::Text(event.to_string().into()))
                     .await
@@ -1003,7 +1018,11 @@ async fn guardian_v2_routes_scoped_tool_approvals(
                 .as_array()
                 .expect("Luna input should be an array")
                 .iter()
-                .filter(|item| item["role"] == "developer")
+                .filter(|item| {
+                    item["role"] == "developer"
+                        && item["internal_chat_message_metadata_passthrough"]["content_item_kinds"]
+                            == json!(["guardian.trusted_tool"])
+                })
                 .filter_map(|item| item["content"].as_array())
                 .flatten()
                 .filter_map(|entry| entry["text"].as_str())

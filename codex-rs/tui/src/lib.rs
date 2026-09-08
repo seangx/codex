@@ -1,6 +1,7 @@
 // Forbid accidental stdout/stderr writes in the *library* portion of the TUI.
 // The standalone `codex-tui` binary prints a short help message before the
 // alternate‑screen mode starts; that file opts‑out locally via `allow`.
+#![recursion_limit = "256"]
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 #![deny(clippy::disallowed_methods)]
 use crate::legacy_core::config::Config;
@@ -227,7 +228,6 @@ pub use update_action::UpdateAction;
 #[cfg(not(debug_assertions))]
 pub use update_action::get_update_action;
 mod update_prompt;
-#[cfg(any(not(debug_assertions), test))]
 mod update_versions;
 mod updates;
 #[cfg(any(not(debug_assertions), test))]

@@ -199,9 +199,54 @@ pub(super) async fn start_recording_remote_app_server(
 pub(super) async fn start_recording_app_server_with_history(
     config: &Config,
     history_capabilities: HistoryCapabilities,
+    blocked_thread_list: Option<(ThreadId, oneshot::Sender<()>, oneshot::Receiver<()>)>,
+    failed_thread_name: Option<&'static str>,
+    thread_params_mode: crate::app_server_session::ThreadParamsMode,
+    loader_overrides: LoaderOverrides,
+) -> Result<RecordingAppServer> {
+    start_recording_app_server_with_realtime_speech(
+        config,
+        history_capabilities,
+        blocked_thread_list,
+        failed_thread_name,
+        thread_params_mode,
+        RealtimeRequestBehavior::Forward,
+        loader_overrides,
+    )
+    .await
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum RealtimeRequestBehavior {
+    Forward,
+    AcceptStart,
+    AcceptSpeech,
+    AcceptSpeechAndStallStop,
+}
+
+pub(super) async fn start_recording_realtime_speech_app_server(
+    config: &Config,
+    realtime_behavior: RealtimeRequestBehavior,
+) -> Result<RecordingAppServer> {
+    start_recording_app_server_with_realtime_speech(
+        config,
+        HistoryCapabilities::Current,
+        /*blocked_thread_list*/ None,
+        /*failed_thread_name*/ None,
+        crate::app_server_session::ThreadParamsMode::Embedded,
+        realtime_behavior,
+        LoaderOverrides::default(),
+    )
+    .await
+}
+
+async fn start_recording_app_server_with_realtime_speech(
+    config: &Config,
+    history_capabilities: HistoryCapabilities,
     mut blocked_thread_list: Option<(ThreadId, oneshot::Sender<()>, oneshot::Receiver<()>)>,
     failed_thread_name: Option<&'static str>,
     thread_params_mode: crate::app_server_session::ThreadParamsMode,
+    realtime_behavior: RealtimeRequestBehavior,
     loader_overrides: LoaderOverrides,
 ) -> Result<RecordingAppServer> {
     let state_db =
@@ -256,6 +301,11 @@ pub(super) async fn start_recording_app_server_with_history(
                         .lock()
                         .expect("request recorder lock")
                         .push(request.clone());
+                    if realtime_behavior == RealtimeRequestBehavior::AcceptSpeechAndStallStop
+                        && request.method == "thread/realtime/stop"
+                    {
+                        continue;
+                    }
                     let request_id = request.id.clone();
                     let params = request.params.as_ref();
                     let requires_pagination = match request.method.as_str() {
@@ -286,7 +336,20 @@ pub(super) async fn start_recording_app_server_with_history(
                             .is_some_and(|tools| {
                                 tools.iter().any(|tool| tool["type"] == "namespace")
                             });
-                    let response = if let HistoryCapabilities::ConfigReadUnsupported(code) =
+                    let fake_realtime_response = (realtime_behavior
+                        == RealtimeRequestBehavior::AcceptStart
+                        && request.method == "thread/realtime/start")
+                        || (matches!(
+                            realtime_behavior,
+                            RealtimeRequestBehavior::AcceptSpeech
+                                | RealtimeRequestBehavior::AcceptSpeechAndStallStop
+                        ) && request.method == "thread/realtime/appendSpeech");
+                    let response = if fake_realtime_response {
+                        JSONRPCMessage::Response(JSONRPCResponse {
+                            id: request_id,
+                            result: serde_json::json!({}),
+                        })
+                    } else if let HistoryCapabilities::ConfigReadUnsupported(code) =
                         history_capabilities
                         && request.method == "config/read"
                     {
@@ -3497,6 +3560,9 @@ async fn changing_directory_preserves_project_trust_permissions_history_and_hook
         let thread_id = [original, ThreadId::new()][usize::from(kind == "stale")];
         app.handle_event(&mut tui, &mut server, change(thread_id, path))
             .await?;
+        if let Some(pending) = app.pending_working_directory_change.take() {
+            Box::pin(app.finish_working_directory_change(&mut tui, &mut server, pending)).await;
+        }
         assert_eq!(app.chat_widget.thread_id(), Some(original));
         assert_eq!(app.config.cwd, current.clone().abs());
         assert!(app.runtime_working_directory_override.is_none());
@@ -3577,6 +3643,13 @@ async fn changing_directory_preserves_project_trust_permissions_history_and_hook
     requests.lock().expect("request recorder lock").clear();
     app.handle_event(&mut tui, &mut server, change(original, "../trusted"))
         .await?;
+    // Dispatch only queues /cd: configuration loading happens on a fresh loop iteration.
+    assert_eq!(app.config.cwd, current.clone().abs());
+    let pending = app
+        .pending_working_directory_change
+        .take()
+        .expect("valid /cd queued");
+    Box::pin(app.finish_working_directory_change(&mut tui, &mut server, pending)).await;
     let forked = app.chat_widget.thread_id().expect("forked thread");
     assert_ne!(forked, original);
     let forked_rollout = app.chat_widget.rollout_path().expect("forked rollout");
