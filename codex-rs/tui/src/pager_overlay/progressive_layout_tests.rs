@@ -88,7 +88,7 @@ fn revealing_older_cells_preserves_screen_and_existing_height_caches() {
         .chunks(usize::from(area.width))
         .map(|row| {
             row.iter()
-                .map(|cell| cell.symbol())
+                .map(ratatui::buffer::Cell::symbol)
                 .collect::<String>()
                 .trim_end()
                 .to_string()
@@ -265,7 +265,7 @@ fn resize_mid_history_preserves_visible_cell_before_deferred_prefix_is_measured(
     assert_eq!(overlay.materialized_start, deferred_start);
     let first_row = after.content[..usize::from(narrow.width)]
         .iter()
-        .map(|cell| cell.symbol())
+        .map(ratatui::buffer::Cell::symbol)
         .collect::<String>();
     assert_eq!(first_row.trim_end(), "cell-0280");
 }
