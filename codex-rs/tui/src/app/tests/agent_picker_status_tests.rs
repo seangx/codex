@@ -2,7 +2,7 @@ use super::*;
 use crate::app::agent_picker_status::AgentPickerStatus;
 
 #[tokio::test]
-async fn agent_picker_labels_distinguish_results_from_unloaded_history() {
+async fn agent_picker_collapses_unloaded_history_behind_more() {
     let mut app = make_test_app().await;
     app.agent_navigation.clear();
     for (name, turn_status, loaded) in [
@@ -56,9 +56,63 @@ async fn agent_picker_labels_distinguish_results_from_unloaded_history() {
     [interrupted] stopped
     [error]       failed
     [idle]        idle
-    [not loaded]  history
     [unknown]     unobserved
+    more...
     ");
+    assert_eq!(
+        params
+            .items
+            .last()
+            .and_then(|item| item.description.as_deref()),
+        Some("1 unloaded history")
+    );
+
+    let history = app.agent_history_selection_view_params(/*selected*/ None);
+    let history_rows = history
+        .items
+        .iter()
+        .map(|item| {
+            let prefix: String = item
+                .name_prefix_spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect();
+            format!("{prefix}{}", item.name)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(history.title.as_deref(), Some("Subagent history (1)"));
+    assert_snapshot!(history_rows, @"[not loaded]  history");
+}
+
+#[tokio::test]
+async fn agent_picker_more_opens_history_without_dismissing_parent() {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    app.agent_navigation.clear();
+    let loaded = ThreadId::new();
+    app.agent_navigation.upsert(
+        loaded,
+        Some("loaded".to_string()),
+        /*agent_role*/ None,
+        /*is_closed*/ false,
+    );
+    let history = ThreadId::new();
+    app.agent_navigation.upsert(
+        history,
+        Some("history".to_string()),
+        /*agent_role*/ None,
+        /*is_closed*/ true,
+    );
+    let params = app.agent_picker_selection_view_params(/*selected*/ Some(1));
+    app.chat_widget.show_selection_view(params);
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_matches!(app_event_rx.try_recv(), Ok(AppEvent::OpenAgentHistory));
+    assert_eq!(
+        app.chat_widget
+            .selected_index_for_present_view("agent-picker"),
+        Some(1)
+    );
 }
 
 #[tokio::test]
@@ -110,10 +164,6 @@ async fn agent_picker_status_updates_without_switching_threads() -> Result<()> {
             codex_app_server_protocol::ThreadStatus::SystemError,
             "[error]       worker",
         ),
-        (
-            codex_app_server_protocol::ThreadStatus::NotLoaded,
-            "[not loaded]  worker",
-        ),
     ] {
         app.handle_app_server_event(
             &app_server,
@@ -134,6 +184,21 @@ async fn agent_picker_status_updates_without_switching_threads() -> Result<()> {
             Some(0)
         );
     }
+    app.handle_app_server_event(
+        &app_server,
+        codex_app_server_client::AppServerEvent::ServerNotification(Box::new(
+            ServerNotification::ThreadStatusChanged(
+                codex_app_server_protocol::ThreadStatusChangedNotification {
+                    thread_id: child.to_string(),
+                    status: codex_app_server_protocol::ThreadStatus::NotLoaded,
+                },
+            ),
+        )),
+    )
+    .await;
+    let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 100);
+    assert!(rendered.contains("more..."));
+    assert!(!rendered.contains("[not loaded]  worker"));
     app.handle_app_server_event(
         &app_server,
         codex_app_server_client::AppServerEvent::ServerNotification(Box::new(

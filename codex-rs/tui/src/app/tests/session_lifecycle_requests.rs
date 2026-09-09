@@ -4007,7 +4007,7 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                         .replace(&root_thread_id.to_string(), "[root]")
                         .replace(&child_thread_id.to_string(), "[child]"),
                     @r###"
-                      Subagents (includes history)
+                      Subagents
                       Select an agent to watch. ⌥ + ← previous, ⌥ + → next.
 
                     › 1. [unknown]     Main [default] (current)  [root]

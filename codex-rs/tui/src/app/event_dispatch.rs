@@ -2845,6 +2845,10 @@ impl App {
             AppEvent::OpenAgentPicker => {
                 self.open_agent_picker(app_server).await;
             }
+            AppEvent::OpenAgentHistory => {
+                self.chat_widget
+                    .show_selection_view(self.agent_history_selection_view_params(/*selected*/ None));
+            }
             AppEvent::AgentPickerThreadsLoaded {
                 primary_thread_id,
                 request_id,
