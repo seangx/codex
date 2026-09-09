@@ -5,6 +5,8 @@ mod daybreak_tests;
 
 #[path = "tests/advanced_reasoning_tests.rs"]
 mod advanced_reasoning_tests;
+#[path = "tests/agent_picker_status_tests.rs"]
+mod agent_picker_status_tests;
 #[path = "tests/agents_navigation_tests.rs"]
 mod agents_navigation_tests;
 #[path = "tests/backend_banner_fallback_tests.rs"]

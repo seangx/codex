@@ -198,7 +198,7 @@ impl App {
                 let uuid = thread_id.to_string();
                 SelectionItem {
                     name: name.clone(),
-                    name_prefix_spans: agent_picker_status_dot_spans(entry.is_closed),
+                    name_prefix_spans: self.agent_picker_status(thread_id, entry).prefix(),
                     description: Some(uuid.clone()),
                     is_current: self.active_thread_id == Some(thread_id),
                     actions: vec![Box::new(move |tx| {
@@ -213,7 +213,7 @@ impl App {
 
         SelectionViewParams {
             view_id: Some(AGENT_PICKER_VIEW_ID),
-            title: Some("Subagents".to_string()),
+            title: Some("Subagents (includes history)".to_string()),
             subtitle: Some(AgentNavigationState::picker_subtitle()),
             footer_hint: Some(standard_popup_hint_line()),
             items,

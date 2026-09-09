@@ -6,6 +6,7 @@
 //! together with the replay behavior that consumes them.
 
 use super::*;
+use codex_app_server_protocol::ThreadStatus;
 use std::borrow::Cow;
 
 #[derive(Debug, Clone)]
@@ -67,6 +68,12 @@ pub(super) struct ThreadEventStore {
     pub(super) active_turn_id: Option<String>,
     // Lifecycle identity must survive bounded replay-buffer eviction.
     pub(super) latest_turn_id: Option<String>,
+    // Keep the small outcome independently of the bounded event buffer and full turn snapshot.
+    pub(super) latest_turn_status: Option<TurnStatus>,
+    // Cache the latest runtime status without fetching thread history just to paint the picker.
+    pub(super) latest_thread_status: Option<ThreadStatus>,
+    // True when a runtime transition happened after the last turn outcome observed by the picker.
+    pub(super) thread_status_supersedes_turn: bool,
     pub(super) pending_interrupt_turn_id: Option<String>,
     pub(super) input_state: Option<ThreadInputState>,
     pub(super) capacity: usize,
@@ -110,6 +117,9 @@ impl ThreadEventStore {
             pending_interactive_replay: PendingInteractiveReplayState::default(),
             active_turn_id: None,
             latest_turn_id: None,
+            latest_turn_status: None,
+            latest_thread_status: None,
+            thread_status_supersedes_turn: false,
             pending_interrupt_turn_id: None,
             input_state: None,
             capacity,
@@ -151,11 +161,25 @@ impl ThreadEventStore {
             .find(|turn| matches!(turn.status, TurnStatus::InProgress))
             .map(|turn| turn.id.clone());
         self.latest_turn_id = turns.last().map(|turn| turn.id.clone());
+        self.latest_turn_status = turns.last().map(|turn| turn.status.clone());
+        self.latest_thread_status = Some(if self.active_turn_id.is_some() {
+            ThreadStatus::Active {
+                active_flags: Vec::new(),
+            }
+        } else {
+            ThreadStatus::Idle
+        });
+        self.thread_status_supersedes_turn = false;
         self.turns = turns;
     }
 
     pub(super) fn set_active_turn_id(&mut self, turn_id: String) {
         self.latest_turn_id = Some(turn_id.clone());
+        self.latest_turn_status = Some(TurnStatus::InProgress);
+        self.latest_thread_status = Some(ThreadStatus::Active {
+            active_flags: Vec::new(),
+        });
+        self.thread_status_supersedes_turn = false;
         self.active_turn_id = Some(turn_id);
     }
 
@@ -187,6 +211,17 @@ impl ThreadEventStore {
                 self.set_active_turn_id(turn.turn.id.clone());
             }
             ServerNotification::TurnCompleted(turn) => {
+                if self.active_turn_id.as_deref() == Some(turn.turn.id.as_str())
+                    || (self.active_turn_id.is_none()
+                        && self
+                            .latest_turn_id
+                            .as_deref()
+                            .is_none_or(|id| id == turn.turn.id))
+                {
+                    self.latest_turn_status = Some(turn.turn.status.clone());
+                    self.latest_thread_status = Some(ThreadStatus::Idle);
+                    self.thread_status_supersedes_turn = false;
+                }
                 if self.active_turn_id.is_none() {
                     self.latest_turn_id = Some(turn.turn.id.clone());
                 }
@@ -207,9 +242,23 @@ impl ThreadEventStore {
                         == Some(AppServerCodexErrorInfo::MisalignmentPolicyViolation) =>
             {
                 self.latest_turn_id = Some(n.turn_id.clone());
+                self.latest_turn_status = Some(TurnStatus::Failed);
+                self.latest_thread_status = Some(ThreadStatus::Idle);
+                self.thread_status_supersedes_turn = false;
+            }
+            ServerNotification::ThreadStatusChanged(n) => {
+                self.latest_thread_status = Some(n.status.clone());
+                if matches!(
+                    &n.status,
+                    ThreadStatus::Active { .. } | ThreadStatus::SystemError
+                ) {
+                    self.thread_status_supersedes_turn = true;
+                }
             }
             ServerNotification::ThreadClosed(_) => {
                 self.active_turn_id = None;
+                self.latest_thread_status = Some(ThreadStatus::NotLoaded);
+                self.thread_status_supersedes_turn = true;
                 self.pending_interrupt_turn_id = None;
             }
             _ => {}
