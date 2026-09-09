@@ -14,6 +14,7 @@ fn control_with_limit(max_threads: usize) -> AgentControl {
 #[test]
 fn execution_guards_count_active_v2_subagent_turns() {
     let control = control_with_limit(/*max_threads*/ 1);
+    assert_eq!(control.agent_execution_limiter.active_count(), 0);
     // Child role configs cannot replace the root-derived session limit.
     control
         .agent_execution_limiter
@@ -26,6 +27,7 @@ fn execution_guards_count_active_v2_subagent_turns() {
     let first = control
         .execution_guard(MultiAgentVersion::V2, &source)
         .expect("v2 subagent execution should be counted");
+    assert_eq!(control.agent_execution_limiter.active_count(), 1);
     let Err(err) = control.ensure_execution_capacity(MultiAgentVersion::V2, &source) else {
         panic!("second active turn should exceed the derived non-root cap");
     };
@@ -35,6 +37,7 @@ fn execution_guards_count_active_v2_subagent_turns() {
     assert_eq!(*max_threads, 1);
 
     drop(first);
+    assert_eq!(control.agent_execution_limiter.active_count(), 0);
     control
         .ensure_execution_capacity(MultiAgentVersion::V2, &source)
         .expect("capacity should be released when the running task drops");

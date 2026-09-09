@@ -12,6 +12,7 @@ use codex_protocol::protocol::SessionSource;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex;
+use tracing::info;
 use tracing::warn;
 
 #[derive(Default)]
@@ -56,7 +57,12 @@ impl AgentControl {
             .effective_agent_max_threads(MultiAgentVersion::V2)
             .unwrap_or(usize::MAX);
         Arc::clone(&self.v2_residency)
-            .reserve_slot(state, capacity, protected_thread_id)
+            .reserve_slot(
+                state,
+                capacity,
+                protected_thread_id,
+                self.agent_execution_limiter.active_count(),
+            )
             .await
     }
 
@@ -83,6 +89,7 @@ impl V2Residency {
         manager: &Arc<ThreadManagerState>,
         capacity: usize,
         protected_thread_id: Option<ThreadId>,
+        active_at_reservation: usize,
     ) -> CodexResult<V2ResidencySlot> {
         loop {
             if self.try_reserve_pending_slot(capacity) {
@@ -92,9 +99,24 @@ impl V2Residency {
                 });
             }
             if !self
-                .try_unload_one_resident(manager, protected_thread_id)
+                .try_unload_one_resident(
+                    manager,
+                    protected_thread_id,
+                    capacity,
+                    active_at_reservation,
+                )
                 .await
             {
+                let (resident, pending) = self.counts();
+                warn!(
+                    limit_kind = "residency",
+                    active_at_reservation,
+                    resident,
+                    pending,
+                    capacity,
+                    ?protected_thread_id,
+                    "subagent spawn rejected by residency capacity"
+                );
                 return Err(CodexErr::new(CodexErrorDetails::AgentLimitReached {
                     max_threads: capacity,
                 }));
@@ -118,6 +140,8 @@ impl V2Residency {
         &self,
         manager: &Arc<ThreadManagerState>,
         protected_thread_id: Option<ThreadId>,
+        capacity: usize,
+        active_at_reservation: usize,
     ) -> bool {
         let candidates_to_scan = self.resident_count();
         for _ in 0..candidates_to_scan {
@@ -130,16 +154,29 @@ impl V2Residency {
                 .ok()
                 .filter(|thread| is_resident_candidate(thread))
             else {
+                info!(
+                    candidate_thread_id = %candidate_thread_id,
+                    status_class = "unavailable",
+                    protected = false,
+                    "v2 residency reclaim discarded a stale or ineligible candidate"
+                );
                 continue;
             };
-            if !is_unloadable(candidate_thread.as_ref()).await {
+            if !is_unloadable(candidate_thread.as_ref(), candidate_thread_id).await {
                 self.touch(candidate_thread_id);
                 continue;
             }
             candidate_thread.ensure_rollout_materialized().await;
-            if let Err(err) = candidate_thread.shutdown_and_wait().await {
+            if candidate_thread.shutdown_and_wait().await.is_err() {
+                let (resident, pending) = self.counts();
                 warn!(
-                    "failed to shut down v2 resident thread before unloading {candidate_thread_id}: {err}"
+                    candidate_thread_id = %candidate_thread_id,
+                    active_at_reservation,
+                    resident,
+                    pending,
+                    capacity,
+                    shutdown_succeeded = false,
+                    "failed to shut down v2 resident thread before unloading"
                 );
                 self.touch(candidate_thread_id);
                 continue;
@@ -151,7 +188,17 @@ impl V2Residency {
                 .agent_control
                 .state
                 .save_evicted_environments(candidate_thread_id, environments);
-            let _ = manager.remove_thread(&candidate_thread_id).await;
+            let thread_removed = manager.remove_thread(&candidate_thread_id).await.is_some();
+            let (resident, pending) = self.counts();
+            info!(
+                released_thread_id = %candidate_thread_id,
+                active_at_reservation,
+                resident,
+                pending,
+                capacity,
+                thread_removed,
+                "released v2 residency capacity"
+            );
             return true;
         }
         false
@@ -175,6 +222,11 @@ impl V2Residency {
             let candidate_thread_id = state.residents.pop_front()?;
             if Some(candidate_thread_id) == protected_thread_id {
                 state.residents.push_back(candidate_thread_id);
+                info!(
+                    candidate_thread_id = %candidate_thread_id,
+                    protected = true,
+                    "v2 residency reclaim skipped protected candidate"
+                );
                 continue;
             }
             return Some(candidate_thread_id);
@@ -214,6 +266,14 @@ impl V2Residency {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.pending_slots = state.pending_slots.saturating_sub(1);
     }
+
+    pub(super) fn counts(&self) -> (usize, usize) {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (state.residents.len(), state.pending_slots)
+    }
 }
 
 fn touch_resident(residents: &mut VecDeque<ThreadId>, thread_id: ThreadId) {
@@ -230,12 +290,46 @@ pub(super) fn is_v2_resident_session_source(session_source: &SessionSource) -> b
     matches!(session_source, SessionSource::SubAgent(_))
 }
 
-async fn is_unloadable(thread: &CodexThread) -> bool {
-    matches!(
-        thread.agent_status().await,
+async fn is_unloadable(thread: &CodexThread, thread_id: ThreadId) -> bool {
+    let status = thread.agent_status().await;
+    let status_class = agent_status_class(&status);
+    let terminal = matches!(
+        status,
         AgentStatus::Completed(_) | AgentStatus::Errored(_) | AgentStatus::Interrupted
-    ) && thread.session.active_turn.lock().await.is_none()
-        && !thread.session.input_queue.has_pending_mailbox_items().await
+    );
+    let active_turn = if terminal {
+        Some(thread.session.active_turn.lock().await.is_some())
+    } else {
+        None
+    };
+    let pending_mailbox = if active_turn == Some(false) {
+        Some(thread.session.input_queue.has_pending_mailbox_items().await)
+    } else {
+        None
+    };
+    let unloadable = terminal && active_turn == Some(false) && pending_mailbox == Some(false);
+    info!(
+        candidate_thread_id = %thread_id,
+        status_class,
+        ?active_turn,
+        ?pending_mailbox,
+        protected = false,
+        unloadable,
+        "inspected v2 residency reclaim candidate"
+    );
+    unloadable
+}
+
+fn agent_status_class(status: &AgentStatus) -> &'static str {
+    match status {
+        AgentStatus::PendingInit => "pending_init",
+        AgentStatus::Running => "running",
+        AgentStatus::Interrupted => "interrupted",
+        AgentStatus::Completed(_) => "completed",
+        AgentStatus::Errored(_) => "errored",
+        AgentStatus::Shutdown => "shutdown",
+        AgentStatus::NotFound => "not_found",
+    }
 }
 
 #[cfg(test)]

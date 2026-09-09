@@ -79,12 +79,22 @@ impl App {
                 self.refresh_agents_overview_threads(app_server_client);
             }
             AppServerEvent::ServerNotification(notification) => {
+                let refresh_picker = matches!(
+                    notification.as_ref(),
+                    ServerNotification::TurnStarted(_)
+                        | ServerNotification::TurnCompleted(_)
+                        | ServerNotification::ThreadStatusChanged(_)
+                        | ServerNotification::ThreadClosed(_)
+                );
                 let request_resolved = matches!(
                     notification.as_ref(),
                     ServerNotification::ServerRequestResolved(_)
                 );
                 self.handle_server_notification_event(app_server_client, *notification)
                     .await;
+                if refresh_picker {
+                    self.repaint_agent_picker();
+                }
                 if request_resolved {
                     self.repaint_agents_overview();
                 }

@@ -1,6 +1,7 @@
 use crate::StartThreadOptions;
 use crate::ThreadManager;
 use crate::agent::AgentControl;
+use crate::agent::AgentStatus;
 use crate::codex_thread::CodexThread;
 use crate::config::Config;
 use crate::config::test_config;
@@ -18,6 +19,21 @@ use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
+
+#[test]
+fn residency_diagnostics_classify_terminal_status_without_payloads() {
+    assert_eq!(
+        (
+            super::agent_status_class(&AgentStatus::Completed(Some(
+                "final response must not be logged".to_string(),
+            ))),
+            super::agent_status_class(&AgentStatus::Errored(
+                "error details must not be logged".to_string(),
+            )),
+        ),
+        ("completed", "errored")
+    );
+}
 
 #[tokio::test]
 async fn residency_slot_reservation_unloads_oldest_idle_v2_agent() {
