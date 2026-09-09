@@ -1,5 +1,6 @@
 use super::*;
 use crate::app::agent_picker_status::AgentPickerStatus;
+use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn agent_picker_collapses_unloaded_history_behind_more() {

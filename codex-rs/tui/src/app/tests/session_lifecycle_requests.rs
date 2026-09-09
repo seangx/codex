@@ -3995,13 +3995,10 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                         .or_insert_with(|| ThreadEventChannel::new(/*capacity*/ 1))
                         .store,
                 );
-                let root_store = Arc::clone(&app.thread_event_channels[&root_thread_id].store);
-                let root_store_guard = root_store.lock().await;
                 let child_store_guard = child_store.lock().await;
                 futures::FutureExt::now_or_never(app.open_agent_picker(&mut app_server))
                     .expect("opening the agent picker waited for the app server");
                 drop(child_store_guard);
-                drop(root_store_guard);
                 insta::assert_snapshot!(
                     render_bottom_popup(&app.chat_widget, /*width*/ 100)
                         .replace(&root_thread_id.to_string(), "[root]")
@@ -4010,7 +4007,7 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                       Subagents
                       Select an agent to watch. ⌥ + ← previous, ⌥ + → next.
 
-                    › 1. [unknown]     Main [default] (current)  [root]
+                    › 1. [idle]        Main [default] (current)  [root]
                       2. [unknown]     /root/worker              [child]
 
                       Press enter to confirm or esc to go back

@@ -3670,6 +3670,12 @@ async fn open_agent_picker_allows_existing_agent_threads_when_feature_is_disable
     Box::pin(app.open_agent_picker(&mut app_server)).await;
     app.chat_widget
         .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_matches!(app_event_rx.try_recv(), Ok(AppEvent::OpenAgentHistory));
+
+    app.chat_widget
+        .show_selection_view(app.agent_history_selection_view_params(/*selected*/ None));
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     assert_matches!(
         app_event_rx.try_recv(),
