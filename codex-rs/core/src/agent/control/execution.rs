@@ -9,6 +9,8 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use tracing::debug;
+use tracing::warn;
 
 #[derive(Default)]
 pub(super) struct AgentExecutionLimiter {
@@ -22,7 +24,15 @@ pub(crate) struct AgentExecutionGuard {
 
 impl Drop for AgentExecutionGuard {
     fn drop(&mut self) {
-        self.limiter.active.fetch_sub(1, Ordering::AcqRel);
+        let active = self
+            .limiter
+            .active
+            .fetch_sub(1, Ordering::AcqRel)
+            .saturating_sub(1);
+        debug!(
+            limit_kind = "execution",
+            active, "released subagent execution capacity"
+        );
     }
 }
 
@@ -50,9 +60,19 @@ impl AgentControl {
             return Ok(());
         }
         let max_threads = self.agent_execution_limiter.max_threads();
-        if self.agent_execution_limiter.has_capacity() {
+        let active = self.agent_execution_limiter.active_count();
+        if active < max_threads {
             Ok(())
         } else {
+            let (resident, pending) = self.v2_residency.counts();
+            warn!(
+                limit_kind = "execution",
+                active,
+                resident,
+                pending,
+                capacity = max_threads,
+                "subagent turn rejected by execution capacity"
+            );
             Err(CodexErr::new(CodexErrorDetails::AgentLimitReached {
                 max_threads,
             }))
@@ -78,8 +98,8 @@ impl AgentExecutionLimiter {
         self.max_threads.get().copied().unwrap_or(usize::MAX)
     }
 
-    fn has_capacity(&self) -> bool {
-        self.active.load(Ordering::Acquire) < self.max_threads()
+    pub(super) fn active_count(&self) -> usize {
+        self.active.load(Ordering::Acquire)
     }
 
     fn guard(self: Arc<Self>) -> AgentExecutionGuard {
