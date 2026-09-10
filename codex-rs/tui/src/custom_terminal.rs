@@ -1300,7 +1300,9 @@ mod tests {
             let restored_row: String = (0..size.width)
                 .map(|x| after[(x, inline.top() - 1)].symbol())
                 .collect();
-            assert_snapshot!(restored_row.trim_end(), @"history text");
+            insta::allow_duplicates! {
+                assert_snapshot!(restored_row.trim_end(), @"history text");
+            }
         }
     }
 
