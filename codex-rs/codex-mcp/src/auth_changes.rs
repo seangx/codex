@@ -6,6 +6,7 @@ use std::time::Duration;
 use anyhow::Result;
 use codex_login::AuthChangeState;
 use codex_rmcp_client::RmcpClient;
+use rmcp::model::ClientCapabilities;
 use rmcp::model::ServerCapabilities;
 use serde_json::json;
 use tokio::sync::watch;
@@ -14,6 +15,20 @@ use tokio_util::task::AbortOnDropHandle;
 pub(crate) const CAPABILITY: &str = "codex/auth-change";
 const NOTIFICATION: &str = "notifications/codex/authChanged";
 const SEND_TIMEOUT: Duration = Duration::from_secs(5);
+
+pub(crate) fn advertise(server_name: &str, capabilities: &mut ClientCapabilities) {
+    // Computer History 1.0.1000926 rejects non-empty experimental capabilities
+    // during initialize with -32603, before it can return its own capabilities.
+    // Keep this compatibility exception local to that server. Notification delivery
+    // still requires the server's opt-in in start(), including after a plugin update.
+    if server_name == "computer-history" {
+        return;
+    }
+    capabilities
+        .experimental
+        .get_or_insert_default()
+        .insert(CAPABILITY.to_string(), Default::default());
+}
 
 pub(crate) async fn start(
     client: Arc<RmcpClient>,

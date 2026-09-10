@@ -4,7 +4,6 @@ use futures::FutureExt;
 use futures::future::BoxFuture;
 use pretty_assertions::assert_eq;
 use rmcp::ServiceExt;
-use rmcp::model::ClientCapabilities;
 use rmcp::model::CustomNotification;
 use rmcp::model::Implementation;
 use rmcp::model::InitializeRequestParams;
@@ -15,6 +14,29 @@ use tokio::time::timeout;
 struct NotificationServer(mpsc::Sender<serde_json::Value>);
 
 impl rmcp::ServerHandler for NotificationServer {
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> std::result::Result<rmcp::model::InitializeResult, rmcp::ErrorData> {
+        // Model the installed Computer History decoder's actual failure mode.
+        if request.client_info.name == "computer-history"
+            && request
+                .capabilities
+                .experimental
+                .as_ref()
+                .is_some_and(|caps| !caps.is_empty())
+        {
+            return Err(rmcp::ErrorData::internal_error(
+                "incompatible experimental capabilities",
+                /*data*/ None,
+            ));
+        }
+        self.0.send(json!(request.capabilities)).await.unwrap();
+        context.peer.set_peer_info(request);
+        Ok(self.get_info())
+    }
+
     async fn on_custom_notification(
         &self,
         notification: CustomNotification,
@@ -56,6 +78,7 @@ async fn auth_notifications_require_opt_in_and_follow_client_lifetime() -> Resul
         )
         .await?;
     let (changes, receiver) = watch::channel(AuthChangeState::default());
+    assert_eq!(received.recv().await, Some(json!({})));
     let mut capabilities = ServerCapabilities::default();
     assert!(
         start(Arc::clone(&client), &capabilities, Some(receiver.clone()))
@@ -100,5 +123,36 @@ async fn auth_notifications_require_opt_in_and_follow_client_lifetime() -> Resul
     drop(watcher);
     timeout(SEND_TIMEOUT, changes.closed()).await?;
     client.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn history_handshake_omits_auth_advertisement_without_changing_other_servers() -> Result<()> {
+    for name in ["computer-history", "other-server"] {
+        let (notifications, mut received) = mpsc::channel(/*buffer*/ 8);
+        let client =
+            RmcpClient::new_in_process_client(Arc::new(NotificationServer(notifications))).await?;
+        let mut capabilities = ClientCapabilities::default();
+        // Unrelated extension capabilities must survive the compatibility policy.
+        capabilities.extensions = Some([("openai/form".to_string(), Default::default())].into());
+        advertise(name, &mut capabilities);
+        client
+            .initialize(
+                InitializeRequestParams::new(capabilities, Implementation::new(name, "1")),
+                Some(SEND_TIMEOUT),
+                Box::new(|_, _| async { anyhow::bail!("unexpected elicitation") }.boxed()),
+            )
+            .await?;
+        let expected = if name == "computer-history" {
+            json!({"extensions": {"openai/form": {}}})
+        } else {
+            json!({"extensions": {"openai/form": {}}, "experimental": {"codex/auth-change": {}}})
+        };
+        assert_eq!(
+            timeout(SEND_TIMEOUT, received.recv()).await?,
+            Some(expected)
+        );
+        client.shutdown().await;
+    }
     Ok(())
 }
