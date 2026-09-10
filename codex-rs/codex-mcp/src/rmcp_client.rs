@@ -912,14 +912,7 @@ async fn start_server_task(
     let mut params =
         mcp_initialize_request_params(client_elicitation_capability, client_mcp_extensions);
     if auth_changes.is_some() {
-        params
-            .capabilities
-            .experimental
-            .get_or_insert_default()
-            .insert(
-                crate::auth_changes::CAPABILITY.to_string(),
-                Default::default(),
-            );
+        crate::auth_changes::advertise(&server_name, &mut params.capabilities);
     }
 
     let started_at = Instant::now();
