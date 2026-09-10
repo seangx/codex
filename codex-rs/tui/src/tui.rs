@@ -835,6 +835,7 @@ pub struct Tui {
     ambient_pet_image_state: crate::pets::PetImageRenderState,
     pet_picker_preview_image_state: crate::pets::PetImageRenderState,
     alt_saved_viewport: Option<ratatui::layout::Rect>,
+    alt_saved_history: Option<custom_terminal::InlineHistoryState>,
     #[cfg(unix)]
     suspend_context: SuspendContext,
     // True when overlay alt-screen UI is active
@@ -903,6 +904,7 @@ impl Tui {
             ambient_pet_image_state: crate::pets::PetImageRenderState::default(),
             pet_picker_preview_image_state: crate::pets::PetImageRenderState::default(),
             alt_saved_viewport: None,
+            alt_saved_history: None,
             #[cfg(unix)]
             suspend_context: SuspendContext::new(),
             alt_screen_active: Arc::new(AtomicBool::new(false)),
@@ -1121,7 +1123,7 @@ impl Tui {
     /// Enter alternate screen and expand the viewport to full terminal size, saving the current
     /// inline viewport for restoration when leaving.
     pub fn enter_alt_screen(&mut self) -> Result<()> {
-        if !self.alt_screen_enabled {
+        if !self.alt_screen_enabled || self.is_alt_screen_active() {
             return Ok(());
         }
         self.pending_alt_screen_enter = false;
@@ -1130,6 +1132,7 @@ impl Tui {
         let _ = execute!(self.terminal.backend_mut(), EnableAlternateScroll);
         if let Ok(size) = self.terminal.size() {
             self.alt_saved_viewport = Some(self.terminal.viewport_area);
+            self.alt_saved_history = Some(self.terminal.take_inline_history());
             self.terminal.resize(size)?;
             self.terminal.set_viewport_area(ratatui::layout::Rect::new(
                 0,
@@ -1166,6 +1169,9 @@ impl Tui {
         let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
         if let Some(saved) = self.alt_saved_viewport.take() {
             self.terminal.set_viewport_area(saved);
+        }
+        if let Some(history) = self.alt_saved_history.take() {
+            self.terminal.restore_inline_history(history);
         }
         // The restored main screen does not contain the alternate screen's diff baseline.
         self.terminal.invalidate_viewport();
@@ -1318,6 +1324,7 @@ impl Tui {
                 )?;
                 let size = self.terminal.size()?;
                 self.alt_saved_viewport = Some(self.terminal.viewport_area);
+                self.alt_saved_history = Some(self.terminal.take_inline_history());
                 self.terminal.set_viewport_area(ratatui::layout::Rect::new(
                     0,
                     0,

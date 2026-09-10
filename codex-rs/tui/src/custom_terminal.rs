@@ -166,6 +166,14 @@ where
     screen_size_override: Option<Size>,
 }
 
+/// Main-screen scrollback metadata, kept separate while an overlay owns the alternate screen.
+pub(crate) struct InlineHistoryState {
+    rows: u16,
+    hyperlinks: VecDeque<TerminalHyperlinkRow>,
+    cells: VecDeque<TerminalHistoryRow>,
+    selection: Option<SelectionRange>,
+}
+
 impl<B> Drop for Terminal<B>
 where
     B: Backend<Error = io::Error>,
@@ -332,6 +340,22 @@ where
         self.previous_buffer_mut().resize(area);
         self.viewport_area = area;
         self.visible_history_rows = self.visible_history_rows.min(area.top());
+    }
+
+    pub(crate) fn take_inline_history(&mut self) -> InlineHistoryState {
+        InlineHistoryState {
+            rows: std::mem::take(&mut self.visible_history_rows),
+            hyperlinks: std::mem::take(&mut self.visible_history_hyperlinks),
+            cells: std::mem::take(&mut self.visible_history_cells),
+            selection: self.rendered_history_selection.take(),
+        }
+    }
+
+    pub(crate) fn restore_inline_history(&mut self, history: InlineHistoryState) {
+        self.visible_history_rows = history.rows.min(self.viewport_area.top());
+        self.visible_history_hyperlinks = history.hyperlinks;
+        self.visible_history_cells = history.cells;
+        self.rendered_history_selection = history.selection;
     }
 
     /// Queries the backend for size and resizes if it doesn't match the previous size.
@@ -1213,6 +1237,71 @@ mod tests {
         probe-08 clean words
         probe-09 clean words
         ");
+    }
+
+    #[tokio::test]
+    async fn alternate_screen_roundtrip_restores_history_selection() {
+        use crate::mouse_selection::MouseSelectionAction;
+        use crossterm::event::KeyModifiers;
+        use crossterm::event::MouseButton;
+        use crossterm::event::MouseEvent;
+        use crossterm::event::MouseEventKind;
+
+        enum Transition {
+            Immediate,
+            Deferred,
+        }
+
+        for transition in [Transition::Immediate, Transition::Deferred] {
+            let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+            let size = tui.terminal.last_known_screen_size;
+            let inline = Rect::new(/*x*/ 0, /*y*/ 3, size.width, /*height*/ 6);
+            tui.terminal.set_viewport_area(inline);
+            crate::insert_history::insert_history_lines(
+                &mut tui.terminal,
+                vec![Line::from("history text")],
+            )
+            .expect("insert history");
+            let inline = tui.terminal.viewport_area;
+            let before = tui.terminal.selection_buffer();
+
+            match transition {
+                Transition::Immediate => tui.enter_alt_screen().expect("enter alternate screen"),
+                Transition::Deferred => {
+                    tui.enter_alt_screen_on_next_draw();
+                    tui.draw(size.height, |frame| {
+                        Paragraph::new("History browser").render(frame.area(), frame.buffer_mut());
+                    })
+                    .expect("draw deferred alternate screen");
+                }
+            }
+            // A second overlay entry must not replace the saved main-screen metadata.
+            tui.enter_alt_screen().expect("reenter alternate screen");
+            tui.terminal.clear_visible_screen().expect("clear overlay");
+            tui.leave_alt_screen().expect("restore main screen");
+            let after = tui.terminal.selection_buffer();
+            for y in 0..inline.top() {
+                for x in 0..size.width {
+                    assert_eq!(after[(x, y)], before[(x, y)]);
+                }
+            }
+
+            let mouse = |kind, column| MouseEvent {
+                kind,
+                column,
+                row: inline.top() - 1,
+                modifiers: KeyModifiers::NONE,
+            };
+            tui.handle_mouse_selection_event(mouse(MouseEventKind::Down(MouseButton::Left), 0));
+            assert_eq!(
+                tui.handle_mouse_selection_event(mouse(MouseEventKind::Up(MouseButton::Left), 6)),
+                MouseSelectionAction::Copy("history".to_string()),
+            );
+            let restored_row: String = (0..size.width)
+                .map(|x| after[(x, inline.top() - 1)].symbol())
+                .collect();
+            assert_snapshot!(restored_row.trim_end(), @"history text");
+        }
     }
 
     #[tokio::test]
