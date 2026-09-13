@@ -3,14 +3,26 @@ use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn external_writer_snapshot_freezes_active_command_and_mcp_rows() {
+    #[derive(Clone, Copy)]
+    enum ActiveTool {
+        CommandGroup,
+        Mcp,
+        McpGroup,
+    }
+
     let mut rendered = Vec::new();
-    for active_mcp in [false, true] {
+    for tool in [
+        ActiveTool::CommandGroup,
+        ActiveTool::Mcp,
+        ActiveTool::McpGroup,
+    ] {
+        let active_mcp = matches!(tool, ActiveTool::Mcp | ActiveTool::McpGroup);
         let (mut chat, _events, _operations) =
             make_chatwidget_manual(/*model_override*/ None).await;
         chat.local_settings.tui.animations = true;
         chat.on_task_started();
         if active_mcp {
-            chat.transcript.active_cell = Some(Box::new(history_cell::new_active_mcp_tool_call(
+            let cell = history_cell::new_active_mcp_tool_call(
                 "mcp-running".to_string(),
                 McpInvocation {
                     server: "server".to_string(),
@@ -18,7 +30,12 @@ async fn external_writer_snapshot_freezes_active_command_and_mcp_rows() {
                     arguments: None,
                 },
                 /*animations_enabled*/ true,
-            )));
+            );
+            chat.transcript.active_cell = Some(match tool {
+                ActiveTool::McpGroup => Box::new(ToolActivityGroupCell::new(cell)),
+                ActiveTool::Mcp => Box::new(cell),
+                ActiveTool::CommandGroup => unreachable!("command created separately"),
+            });
         } else {
             begin_exec(&mut chat, "call-running", "sleep 5");
         }
@@ -27,10 +44,18 @@ async fn external_writer_snapshot_freezes_active_command_and_mcp_rows() {
             .active_cell
             .as_ref()
             .expect("active tool row");
-        if !active_mcp {
-            assert!(cell.as_any().is::<ToolActivityGroupCell>());
+        if active_mcp {
+            assert!(cell.transcript_animation_tick().is_some());
+        } else {
+            assert!(
+                cell.as_any()
+                    .downcast_ref::<ToolActivityGroupCell>()
+                    .expect("active command group")
+                    .exec_for_call("call-running")
+                    .expect("active command row")
+                    .animations_enabled()
+            );
         }
-        assert!(cell.transcript_animation_tick().is_some());
 
         chat.show_external_writer_thread();
 
@@ -41,7 +66,19 @@ async fn external_writer_snapshot_freezes_active_command_and_mcp_rows() {
             .as_ref()
             .expect("active tool row");
         rendered.push(lines_to_single_string(&cell.display_lines(/*width*/ 80)));
-        assert!(cell.transcript_animation_tick().is_none());
+        if active_mcp {
+            assert!(cell.transcript_animation_tick().is_none());
+        } else {
+            assert!(
+                !cell
+                    .as_any()
+                    .downcast_ref::<ToolActivityGroupCell>()
+                    .expect("active command group")
+                    .exec_for_call("call-running")
+                    .expect("active command row")
+                    .animations_enabled()
+            );
+        }
     }
     insta::assert_snapshot!(rendered.join("\n---\n"));
 }

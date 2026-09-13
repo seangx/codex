@@ -4,7 +4,11 @@ use super::load_archived_image;
 use super::prepare_history_for_compaction;
 use crate::context::ContextualUserFragment;
 use crate::context_manager::ContextManager;
+use codex_history::CodexHarnessMetadata;
+use codex_history::ResponseItemEnvelope;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 
@@ -30,8 +34,10 @@ async fn compaction_snapshot_archives_user_and_tool_images_without_mutating_live
     ]))?;
     let mut history = ContextManager::default();
     history.replace(items.clone());
+    let session_source = SessionSource::Exec;
     let archived =
-        prepare_history_for_compaction(history.clone(), home.path().to_path_buf()).await?;
+        prepare_history_for_compaction(history.clone(), home.path().to_path_buf(), &session_source)
+            .await?;
     assert_eq!(history.into_raw_items(), items);
     let reference = archive_image(home.path(), image)?;
     let replacement = reference.body();
@@ -56,8 +62,12 @@ async fn compaction_snapshot_archives_user_and_tool_images_without_mutating_live
         load_archived_image(home.path(), &reference_path).await?,
         Some(image.to_string())
     );
-    let second =
-        prepare_history_for_compaction(archived.clone(), home.path().to_path_buf()).await?;
+    let second = prepare_history_for_compaction(
+        archived.clone(),
+        home.path().to_path_buf(),
+        &session_source,
+    )
+    .await?;
     assert_eq!(
         second.into_annotated_items(),
         archived.into_annotated_items()
@@ -81,12 +91,50 @@ async fn archive_failure_leaves_original_history_available() -> anyhow::Result<(
     let mut history = ContextManager::default();
     history.replace(items);
     let original = history.clone().into_annotated_items();
+    let session_source = SessionSource::Exec;
     assert!(
-        prepare_history_for_compaction(history.clone(), home.path().to_path_buf())
-            .await
-            .is_err()
+        prepare_history_for_compaction(
+            history.clone(),
+            home.path().to_path_buf(),
+            &session_source,
+        )
+        .await
+        .is_err()
     );
     assert_eq!(history.into_annotated_items(), original);
+    Ok(())
+}
+
+#[tokio::test]
+async fn guardian_compaction_preserves_multimodal_evidence_without_archiving() -> anyhow::Result<()>
+{
+    let home = tempfile::tempdir()?;
+    let item: ResponseItem = serde_json::from_value(json!({
+        "type":"message",
+        "role":"user",
+        "content":[
+            {"type":"input_text", "text":"review evidence"},
+            {"type":"input_image", "image_url":"data:image/png;base64,cGljdHVyZQ=="}
+        ]
+    }))?;
+    let envelope = ResponseItemEnvelope {
+        item,
+        metadata: Some(CodexHarnessMetadata {
+            history_truncation_token_limit: Some(10_000),
+            ..Default::default()
+        }),
+    };
+    let mut history = ContextManager::default();
+    history.replace_annotated(vec![envelope.clone()]);
+    let session_source = SessionSource::SubAgent(SubAgentSource::Other(
+        crate::guardian::GUARDIAN_REVIEWER_NAME.to_string(),
+    ));
+
+    let prepared =
+        prepare_history_for_compaction(history, home.path().to_path_buf(), &session_source).await?;
+
+    assert_eq!(prepared.into_annotated_items(), vec![envelope]);
+    assert!(!home.path().join(ARCHIVE_DIRECTORY).exists());
     Ok(())
 }
 

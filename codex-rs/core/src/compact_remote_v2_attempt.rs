@@ -47,6 +47,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
     let mut history = crate::compact_image_references::prepare_history_for_compaction(
         sess.clone_history().await,
         turn_context.config.codex_home.to_path_buf(),
+        &turn_context.session_source,
     )
     .await?;
     let base_instructions = sess.get_prompt_base_instructions().await;
@@ -75,8 +76,9 @@ pub(super) async fn run_remote_compact_v2_attempt(
             });
     }
 
-    // Both the request and post-compaction retention use the archived snapshot. Keeping
-    // canonical images here would reintroduce their bytes immediately after compaction.
+    // Both the request and post-compaction retention use the same image-handled snapshot.
+    // Ordinary sessions use archived references so retained history does not reintroduce image
+    // bytes; Guardian reviewers preserve their bounded, admitted evidence as model-visible images.
     let retained_history = history.clone();
     let prompt_history =
         history.for_compaction_prompt_annotated(&turn_context.model_info().input_modalities);

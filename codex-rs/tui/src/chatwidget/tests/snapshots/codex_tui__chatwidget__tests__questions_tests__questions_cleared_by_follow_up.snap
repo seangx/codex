@@ -1,5 +1,6 @@
 ---
 source: tui/src/chatwidget/tests/questions_tests.rs
-expression: "render_bottom_popup(&chat, 80).lines().next().unwrap()"
+assertion_line: 88
+expression: "render_bottom_popup(&chat,\n80).lines().find(|line|\nline.starts_with('▌')).expect(\"normal composer input\")"
 ---
-› Ask Codex to do anything
+▌ Ask Codex to do anything

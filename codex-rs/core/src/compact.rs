@@ -248,6 +248,7 @@ async fn run_compact_task_inner_impl(
     let mut history = crate::compact_image_references::prepare_history_for_compaction(
         sess.clone_history().await,
         turn_context.config.codex_home.to_path_buf(),
+        &turn_context.session_source,
     )
     .await?;
     history.record_items(
@@ -357,6 +358,7 @@ async fn run_compact_task_inner_impl(
     let history_snapshot = crate::compact_image_references::prepare_history_for_compaction(
         sess.clone_history().await,
         turn_context.config.codex_home.to_path_buf(),
+        &turn_context.session_source,
     )
     .await?;
     let history_items = history_snapshot.annotated_items();

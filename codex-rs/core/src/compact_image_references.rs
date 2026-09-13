@@ -16,6 +16,7 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::SessionSource;
 use sha1::Digest;
 use sha1::Sha1;
 
@@ -34,7 +35,15 @@ const MAX_ARCHIVE_BYTES: u64 = 1_500_000_000;
 pub(crate) async fn prepare_history_for_compaction(
     mut history: ContextManager,
     codex_home: PathBuf,
+    session_source: &SessionSource,
 ) -> Result<ContextManager> {
+    // Guardian input images are bounded, explicitly admitted review evidence. Keep them directly
+    // model-visible across the reviewer's own compaction rather than replacing them with archive
+    // handles that the classifier would need a tool call to inspect.
+    if crate::guardian::is_basic_session_source(session_source) {
+        return Ok(history);
+    }
+
     tokio::task::spawn_blocking(move || -> Result<ContextManager> {
         // Borrow image strings while archiving instead of copying all inline payloads.
         let mut items = Vec::with_capacity(history.annotated_items().len());
