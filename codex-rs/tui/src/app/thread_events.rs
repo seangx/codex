@@ -15,6 +15,7 @@ pub(super) struct ThreadEventSnapshot {
     pub(super) delegated_turns: Vec<String>,
     pub(super) turns: Vec<Turn>,
     pub(super) events: Vec<ThreadBufferedEvent>,
+    pub(super) active_reasoning_item: Option<codex_app_server_protocol::ItemStartedNotification>,
     pub(super) input_state: Option<ThreadInputState>,
 }
 
@@ -66,6 +67,8 @@ pub(super) struct ThreadEventStore {
     pub(super) buffer: VecDeque<ThreadBufferedEvent>,
     pub(super) pending_interactive_replay: PendingInteractiveReplayState,
     pub(super) active_turn_id: Option<String>,
+    // Retain the active item even if its start falls out of the bounded replay buffer.
+    pub(super) active_reasoning_item: Option<codex_app_server_protocol::ItemStartedNotification>,
     // Lifecycle identity must survive bounded replay-buffer eviction.
     pub(super) latest_turn_id: Option<String>,
     // Keep the small outcome independently of the bounded event buffer and full turn snapshot.
@@ -116,6 +119,7 @@ impl ThreadEventStore {
             buffer: VecDeque::new(),
             pending_interactive_replay: PendingInteractiveReplayState::default(),
             active_turn_id: None,
+            active_reasoning_item: None,
             latest_turn_id: None,
             latest_turn_status: None,
             latest_thread_status: None,
@@ -153,6 +157,14 @@ impl ThreadEventStore {
     }
 
     pub(super) fn set_turns(&mut self, turns: Vec<Turn>) {
+        if self.active_reasoning_item.as_ref().is_some_and(|started| {
+            turns.iter().any(|turn| {
+                (turn.id == started.turn_id && turn.status != TurnStatus::InProgress)
+                    || (turn.id != started.turn_id && turn.status == TurnStatus::InProgress)
+            })
+        }) {
+            self.active_reasoning_item = None;
+        }
         self.recap_progress
             .merge(recap::RecapProgress::from_turns(&turns));
         self.active_turn_id = turns
@@ -209,6 +221,13 @@ impl ThreadEventStore {
         match notification.as_ref() {
             ServerNotification::TurnStarted(turn) => {
                 self.set_active_turn_id(turn.turn.id.clone());
+                if self
+                    .active_reasoning_item
+                    .as_ref()
+                    .is_some_and(|started| started.turn_id != turn.turn.id)
+                {
+                    self.active_reasoning_item = None;
+                }
             }
             ServerNotification::TurnCompleted(turn) => {
                 if self.active_turn_id.as_deref() == Some(turn.turn.id.as_str())
@@ -221,6 +240,13 @@ impl ThreadEventStore {
                     self.latest_turn_status = Some(turn.turn.status.clone());
                     self.latest_thread_status = Some(ThreadStatus::Idle);
                     self.thread_status_supersedes_turn = false;
+                }
+                if self
+                    .active_reasoning_item
+                    .as_ref()
+                    .is_some_and(|started| started.turn_id == turn.turn.id)
+                {
+                    self.active_reasoning_item = None;
                 }
                 if self.active_turn_id.is_none() {
                     self.latest_turn_id = Some(turn.turn.id.clone());
@@ -259,7 +285,39 @@ impl ThreadEventStore {
                 self.active_turn_id = None;
                 self.latest_thread_status = Some(ThreadStatus::NotLoaded);
                 self.thread_status_supersedes_turn = true;
+                self.active_reasoning_item = None;
                 self.pending_interrupt_turn_id = None;
+            }
+            ServerNotification::ItemStarted(
+                started @ codex_app_server_protocol::ItemStartedNotification {
+                    item: ThreadItem::Reasoning { id, .. },
+                    ..
+                },
+            ) if !self.delegated_turns.contains(&started.turn_id)
+                && !self.turns.iter().any(|turn| {
+                    turn.id == started.turn_id && turn.items.iter().any(is_voice_handoff_item)
+                }) =>
+            {
+                self.active_reasoning_item =
+                    Some(codex_app_server_protocol::ItemStartedNotification {
+                        thread_id: started.thread_id.clone(),
+                        turn_id: started.turn_id.clone(),
+                        item: ThreadItem::Reasoning {
+                            id: id.clone(),
+                            summary: Vec::new(),
+                            content: Vec::new(),
+                        },
+                        started_at_ms: started.started_at_ms,
+                    });
+            }
+            ServerNotification::ItemCompleted(completed)
+                if matches!(&completed.item, ThreadItem::Reasoning { .. })
+                    && self.active_reasoning_item.as_ref().is_some_and(|started| {
+                        started.turn_id == completed.turn_id
+                            && started.item.id() == completed.item.id()
+                    }) =>
+            {
+                self.active_reasoning_item = None;
             }
             _ => {}
         }
@@ -273,6 +331,7 @@ impl ThreadEventStore {
                 | ServerNotification::FileChangePatchUpdated(_)
                 | ServerNotification::ServerRequestResolved(_)
                 | ServerNotification::McpToolCallProgress(_)
+                | ServerNotification::ThreadAttachmentUpdated(_)
                 | ServerNotification::ThreadRealtimeItemAdded(_)
                 | ServerNotification::ThreadRealtimeOutputAudioDelta(_)
                 | ServerNotification::ThreadRealtimeSdp(_)
@@ -362,6 +421,7 @@ impl ThreadEventStore {
                 })
                 .cloned()
                 .collect(),
+            active_reasoning_item: self.active_reasoning_item.clone(),
             input_state: self.input_state.clone(),
         };
         if let Some(latest_turn_id) = &self.latest_turn_id {
@@ -402,7 +462,11 @@ impl ThreadEventStore {
             .difference(&buffered_markers)
             .cloned()
             .collect::<std::collections::HashSet<_>>();
-        let mut typed_items = std::collections::HashSet::new();
+        let mut typed_items = self
+            .active_reasoning_item
+            .iter()
+            .map(|started| (started.turn_id.clone(), started.item.id().to_string()))
+            .collect::<std::collections::HashSet<_>>();
         snapshot.events.retain_mut(|event| {
             let ThreadBufferedEvent::Notification(notification) = event else {
                 return true;
@@ -632,6 +696,8 @@ mod tests {
     use codex_app_server_protocol::McpToolCallProgressNotification;
     use codex_app_server_protocol::ReasoningSummaryTextDeltaNotification;
     use codex_app_server_protocol::RequestId as AppServerRequestId;
+    use codex_app_server_protocol::ThreadAttachmentOperation;
+    use codex_app_server_protocol::ThreadAttachmentUpdatedNotification;
     use codex_app_server_protocol::ThreadRealtimeAudioChunk;
     use codex_app_server_protocol::ThreadRealtimeOutputAudioDeltaNotification;
     use codex_app_server_protocol::TurnCompletedNotification;
@@ -888,6 +954,15 @@ mod tests {
         let large_payload = "x".repeat(1024 * 1024);
 
         for _ in 0..32 {
+            store.push_notification_ref(&ServerNotification::ThreadAttachmentUpdated(
+                ThreadAttachmentUpdatedNotification {
+                    thread_id: thread_id.to_string(),
+                    attachment_type: "pullRequest".to_string(),
+                    identity_key: "openai/codex#1".to_string(),
+                    attachment_id: "attachment-1".to_string(),
+                    operation: ThreadAttachmentOperation::Created,
+                },
+            ));
             store.push_notification_ref(&ServerNotification::McpToolCallProgress(
                 McpToolCallProgressNotification {
                     thread_id: thread_id.to_string(),

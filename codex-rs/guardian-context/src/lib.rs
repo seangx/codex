@@ -4,7 +4,8 @@
 //! without section composition.
 //! Contributor failures abort collection without returning partial context.
 //! Sections preserve source-specific evidence and share prompt framing, while
-//! hosts retain transcript selection, compaction and request lifecycles.
+//! profiles retain the consumer-specific transcript policy. Hosts own full/delta
+//! cursors, compaction and request lifecycles.
 //! Registered contributors declare their scope once and are collected only for
 //! matching context consumers. History and collection settings are borrowed for
 //! each request so the default registry can be reused without retaining state.
@@ -28,9 +29,6 @@ pub use section::ContextSection;
 pub use entry::ConversationTranscriptEntry;
 pub use entry::ConversationTranscriptEntryKind;
 pub use history::TranscriptHistory;
-pub use retention::UserMessageCost;
-pub use retention::UserMessageSelection;
-pub use retention::select_user_messages;
 pub use transcript::ConversationTranscriptConfig;
 pub use transcript::ConversationTranscriptOptions;
 pub use transcript::MANUAL_APPROVAL_DEVELOPER_PREFIX;
@@ -47,6 +45,28 @@ pub use verified_answers::render_verified_answers;
 mod retained_instructions;
 
 mod action;
+mod enforcement;
+pub(crate) use enforcement::BudgetPriority;
+pub use enforcement::Budgeted;
+pub use enforcement::HistoryTruncation;
+pub(crate) use enforcement::Retention;
+mod budget;
+mod composition;
+pub use budget::DEFAULT_MAX_INPUT_TOKENS;
+pub use budget::REQUEST_TOKENS_BOUNDARIES;
+pub use budget::REQUEST_TOKENS_METRIC;
+pub use budget::RequestBudget;
+pub use budget::SECTION_COST_BOUNDARIES;
+pub use budget::SECTION_COST_METRIC;
+pub use budget::SectionCost;
+pub use budget::effective_input_token_limit;
+pub use budget::estimate_input_tokens;
+mod profile;
+pub use composition::CollectedContext;
+pub use composition::ComposedContext;
+pub use composition::ContextPresentation;
+pub use composition::RenderedTranscript;
+pub use profile::ContextProfile;
 mod authorization;
 mod entry;
 mod history;
@@ -70,7 +90,6 @@ pub use reviews::RenderedReviewEvidence;
 pub use reviews::ReviewEvidence;
 pub use reviews::render_review_evidence;
 pub use truncation::TruncationObservation;
-mod retention;
 mod section;
 pub use permissions::PermissionContext;
 mod transcript;
@@ -188,6 +207,8 @@ pub trait SectionContributor: Send + Sync {
 pub enum SectionError {
     /// Evidence required by this contributor for the current input is missing.
     MissingRequiredEvidence { section: &'static str },
+    /// A section cannot be delivered by the requested consumer.
+    UnsupportedDelivery { section: &'static str },
     /// Supplied evidence exceeds the section's count or rendered-size limit.
     EvidenceLimitExceeded { section: &'static str },
 }
@@ -197,6 +218,9 @@ impl std::fmt::Display for SectionError {
         match self {
             Self::MissingRequiredEvidence { section } => {
                 write!(formatter, "missing required evidence for section {section}")
+            }
+            Self::UnsupportedDelivery { section } => {
+                write!(formatter, "unsupported delivery for section {section}")
             }
             Self::EvidenceLimitExceeded { section } => {
                 write!(formatter, "evidence exceeds limits for section {section}")
@@ -241,6 +265,13 @@ impl SectionRegistry {
     /// Adds a contributor to the end of the section collection order.
     pub fn register(&mut self, contributor: impl SectionContributor + 'static) {
         self.contributors.push(Arc::new(contributor));
+    }
+
+    /// Collects evidence for host transcript selection and shared composition.
+    pub fn prepare(&self, input: &SectionInput<'_>) -> Result<CollectedContext, SectionError> {
+        Ok(CollectedContext {
+            sections: self.collect(input)?,
+        })
     }
 
     /// Collects applicable sections in their original registration order.

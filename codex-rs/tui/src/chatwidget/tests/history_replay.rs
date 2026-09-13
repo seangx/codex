@@ -1599,6 +1599,8 @@ async fn live_reasoning_summary_is_not_rendered_twice_when_item_completes() {
     );
     let _ = drain_insert_history(&mut rx);
 
+    handle_agent_reasoning_started(&mut chat, "reasoning-1");
+
     chat.handle_server_notification(
         ServerNotification::ReasoningSummaryTextDelta(ReasoningSummaryTextDeltaNotification {
             thread_id: "thread-1".to_string(),
@@ -1655,6 +1657,8 @@ async fn live_reasoning_summary_drops_empty_parts_without_losing_content() {
         /*replay_kind*/ None,
     );
     let _ = drain_insert_history(&mut rx);
+
+    handle_agent_reasoning_started(&mut chat, "reasoning-1");
 
     for (summary_index, delta) in [
         (0, "**Plan**\n\ndone"),
@@ -1812,13 +1816,11 @@ async fn thread_snapshot_replayed_stream_recovery_restores_previous_status_heade
 
     replay_agent_message_delta(&mut chat, "hello", ReplayKind::ThreadSnapshot);
 
-    let status = chat
-        .bottom_pane
-        .status_widget()
-        .expect("status indicator should be visible");
-    assert_eq!(status.header(), "Working");
-    assert_eq!(status.details(), None);
+    assert_eq!(chat.status_state.current_status.header, "Working");
+    assert_eq!(chat.status_state.current_status.details, None);
     assert!(chat.status_state.retry_status_header.is_none());
+    assert!(chat.bottom_pane.status_widget().is_none());
+    assert!(chat.active_cell_is_stream_tail());
 }
 
 #[tokio::test]
@@ -1834,11 +1836,9 @@ async fn stream_recovery_restores_previous_status_header() {
     drain_insert_history(&mut rx);
     handle_agent_message_delta(&mut chat, "hello");
 
-    let status = chat
-        .bottom_pane
-        .status_widget()
-        .expect("status indicator should be visible");
-    assert_eq!(status.header(), "Working");
-    assert_eq!(status.details(), None);
+    assert_eq!(chat.status_state.current_status.header, "Working");
+    assert_eq!(chat.status_state.current_status.details, None);
     assert!(chat.status_state.retry_status_header.is_none());
+    assert!(chat.bottom_pane.status_widget().is_none());
+    assert!(chat.active_cell_is_stream_tail());
 }

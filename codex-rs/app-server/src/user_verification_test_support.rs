@@ -40,6 +40,7 @@ pub(super) struct BlockingProvider {
     pub(super) entered: Mutex<Option<oneshot::Sender<()>>>,
     pub(super) released: AtomicBool,
     pub(super) calls: AtomicUsize,
+    pub(super) ignore_cancellation: AtomicBool,
 }
 
 impl native::UserVerificationProvider for BlockingProvider {
@@ -56,9 +57,18 @@ impl native::UserVerificationProvider for BlockingProvider {
     }
     fn ensure_key(
         &self,
-        _guard: &native::UserVerificationRequestGuard,
+        guard: &native::UserVerificationRequestGuard,
     ) -> Result<native::UserVerificationKeyCreation, native::UserVerificationError> {
-        unreachable!("this test must not create keys")
+        guard.check()?;
+        self.calls.fetch_add(/*val*/ 1, Ordering::SeqCst);
+        Ok(native::UserVerificationKeyCreation {
+            created: false,
+            credential: native::UserVerificationKeyInfo {
+                credential_id: "credential".into(),
+                algorithm: "ecdsaP256Sha256X962".into(),
+                public_key: "public-key".into(),
+            },
+        })
     }
     fn delete(
         &self,
@@ -77,7 +87,9 @@ impl native::UserVerificationProvider for BlockingProvider {
         }
         let deadline = std::time::Instant::now() + Duration::from_secs(/*secs*/ 10);
         while !self.released.load(Ordering::Acquire) {
-            guard.check()?;
+            if !self.ignore_cancellation.load(Ordering::Acquire) {
+                guard.check()?;
+            }
             assert!(
                 std::time::Instant::now() < deadline,
                 "test failed to release native worker"

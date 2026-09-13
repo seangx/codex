@@ -427,7 +427,7 @@ dependencies = [
  "codex-exec-server",
  "codex-features",
  "codex-login",
- "codex-models-manager",
+ "codex-model-provider",
  "codex-protocol",
  "codex-utils-cargo-bin",
  "core_test_support",
@@ -2147,10 +2147,13 @@ dependencies = [
  "futures",
  "http 1.4.0",
  "pretty_assertions",
+ "rcgen",
  "regex-lite",
+ "rustls",
  "schemars 0.8.22",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-test",
@@ -2212,6 +2215,7 @@ dependencies = [
  "codex-model-provider",
  "codex-model-provider-info",
  "codex-models-manager",
+ "codex-network-proxy",
  "codex-otel",
  "codex-plugin",
  "codex-protocol",
@@ -2225,6 +2229,7 @@ dependencies = [
  "codex-state",
  "codex-thread-store",
  "codex-tools",
+ "codex-uds",
  "codex-user-verification",
  "codex-utils-absolute-path",
  "codex-utils-cargo-bin",
@@ -2409,6 +2414,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "signal-hook",
  "tempfile",
  "time",
  "tokio",
@@ -2865,6 +2871,7 @@ dependencies = [
  "codex-utils-path",
  "codex-utils-path-uri",
  "codex-utils-redacted-string",
+ "codex-windows-sandbox",
  "core-foundation 0.9.4",
  "dns-lookup",
  "dunce",
@@ -2988,6 +2995,7 @@ dependencies = [
  "codex-file-system",
  "codex-git-utils",
  "codex-guardian-context",
+ "codex-guardian-reviewer",
  "codex-history",
  "codex-home",
  "codex-hooks",
@@ -3404,6 +3412,7 @@ dependencies = [
 name = "codex-features"
 version = "0.0.0"
 dependencies = [
+ "codex-network-proxy",
  "codex-otel",
  "codex-protocol",
  "pretty_assertions",
@@ -3422,6 +3431,7 @@ dependencies = [
  "codex-http-client",
  "codex-login",
  "codex-protocol",
+ "codex-rollout",
  "flate2",
  "http 1.4.0",
  "httpdate",
@@ -3549,6 +3559,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-guardian-reviewer"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "codex-analytics",
+ "codex-extension-api",
+ "codex-features",
+ "codex-feedback",
+ "codex-mcp",
+ "codex-otel",
+ "codex-protocol",
+ "opentelemetry",
+ "opentelemetry_sdk",
+ "pretty_assertions",
+ "rand 0.9.3",
+ "serde",
+ "serde_json",
+ "test-case",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "codex-guardian-v2"
 version = "0.0.0"
 dependencies = [
@@ -3668,6 +3702,7 @@ dependencies = [
  "rustls",
  "rustls-native-certs",
  "rustls-pki-types",
+ "rustls-platform-verifier",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -3893,6 +3928,7 @@ dependencies = [
  "codex-extension-api",
  "codex-features",
  "codex-otel",
+ "codex-protocol",
  "codex-tools",
  "codex-utils-absolute-path",
  "codex-utils-output-truncation",
@@ -3971,6 +4007,8 @@ dependencies = [
 name = "codex-model-provider"
 version = "0.0.0"
 dependencies = [
+ "base64 0.22.1",
+ "chrono",
  "codex-agent-identity",
  "codex-api",
  "codex-aws-auth",
@@ -3985,7 +4023,10 @@ dependencies = [
  "codex-utils-redacted-string",
  "http 1.4.0",
  "pretty_assertions",
+ "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
  "tokio",
  "tracing",
  "wiremock",
@@ -4033,9 +4074,19 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "appcontainer_common",
+ "codex-network-proxy",
  "codex-protocol",
+ "codex-utils-absolute-path",
+ "codex-utils-path-uri",
+ "codex-windows-sandbox",
  "learning_mode_windows",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
  "tracelogging",
+ "windows-sys 0.61.2",
  "wxc_common",
 ]
 
@@ -4063,8 +4114,13 @@ dependencies = [
  "rama-tls-rustls",
  "rama-unix",
  "rand 0.9.3",
+ "rand_regex",
+ "regex",
+ "regex-automata",
+ "regex-syntax",
  "rustls-native-certs",
  "schannel",
+ "schemars 0.8.22",
  "security-framework 3.5.1",
  "serde",
  "serde_json",
@@ -4258,6 +4314,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -4326,6 +4383,8 @@ dependencies = [
  "tiny_http",
  "tokio",
  "tracing",
+ "tracing-subscriber",
+ "tracing-test",
  "url",
  "urlencoding",
  "webbrowser",
@@ -4715,6 +4774,7 @@ dependencies = [
  "itertools 0.14.0",
  "lazy_static",
  "libc",
+ "objc2-app-kit",
  "pathdiff",
  "pretty_assertions",
  "pulldown-cmark",
@@ -4755,6 +4815,7 @@ dependencies = [
  "windows-sys 0.52.0",
  "winsplit",
  "wiremock",
+ "zbus",
 ]
 
 [[package]]
@@ -5159,8 +5220,6 @@ dependencies = [
  "codex-config",
  "codex-core",
  "codex-windows-sandbox",
- "serde",
- "serde_json",
  "tokio",
  "toml 0.9.11+spec-1.1.0",
  "windows 0.58.0",
@@ -5455,7 +5514,6 @@ dependencies = [
  "regex-lite",
  "serde_json",
  "shlex",
- "similar",
  "tempfile",
  "tokio",
  "tokio-tungstenite",
@@ -11976,9 +12034,9 @@ dependencies = [
 
 [[package]]
 name = "quinn-proto"
-version = "0.11.14"
+version = "0.11.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "434b42fec591c96ef50e21e886936e66d3cc3f737104fdb9b737c40ffb94c098"
+checksum = "4fcb935c5bec503c2f0e306bdd3e58bb9029dcb14fa8d9ac76e3a5256ac0763e"
 dependencies = [
  "bytes",
  "getrandom 0.3.4",
@@ -12457,6 +12515,16 @@ name = "rand_core"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
+
+[[package]]
+name = "rand_regex"
+version = "0.18.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04db2e382d13679a1e42400e90e306cdbb79dc5cd41bb035ba4eae72e78cdf37"
+dependencies = [
+ "rand 0.9.3",
+ "regex-syntax",
+]
 
 [[package]]
 name = "rand_xorshift"
@@ -13360,6 +13428,33 @@ dependencies = [
  "web-time",
  "zeroize",
 ]
+
+[[package]]
+name = "rustls-platform-verifier"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "26d1e2536ce4f35f4846aa13bff16bd0ff40157cdb14cc056c7b14ba41233ba0"
+dependencies = [
+ "core-foundation 0.10.1",
+ "core-foundation-sys",
+ "jni",
+ "log",
+ "once_cell",
+ "rustls",
+ "rustls-native-certs",
+ "rustls-platform-verifier-android",
+ "rustls-webpki",
+ "security-framework 3.5.1",
+ "security-framework-sys",
+ "webpki-root-certs",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "rustls-platform-verifier-android"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f87165f0995f63a9fbeea62b64d10b4d9d8e78ec6d7d51fb2125fda7bb36788f"
 
 [[package]]
 name = "rustls-webpki"

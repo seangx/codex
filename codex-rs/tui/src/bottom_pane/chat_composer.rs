@@ -4,7 +4,7 @@
 //! completed slash commands to atomic elements, and handles Enter submission/newlines.
 //! It also shows Luna Reserve's yellow prompt arrow and detects unbracketed paste bursts
 //! from raw key streams, particularly on Windows.
-//! The live voice strip renders after decorative effects so its controls stay legible.
+//! The live voice strip renders after effort ignition.
 //!
 //! The plain-text preset keeps command prefixes literal, including `!`, so Enter and Tab
 //! submit ordinary text without enabling shell mode.
@@ -18,6 +18,7 @@
 //! # Key Event Routing
 //!
 //! Plain Left opens agents when the local-daemon composer is empty and available for input.
+//! The agents dashboard uses the matching empty-editor guards for Right to open a task.
 //! Explicit editor remaps take precedence.
 //! Most key handling goes through [`ChatComposer::handle_key_event`], which dispatches to a
 //! popup-specific handler if a popup is visible and otherwise to
@@ -103,7 +104,8 @@
 //! When these paths clear the visible textarea after a successful submit or slash-command
 //! dispatch, they intentionally preserve the textarea kill buffer. That lets users `Ctrl+K` part
 //! of a draft, perform a composer action such as changing reasoning level, and then `Ctrl+Y` the
-//! killed text back into the now-empty draft.
+//! killed text back into the now-empty draft. Replacing the chat widget carries that buffer into
+//! the fresh composer so Vim yanks survive `/new` and thread switches.
 //!
 //! The numeric auto-submit path used by the slash popup performs the same pending-paste expansion
 //! and attachment pruning, and clears pending paste state on success.
@@ -315,7 +317,6 @@ mod inline_input;
 mod popup_state;
 mod reconnect;
 mod slash_input;
-mod sparkle;
 mod vim_history;
 mod vim_search;
 
@@ -336,6 +337,7 @@ use crate::app_event::ConnectorsSnapshot;
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::LocalImageAttachment;
 use crate::bottom_pane::MentionBinding;
+use crate::bottom_pane::textarea::KillBufferSnapshot;
 use crate::bottom_pane::textarea::TextArea;
 use crate::clipboard_paste::normalize_pasted_path;
 use crate::clipboard_paste::pasted_image_format;
@@ -424,7 +426,6 @@ fn parent_owned_command_is_allowed(command: SlashCommand, args: &str) -> bool {
                 | SlashCommand::Vim
                 | SlashCommand::Keymap
                 | SlashCommand::ElevateSandbox
-                | SlashCommand::SandboxReadRoot
                 | SlashCommand::Experimental
                 | SlashCommand::Memories
                 | SlashCommand::Quit
@@ -531,7 +532,6 @@ pub(crate) struct ChatComposer {
     effort_animation_style: Option<IgnitionStyle>,
     effort_ignition: Option<EffortIgnition>,
     voice_strip: Option<VoiceStrip>,
-    astra_sparkle: Option<sparkle::Sparkle>,
     effort_status_line_transition: Option<EffortStatusLineTransition>,
     effort_observed: bool,
     luna_reserve_active: bool,
@@ -558,7 +558,6 @@ pub(crate) struct ChatComposer {
     service_tier_commands: Vec<ServiceTierCommand>,
     mentions_v2_enabled: bool,
     goal_command_enabled: bool,
-    personality_command_enabled: bool,
     voice_command_enabled: bool,
     worktrees_enabled: bool,
     windows_degraded_sandbox_active: bool,
@@ -701,7 +700,6 @@ impl ChatComposer {
             effort_animation_style: None,
             effort_ignition: None,
             voice_strip: None,
-            astra_sparkle: None,
             effort_status_line_transition: None,
             effort_observed: false,
             luna_reserve_active: false,
@@ -724,7 +722,6 @@ impl ChatComposer {
             service_tier_commands: Vec::new(),
             mentions_v2_enabled: false,
             goal_command_enabled: false,
-            personality_command_enabled: false,
             voice_command_enabled: false,
             worktrees_enabled: false,
             windows_degraded_sandbox_active: false,
@@ -1003,10 +1000,6 @@ impl ChatComposer {
 
     pub fn set_ide_context_active(&mut self, active: bool) {
         self.footer.ide_context_active = active;
-    }
-
-    pub fn set_personality_command_enabled(&mut self, enabled: bool) {
-        self.personality_command_enabled = enabled;
     }
 
     pub fn set_side_conversation_active(&mut self, active: bool) {
@@ -1418,6 +1411,14 @@ impl ChatComposer {
     /// Resume text entry after a parent view takes focus, preserving Vim undo history.
     pub(crate) fn resume_text_entry(&mut self) {
         self.draft.textarea.enter_vim_insert_mode();
+    }
+
+    pub(crate) fn take_kill_buffer_snapshot(&mut self) -> KillBufferSnapshot {
+        self.draft.textarea.take_kill_buffer_snapshot()
+    }
+
+    pub(crate) fn restore_kill_buffer_snapshot(&mut self, snapshot: KillBufferSnapshot) {
+        self.draft.textarea.restore_kill_buffer_snapshot(snapshot);
     }
 
     /// Restore draft history transferred from the startup composer.
@@ -5074,13 +5075,6 @@ impl ChatComposer {
             }
         }
         drop(state);
-        if self.astra_sparkle.is_some() {
-            self.render_sparkle(
-                composer_rect,
-                self.cursor_pos_with_textarea_right_reserve(area, textarea_right_reserve),
-                buf,
-            );
-        }
         self.render_voice_strip(composer_rect, buf);
     }
 }
@@ -5096,6 +5090,10 @@ mod effort_tests;
 #[cfg(test)]
 #[path = "chat_composer/embedded_input_tests.rs"]
 mod embedded_input_tests;
+
+#[cfg(test)]
+#[path = "chat_composer/snapshot_tests.rs"]
+mod snapshot_tests;
 
 #[cfg(test)]
 mod tests {
@@ -5177,39 +5175,6 @@ mod tests {
                 composer.footer.mode = FooterMode::ShortcutOverlay;
             },
         );
-    }
-
-    #[test]
-    fn parent_owned_thread_allows_bare_navigation_commands() {
-        for (command, expected) in [
-            ("/agents", SlashCommand::Agents),
-            ("/subagents", SlashCommand::MultiAgents),
-            ("/side", SlashCommand::Side),
-            ("/btw", SlashCommand::Btw),
-            ("/diff ", SlashCommand::Diff),
-        ] {
-            let (mut composer, _rx) = new_test_composer();
-            composer.set_parent_owned_thread();
-            composer.set_text_content(command.to_string(), Vec::new(), Vec::new());
-
-            assert_eq!(
-                composer.handle_submission(/*should_queue*/ false).0,
-                InputResult::Command(expected)
-            );
-        }
-    }
-
-    #[test]
-    fn parent_owned_thread_allows_safe_command_selected_from_prefix() {
-        let (mut composer, _rx) = new_test_composer();
-        composer.set_parent_owned_thread();
-        type_chars_humanlike(&mut composer, &['/', 'a', 'g']);
-
-        let result = composer
-            .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
-            .0;
-
-        assert_eq!(result, InputResult::Command(SlashCommand::Agents));
     }
 
     #[test]

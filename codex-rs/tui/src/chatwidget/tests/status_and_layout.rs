@@ -14,8 +14,9 @@ use serial_test::serial;
 #[tokio::test]
 async fn voice_live_transcript_renders_beside_the_streamed_cell() {
     let (mut chat, _rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
-    chat.config.animations = false;
+    chat.local_settings.tui.animations = false;
     activate_voice_for_thread(&mut chat, ThreadId::new());
+    chat.update_realtime_footer();
     chat.transcript.active_cell = Some(Box::new(history_cell::StreamingAgentTailCell::new(
         vec![Line::from("Agent answer arriving").into()],
         /*is_first_line*/ true,
@@ -4654,6 +4655,62 @@ async fn deltas_then_same_final_message_are_rendered_snapshot() {
 }
 
 #[tokio::test]
+async fn unterminated_prose_is_visible_before_completion() {
+    for mode in [ModeKind::Default, ModeKind::Plan] {
+        let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+        if mode == ModeKind::Plan {
+            chat.set_feature_enabled(Feature::CollaborationModes, /*enabled*/ true);
+            let mask = collaboration_modes::mask_for_kind(chat.model_catalog.as_ref(), mode)
+                .expect("plan collaboration mask");
+            chat.set_collaboration_mask(mask);
+        }
+        chat.last_rendered_width.set(Some(26));
+        chat.on_task_started();
+        let (frame_requester, mut draw_rx) = FrameRequester::test_channel();
+        chat.frame_requester = frame_requester;
+        for delta in ["100 200 300 400 ", "500 600 700 800 ", "900 1000 1100 1200"] {
+            if mode == ModeKind::Plan {
+                chat.on_plan_delta(delta.to_string());
+            } else {
+                chat.handle_streaming_delta(delta.to_string());
+            }
+        }
+
+        assert!(draw_rx.try_recv().is_ok());
+        assert!(!chat.bottom_pane.status_indicator_visible());
+        let snapshot = if mode == ModeKind::Plan {
+            assert_eq!(
+                chat.plan_stream_controller.as_ref().unwrap().queued_lines(),
+                0
+            );
+            "unterminated_plan_prose_preview"
+        } else {
+            assert_eq!(chat.stream_controller.as_ref().unwrap().queued_lines(), 0);
+            "unterminated_agent_prose_preview"
+        };
+        let cell = chat.transcript.active_cell.as_ref().unwrap();
+        assert_chatwidget_snapshot!(
+            snapshot,
+            lines_to_single_string(&cell.display_lines(/*width*/ 26))
+        );
+        let preview = cell.display_lines(/*width*/ 26);
+        if mode == ModeKind::Plan {
+            chat.on_plan_delta(" | partial row".to_string());
+        } else {
+            chat.handle_streaming_delta(" | partial row".to_string());
+        }
+        assert_eq!(
+            chat.transcript
+                .active_cell
+                .as_ref()
+                .unwrap()
+                .display_lines(/*width*/ 26),
+            preview,
+        );
+    }
+}
+
+#[tokio::test]
 async fn unterminated_agent_delta_does_not_redraw_unchanged_stream_tail() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.handle_streaming_delta("| Step | Owner |\n".to_string());
@@ -4744,29 +4801,29 @@ async fn regular_commit_tick_clears_orphaned_plan_stream_tail() {
 }
 
 #[tokio::test]
-async fn reasoning_delta_redraws_only_when_header_becomes_visible() {
+async fn reasoning_delta_redraws_when_latest_usable_line_changes() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let (frame_requester, mut draw_rx) = FrameRequester::test_channel();
     chat.frame_requester = frame_requester;
 
-    chat.on_agent_reasoning_delta("still looking".to_string());
+    chat.on_agent_reasoning_delta("**Checking".to_string());
     assert!(matches!(
         draw_rx.try_recv(),
         Err(tokio::sync::mpsc::error::TryRecvError::Empty)
     ));
     assert_eq!(chat.reasoning_header, None);
 
-    chat.on_agent_reasoning_delta(" **Checking".to_string());
-    assert!(matches!(
-        draw_rx.try_recv(),
-        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
-    ));
-
     chat.on_agent_reasoning_delta(" files**".to_string());
     assert!(draw_rx.try_recv().is_ok());
     assert_eq!(chat.reasoning_header.as_deref(), Some("Checking files"));
 
-    chat.on_agent_reasoning_delta(" and preparing a response".to_string());
+    chat.on_agent_reasoning_delta("\nPreparing a response".to_string());
+    assert!(draw_rx.try_recv().is_ok());
+    assert_eq!(
+        chat.reasoning_header.as_deref(),
+        Some("Preparing a response")
+    );
+    chat.on_agent_reasoning_delta("".to_string());
     assert!(matches!(
         draw_rx.try_recv(),
         Err(tokio::sync::mpsc::error::TryRecvError::Empty)
@@ -4813,7 +4870,7 @@ async fn reasoning_delta_restores_recreated_status_indicator_header() {
         .bottom_pane
         .status_widget()
         .expect("status indicator should be recreated");
-    assert_eq!(status.header(), "Working");
+    assert_eq!(status.header(), "Checking files");
 
     chat.on_agent_reasoning_delta(" and preparing a response".to_string());
 
@@ -4821,7 +4878,7 @@ async fn reasoning_delta_restores_recreated_status_indicator_header() {
         .bottom_pane
         .status_widget()
         .expect("status indicator should remain visible");
-    assert_eq!(status.header(), "Checking files");
+    assert_eq!(status.header(), "Checking files and preparing a response");
 
     let width: u16 = 80;
     let height = chat.desired_height(width);

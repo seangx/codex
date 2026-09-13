@@ -16,10 +16,13 @@ use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadSourceKind;
 use codex_app_server_protocol::ThreadUnsubscribeParams;
 use codex_app_server_protocol::ThreadUnsubscribeResponse;
+use codex_app_server_protocol::TurnInterruptParams;
+use codex_app_server_protocol::TurnInterruptResponse;
 use codex_protocol::protocol::SubAgentSource;
 use core_test_support::streaming_sse::StreamingSseChunk;
 use core_test_support::streaming_sse::start_streaming_sse_server;
 use pretty_assertions::assert_eq;
+use test_case::test_case;
 use tokio::sync::oneshot;
 
 const ALLOW: &str = r#"{"outcome":"allow","rationale":"completed seed assessment"}"#;
@@ -48,31 +51,122 @@ fn tool_response(server: &str, tool: &str, calls: &[&str]) -> String {
     responses::sse(events)
 }
 
+#[derive(Clone, Copy)]
+enum ReviewEnding {
+    Complete,
+    Interrupt,
+}
+
 #[tokio::test]
-async fn managed_reviewers_reuse_fork_and_resume_after_parent_shutdown() -> Result<()> {
+async fn managed_reviewer_refreshes_global_instructions_before_reuse() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let checks = ["initial", "unchanged", "updated", "still-updated"];
+    let mut responses = Vec::new();
+    for check in checks {
+        for body in [
+            tool_response(TEST_SERVER_NAME, TEST_TOOL_NAME, &[check]),
+            assistant_response(ALLOW)?,
+            assistant_response("Done.")?,
+        ] {
+            responses.push(vec![StreamingSseChunk { gate: None, body }]);
+        }
+    }
+    let (server, _completions) = start_streaming_sse_server(responses).await;
+    let (mcp_url, mcp_server) = start_mcp_server(/*sensitive_action*/ None).await?;
+    let codex_home = TempDir::new()?;
+    let instructions_path = codex_home.path().join("AGENTS.md");
+    sync_config(server.uri())
+        .with_extra_config(&format!(
+            "[mcp_servers.{TEST_SERVER_NAME}]\nurl = \"{mcp_url}/mcp\"\ndefault_tools_approval_mode = \"prompt\""
+        ))
+        .write(codex_home.path())?;
+    let mut app = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized_with_timeout(TIMEOUT)
+        .await?;
+    let old_instructions = "Keep this project private.";
+    let new_instructions = "Ask before sharing this project's source code.";
+    std::fs::write(&instructions_path, old_instructions)?;
+    let parent = app.start_thread(ThreadStartParams::default()).await?.thread;
+    let mut reviewer_ids = Vec::new();
+    for (index, instructions) in [
+        old_instructions,
+        old_instructions,
+        new_instructions,
+        new_instructions,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        std::fs::write(&instructions_path, instructions)?;
+        let request_id = app
+            .send_turn_start_request(TurnStartParams {
+                thread_id: parent.id.clone(),
+                input: vec![UserInput::Text {
+                    text: format!("Run the {} check.", checks[index]),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            })
+            .await?;
+        let _: TurnStartResponse = timeout(TIMEOUT, app.read_response(request_id)).await??;
+        let completed: TurnCompletedNotification =
+            timeout(TIMEOUT, app.read_notification("turn/completed")).await??;
+        assert_eq!(completed.thread_id, parent.id);
+        assert_eq!(completed.turn.status, TurnStatus::Completed);
+
+        let requests = server.requests().await;
+        assert_eq!(requests.len(), (index + 1) * 3);
+        let review: Value = serde_json::from_slice(&requests[index * 3 + 1])?;
+        assert!(review["input"].to_string().contains(instructions));
+        reviewer_ids.push(
+            review["client_metadata"]["thread_id"]
+                .as_str()
+                .expect("reviewer ID")
+                .to_owned(),
+        );
+    }
+    assert_eq!(reviewer_ids[0], reviewer_ids[1]);
+    assert_ne!(reviewer_ids[1], reviewer_ids[2]);
+    assert_eq!(reviewer_ids[2], reviewer_ids[3]);
+
+    app.shutdown_gracefully().await?;
+    mcp_server.abort();
+    Ok(())
+}
+
+#[test_case(ReviewEnding::Complete; "completed reviews")]
+#[test_case(ReviewEnding::Interrupt; "cancelled concurrent reviews")]
+#[tokio::test]
+async fn managed_reviewers_reuse_fork_and_resume_after_parent_shutdown(
+    ending: ReviewEnding,
+) -> Result<()> {
     skip_if_no_network!(Ok(()));
     let (continue_parent, parent_gate) = oneshot::channel();
     let (finish_first, first_gate) = oneshot::channel();
     let (finish_second, second_gate) = oneshot::channel();
+    let mut replies = vec![
+        (
+            tool_response(TEST_SERVER_NAME, TEST_TOOL_NAME, &["seed"]),
+            None,
+        ),
+        (assistant_response(ALLOW)?, None),
+        (
+            tool_response(TEST_SERVER_NAME, TEST_TOOL_NAME, &["first", "second"]),
+            Some(parent_gate),
+        ),
+        (assistant_response(ALLOW)?, Some(first_gate)),
+        (assistant_response(ALLOW)?, Some(second_gate)),
+    ];
+    if matches!(ending, ReviewEnding::Complete) {
+        replies.push((assistant_response("Done.")?, None));
+    }
+    replies.push((assistant_response("The user authorized the checks.")?, None));
     let (server, _completions) = start_streaming_sse_server(
-        vec![
-            (
-                tool_response(TEST_SERVER_NAME, TEST_TOOL_NAME, &["seed"]),
-                None,
-            ),
-            (assistant_response(ALLOW)?, None),
-            (
-                tool_response(TEST_SERVER_NAME, TEST_TOOL_NAME, &["first", "second"]),
-                Some(parent_gate),
-            ),
-            (assistant_response(ALLOW)?, Some(first_gate)),
-            (assistant_response(ALLOW)?, Some(second_gate)),
-            (assistant_response("Done.")?, None),
-            (assistant_response("The user authorized the checks.")?, None),
-        ]
-        .into_iter()
-        .map(|(body, gate)| vec![StreamingSseChunk { gate, body }])
-        .collect(),
+        replies
+            .into_iter()
+            .map(|(body, gate)| vec![StreamingSseChunk { gate, body }])
+            .collect(),
     )
     .await;
     let (mcp_url, mcp_server) = start_mcp_server(/*sensitive_action*/ None).await?;
@@ -91,7 +185,7 @@ async fn managed_reviewers_reuse_fork_and_resume_after_parent_shutdown() -> Resu
         .build_initialized_with_timeout(TIMEOUT)
         .await?;
     let parent = app.start_thread(ThreadStartParams::default()).await?.thread;
-    let _: TurnStartResponse = app
+    let started: TurnStartResponse = app
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
@@ -108,6 +202,12 @@ async fn managed_reviewers_reuse_fork_and_resume_after_parent_shutdown() -> Resu
     // The seed review finished; pause the parent before it requests concurrent approvals.
     timeout(TIMEOUT, server.wait_for_request_count(/*count*/ 3)).await?;
     let seed: Value = serde_json::from_slice(&server.requests().await[1])?;
+    assert!(
+        !seed["tools"]
+            .to_string()
+            .contains(&format!("mcp__{TEST_SERVER_NAME}")),
+        "reviewers must not inherit the parent's configured MCP tools"
+    );
     let reviewer_id = seed["client_metadata"]["thread_id"]
         .as_str()
         .expect("reviewer ID")
@@ -184,11 +284,27 @@ async fn managed_reviewers_reuse_fork_and_resume_after_parent_shutdown() -> Resu
                 .contains("completed seed assessment")
         );
     }
-    finish_first.send(()).expect("finish first review");
-    finish_second.send(()).expect("finish second review");
+    if matches!(ending, ReviewEnding::Interrupt) {
+        let _: TurnInterruptResponse = app
+            .request(|request_id| ClientRequest::TurnInterrupt {
+                request_id,
+                params: TurnInterruptParams {
+                    thread_id: parent.id.clone(),
+                    turn_id: started.turn.id.clone(),
+                },
+            })
+            .await?;
+    } else {
+        finish_first.send(()).expect("finish first review");
+        finish_second.send(()).expect("finish second review");
+    }
     let completed: TurnCompletedNotification =
         timeout(TIMEOUT, app.read_notification("turn/completed")).await??;
-    assert_eq!(completed.turn.status, TurnStatus::Completed);
+    let expected_status = match ending {
+        ReviewEnding::Complete => TurnStatus::Completed,
+        ReviewEnding::Interrupt => TurnStatus::Interrupted,
+    };
+    assert_eq!(completed.turn.status, expected_status);
 
     let read: ThreadReadResponse = app
         .request(|request_id| ClientRequest::ThreadRead {
@@ -246,7 +362,13 @@ async fn managed_reviewers_reuse_fork_and_resume_after_parent_shutdown() -> Resu
     )
     .await??;
     assert_eq!(completed.turn.status, TurnStatus::Completed);
-    assert_eq!(server.requests().await.len(), 7);
+    assert_eq!(
+        server.requests().await.len(),
+        match ending {
+            ReviewEnding::Complete => 7,
+            ReviewEnding::Interrupt => 6,
+        }
+    );
     // Once the owner releases it, the resumed reviewer follows normal client removal.
     for method in ["thread/archive", "thread/delete"] {
         let id = app
@@ -284,7 +406,7 @@ async fn inline_review_delegate_runs_strict_guardian_assessment() -> Result<()> 
     let mut model = codex_core::test_support::construct_model_info_offline(MODEL, &config);
     // Strict MCP approvals must work under the inline delegate's `never` policy.
     model.node_repl_auto_review_required = true;
-    write_models_cache_with_models(codex_home.path(), vec![model])?;
+    write_models_cache_with_models(codex_home.path(), vec![model]).await?;
     let mut app = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .build_initialized_with_timeout(TIMEOUT)

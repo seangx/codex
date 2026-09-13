@@ -5,8 +5,8 @@ use super::run_remote_compaction_request_v2;
 use crate::Prompt;
 use crate::client::ModelClientSession;
 use crate::compact::CompactionAnalyticsDetails;
-use crate::compact_remote::trim_function_call_history_to_fit_context_window;
 use crate::compact_remote_history::retain_recent_history_item_groups;
+use crate::compact_remote_history::trim_function_call_history_to_fit_context_window;
 use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::responses_metadata::CompactionTurnMetadata;
 use crate::session::session::Session;
@@ -120,6 +120,9 @@ pub(super) async fn run_remote_compact_v2_attempt(
         .into_iter()
         .map(|envelope| envelope.item)
         .collect();
+    sess.services
+        .executed_tool_calls
+        .strip_disabled_direct_metadata(&mut input);
     let tool_router = &step_context.tool_router;
     input.push(ResponseItem::CompactionTrigger {});
     let prompt = Prompt {
@@ -169,10 +172,13 @@ pub(super) async fn run_remote_compact_v2_attempt(
     } = compaction_output_result?;
     let retained_prompt_history =
         retained_history.for_prompt_annotated(&turn_context.model_info().input_modalities);
-    let (prompt_input, prompt_input_metadata): (Vec<_>, Vec<_>) = retained_prompt_history
+    let (mut prompt_input, prompt_input_metadata): (Vec<_>, Vec<_>) = retained_prompt_history
         .into_iter()
         .map(|envelope| (envelope.item, envelope.metadata))
         .unzip();
+    sess.services
+        .executed_tool_calls
+        .strip_disabled_direct_metadata(&mut prompt_input);
     Ok(RemoteCompactV2Attempt {
         trace_input_history,
         prompt_input,

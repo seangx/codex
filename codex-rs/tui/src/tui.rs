@@ -78,6 +78,9 @@ mod input_boundary;
 #[cfg(unix)]
 mod job_control;
 mod keyboard_modes;
+#[cfg(all(test, unix))]
+#[path = "tui_panic_tests.rs"]
+mod panic_tests;
 mod screen_size;
 mod scrollback;
 mod size_monitor;
@@ -976,6 +979,7 @@ impl Tui {
     pub(crate) fn recover_after_caught_panic(&mut self) -> Result<()> {
         set_modes()?;
         self._stderr_guard.recover_after_caught_panic()?;
+        self.terminal.invalidate_cursor_state();
         self.terminal.invalidate_viewport();
         self.frame_requester().schedule_frame();
         Ok(())
@@ -1028,6 +1032,7 @@ impl Tui {
         if let Err(err) = set_modes() {
             tracing::warn!("failed to re-enable terminal modes after external program: {err}");
         }
+        self.terminal.invalidate_cursor_state();
         // After the external program `f` finishes, reset terminal state and flush any buffered keypresses.
         flush_terminal_input_buffer();
 
@@ -1128,6 +1133,7 @@ impl Tui {
         }
         self.pending_alt_screen_enter = false;
         let _ = execute!(self.terminal.backend_mut(), EnterAlternateScreen);
+        self.terminal.invalidate_cursor_state();
         // Enable "alternate scroll" so terminals may translate wheel to arrows
         let _ = execute!(self.terminal.backend_mut(), EnableAlternateScroll);
         if let Ok(size) = self.terminal.size() {
@@ -1167,6 +1173,7 @@ impl Tui {
         // Disable alternate scroll when leaving alt-screen
         let _ = execute!(self.terminal.backend_mut(), DisableAlternateScroll);
         let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
+        self.terminal.invalidate_cursor_state();
         if let Some(saved) = self.alt_saved_viewport.take() {
             self.terminal.set_viewport_area(saved);
         }
@@ -1313,6 +1320,7 @@ impl Tui {
         stdout().sync_update(|_| {
             #[cfg(unix)]
             if let Some(prepared) = prepared_resume.take() {
+                self.terminal.invalidate_cursor_state();
                 prepared.apply(&mut self.terminal, screen_size)?;
             }
 
@@ -1472,6 +1480,7 @@ impl Tui {
         stdout().sync_update(|_| {
             #[cfg(unix)]
             if let Some(prepared) = prepared_resume.take() {
+                self.terminal.invalidate_cursor_state();
                 prepared.apply(&mut self.terminal, screen_size)?;
             }
 
