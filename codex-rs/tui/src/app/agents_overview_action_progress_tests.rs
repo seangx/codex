@@ -18,6 +18,21 @@ async fn modal_consumes_input_and_finishes_after_input_closes() -> color_eyre::R
     let mut events = VecDeque::from([
         tui::TuiEvent::Key(crossterm::event::KeyCode::Esc.into()),
         tui::TuiEvent::Paste("ignore this input".into()),
+        tui::TuiEvent::Mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Moved,
+            column: 1,
+            row: 1,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        }),
+        tui::TuiEvent::MouseScroll(tui::MouseScrollEvent {
+            mouse: crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::ScrollDown,
+                column: 1,
+                row: 1,
+                modifiers: crossterm::event::KeyModifiers::NONE,
+            },
+            ticks: 2,
+        }),
         tui::TuiEvent::Draw,
         tui::TuiEvent::Resize(ratatui::layout::Size::new(80, 24)),
         tui::TuiEvent::FocusGained,

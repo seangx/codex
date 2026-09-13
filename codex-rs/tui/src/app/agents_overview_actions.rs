@@ -90,7 +90,11 @@ async fn run_lifecycle_modal<T>(
             Some(event) = events.next() => {
                 tui.screen_size_for_event(&event)?;
                 match event {
-                    tui::TuiEvent::Key(_) | tui::TuiEvent::Paste(_) | tui::TuiEvent::FocusLost => {}
+                    tui::TuiEvent::Key(_)
+                    | tui::TuiEvent::Paste(_)
+                    | tui::TuiEvent::Mouse(_)
+                    | tui::TuiEvent::MouseScroll(_)
+                    | tui::TuiEvent::FocusLost => {}
                     tui::TuiEvent::Draw | tui::TuiEvent::Resize(_) | tui::TuiEvent::Resume | tui::TuiEvent::FocusGained => {
                         tui.draw(u16::MAX, |frame| {
                             progress.render(frame.area(), frame.buffer_mut());
