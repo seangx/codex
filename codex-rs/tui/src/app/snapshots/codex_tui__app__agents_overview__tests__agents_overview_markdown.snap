@@ -1,5 +1,6 @@
 ---
 source: tui/src/app/agents_overview_tests.rs
+assertion_line: 1158
 expression: "cached.replace(&format!(\"{project}  1\"),\n&format!(\"/tmp/project  1{padding}\")).replace(&project,\n&format!(\"/tmp/project{padding}\"))"
 ---
 "  Agent command center                                                                          "
@@ -38,7 +39,7 @@ expression: "cached.replace(&format!(\"{project}  1\"),\n&format!(\"/tmp/project
 "                                                      │                                         "
 "                                                      │                                         "
 "  New task                                                                                      "
-"                                                                                                "
-"› Describe a new task                                                                           "
-"                                                                                                "
+"────────────────────────────────────────────────────────────────────────────────────────────────"
+"▌ Describe a new task                                                                           "
+"────────────────────────────────────────────────────────────────────────────────────────────────"
 "   enter create task    ctrl+j newline    esc tasks    → open task                              "

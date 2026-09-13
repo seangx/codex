@@ -1,11 +1,12 @@
 ---
 source: tui/src/bottom_pane/chat_composer/snapshot_tests.rs
+assertion_line: 67
 expression: rows
 ---
-                                                            
- voice ● listening                /voice mute   /voice stop 
-   mic ▁▃▄▅▆█  codex █▆▅▄▃▁                                 
-                                                            
-› Ask Codex to do anything                                  
-                                                            
+────────────────────────────────────────────────────────────
+▌voice ● listening                /voice mute   /voice stop 
+▌  mic ▁▃▄▅▆█  codex █▆▅▄▃▁                                 
+▌                                                           
+▌ Ask Codex to do anything                                  
+────────────────────────────────────────────────────────────
   ? for shortcuts                        100% context left

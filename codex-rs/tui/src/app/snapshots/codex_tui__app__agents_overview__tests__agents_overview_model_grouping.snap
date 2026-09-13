@@ -1,5 +1,6 @@
 ---
 source: tui/src/app/agents_overview_tests.rs
+assertion_line: 1445
 expression: "render_bottom_popup(&app.chat_widget,\n100).replace(&test_path_display(\"/tmp/project\"),\n\"/tmp/project\").replace(\"fwd del\", \"del\")"
 ---
   Agent command center
@@ -21,8 +22,8 @@ expression: "render_bottom_popup(&app.chat_widget,\n100).replace(&test_path_disp
                                                           │
                                                           │
   New task
-
-› Describe a new task
-
+────────────────────────────────────────────────────────────────────────────────────────────────────
+▌ Describe a new task
+────────────────────────────────────────────────────────────────────────────────────────────────────
   ↑↓ navigate ctrl+o resume → open ctrl+n new task ctrl+f search ctrl+s group: model ctrl+r rename
   ctrl+x stop ctrl+w hide ctrl+e archive del delete esc back

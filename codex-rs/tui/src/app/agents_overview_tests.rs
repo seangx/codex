@@ -1887,7 +1887,7 @@ async fn root_switch_preserves_vim_line_yank() -> Result<()> {
     insta::assert_snapshot!(composer_lines, @r###"
 ────────────────────────────────────────────────────────────────────────────────
 ▌ new line
-  saved line
+▌ saved line
 "###);
     app_server.shutdown().await?;
     Ok(())

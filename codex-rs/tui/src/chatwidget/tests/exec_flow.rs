@@ -7,6 +7,7 @@ async fn external_writer_snapshot_freezes_active_command_and_mcp_rows() {
     for active_mcp in [false, true] {
         let (mut chat, _events, _operations) =
             make_chatwidget_manual(/*model_override*/ None).await;
+        chat.local_settings.tui.animations = true;
         chat.on_task_started();
         if active_mcp {
             chat.transcript.active_cell = Some(Box::new(history_cell::new_active_mcp_tool_call(
@@ -21,14 +22,15 @@ async fn external_writer_snapshot_freezes_active_command_and_mcp_rows() {
         } else {
             begin_exec(&mut chat, "call-running", "sleep 5");
         }
-        assert!(
-            chat.transcript
-                .active_cell
-                .as_ref()
-                .expect("active tool row")
-                .transcript_animation_tick()
-                .is_some()
-        );
+        let cell = chat
+            .transcript
+            .active_cell
+            .as_ref()
+            .expect("active tool row");
+        if !active_mcp {
+            assert!(cell.as_any().is::<ToolActivityGroupCell>());
+        }
+        assert!(cell.transcript_animation_tick().is_some());
 
         chat.show_external_writer_thread();
 
@@ -75,9 +77,20 @@ async fn compact_command_activity_groups_successes_and_preserves_full_transcript
         lines_to_single_string(&cells[0]),
         "• Ran 2 shell commands\n"
     );
-    assert!(chat.active_cell_is_stream_tail());
-    let active = active_blob(&chat);
-    assert!(active.contains("Finished"), "{active}");
+    assert!(!chat.active_cell_is_stream_tail());
+    assert_eq!(
+        chat.stream_controller
+            .as_ref()
+            .expect("assistant stream controller")
+            .queued_lines(),
+        1
+    );
+
+    chat.on_commit_tick();
+    let streamed = drain_insert_history(&mut rx);
+    assert_eq!(streamed.len(), 1);
+    let streamed = lines_to_single_string(&streamed[0]);
+    assert!(streamed.contains("Finished"), "{streamed}");
 }
 
 #[tokio::test]

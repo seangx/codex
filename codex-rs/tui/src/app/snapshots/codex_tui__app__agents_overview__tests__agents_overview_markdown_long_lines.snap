@@ -1,5 +1,6 @@
 ---
 source: tui/src/app/agents_overview_tests.rs
+assertion_line: 1200
 expression: "render_bottom_popup(&app.chat_widget,\n96).replace(&format!(\"{project}  1\"),\n&normalized_group).replace(&project, \"/tmp/project\")"
 ---
   Agent command center
@@ -22,7 +23,7 @@ expression: "render_bottom_popup(&app.chat_widget,\n96).replace(&format!(\"{proj
                                                       │ long prompt long prompt long prompt
                                                       │ …
   New task
-
-› Describe a new task
-
+────────────────────────────────────────────────────────────────────────────────────────────────
+▌ Describe a new task
+────────────────────────────────────────────────────────────────────────────────────────────────
    enter create task    ctrl+j newline    esc tasks    → open task

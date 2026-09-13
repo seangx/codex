@@ -1,6 +1,6 @@
 ---
 source: tui/src/app/tests/realtime_requests.rs
-assertion_line: 1023
+assertion_line: 1027
 expression: "normalize_voice_snapshot_directory(&rendered, &app.config.cwd)"
 ---
 ╭────────────────────────────────────────╮
@@ -20,4 +20,4 @@ expression: "normalize_voice_snapshot_directory(&rendered, &app.config.cwd)"
 • Earlier answer
 • spoken complete
 
-› Later typed question
+▌ Later typed question

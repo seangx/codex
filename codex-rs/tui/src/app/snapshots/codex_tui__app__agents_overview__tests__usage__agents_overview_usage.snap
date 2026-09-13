@@ -1,5 +1,6 @@
 ---
 source: tui/src/app/agents_overview_usage_tests.rs
+assertion_line: 133
 expression: "render_bottom_popup(&app.chat_widget,\n96).replace(&format!(\"{project}  2\"),\n&group).replace(&project, \"/tmp/project\").replace(\"fwd del\", \"del\")"
 ---
   Agent command center
@@ -22,7 +23,7 @@ expression: "render_bottom_popup(&app.chat_widget,\n96).replace(&format!(\"{proj
                                                       │
                                                       │
   New task
-
-› Describe a new task
-
+────────────────────────────────────────────────────────────────────────────────────────────────
+▌ Describe a new task
+────────────────────────────────────────────────────────────────────────────────────────────────
    enter create task    ctrl+j newline    esc tasks    → open task

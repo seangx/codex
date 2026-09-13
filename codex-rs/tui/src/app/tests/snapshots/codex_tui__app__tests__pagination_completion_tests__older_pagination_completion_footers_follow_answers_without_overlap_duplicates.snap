@@ -1,5 +1,6 @@
 ---
 source: tui/src/app/tests/pagination_completion_tests.rs
+assertion_line: 166
 expression: "snapshots.join(\"\\n\\n--- next overlapping page ---\\n\\n\")"
 ---
 Earlier messages are available — press ctrl + t to view the full transcript
@@ -10,7 +11,7 @@ Earlier messages are available — press ctrl + t to view the full transcript
 --- next overlapping page ---
 
 
-› Oldest prompt
+▌ Oldest prompt
 
 
 • Oldest answer
@@ -18,7 +19,7 @@ Earlier messages are available — press ctrl + t to view the full transcript
   Worked for 2m 5s · done Sep 6, 2000 at 2:32 PM
 
 
-› Middle prompt
+▌ Middle prompt
 
 
 • Middle answer
