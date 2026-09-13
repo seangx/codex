@@ -1339,10 +1339,10 @@ async fn responses_websocket_prewarm_includes_model_and_tier_routing_hint() {
 async fn responses_websocket_prewarm_uses_v2_when_provider_supports_websockets() {
     skip_if_no_network!();
 
-    let server = start_websocket_server(vec![vec![vec![
-        ev_response_created("resp-1"),
-        ev_completed("resp-1"),
-    ]]])
+    let server = start_websocket_server(vec![vec![
+        vec![ev_response_created("warm-1"), ev_completed("warm-1")],
+        vec![ev_response_created("resp-1"), ev_completed("resp-1")],
+    ]])
     .await;
 
     let harness = websocket_harness_with_options(&server, /*runtime_metrics_enabled*/ false).await;
@@ -1376,19 +1376,34 @@ async fn responses_websocket_prewarm_uses_v2_when_provider_supports_websockets()
             .map(str::trim)
             .any(|value| value == WS_V2_BETA_HEADER_VALUE)
     );
-    stream_until_complete(&mut client_session, &harness, &prompt).await;
+    stream_until_complete_with_model_info(
+        &mut client_session,
+        &harness,
+        &prompt,
+        &harness.model_info,
+        "resp-1",
+    )
+    .await;
     assert_eq!(server.handshakes().len(), 1);
     let connection = server.single_connection();
-    assert_eq!(connection.len(), 1);
+    assert_eq!(connection.len(), 2);
     let prewarm = connection
         .first()
         .expect("missing prewarm request")
         .body_json();
+    let generation = connection
+        .get(1)
+        .expect("missing generation request")
+        .body_json();
     assert_eq!(prewarm["type"].as_str(), Some("response.create"));
+    assert_eq!(prewarm["generate"].as_bool(), Some(false));
     assert_eq!(
         prewarm["input"],
         serde_json::to_value(&prompt.input).unwrap()
     );
+    assert_eq!(generation["type"].as_str(), Some("response.create"));
+    assert_eq!(generation["previous_response_id"].as_str(), Some("warm-1"));
+    assert_eq!(generation["input"], serde_json::json!([]));
 
     server.shutdown().await;
 }
