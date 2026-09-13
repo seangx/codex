@@ -406,17 +406,6 @@ impl ContextManager {
     /// useful in the canonical transcript, but remote compaction only needs the surrounding
     /// textual history; cloning those strings into the compaction request can turn a small prompt
     /// into a multi-GB JSON body. Stable placeholders preserve prompt structure and cacheability.
-    pub(crate) fn for_compaction_prompt(
-        self,
-        input_modalities: &[InputModality],
-    ) -> Vec<ResponseItem> {
-        self.for_compaction_prompt_annotated(input_modalities)
-            .into_iter()
-            .map(ResponseItemEnvelope::into_item)
-            .collect()
-    }
-
-    /// Annotated variant of [`Self::for_compaction_prompt`].
     pub(crate) fn for_compaction_prompt_annotated(
         mut self,
         input_modalities: &[InputModality],

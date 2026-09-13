@@ -1163,7 +1163,10 @@ fn for_compaction_prompt_omits_media_without_mutating_history() {
     assert_eq!(
         history
             .clone()
-            .for_compaction_prompt(&default_input_modalities()),
+            .for_compaction_prompt_annotated(&default_input_modalities())
+            .into_iter()
+            .map(ResponseItemEnvelope::into_item)
+            .collect::<Vec<_>>(),
         vec![
             ResponseItem::Message {
                 id: None,
@@ -1215,7 +1218,7 @@ fn for_compaction_prompt_uses_payload_independent_media_placeholders() {
             phase: None,
             internal_chat_message_metadata_passthrough: None,
         }])
-        .for_compaction_prompt(&default_input_modalities())
+        .for_compaction_prompt_annotated(&default_input_modalities())
     };
 
     assert_eq!(
