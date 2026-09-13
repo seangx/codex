@@ -85,6 +85,16 @@ impl ToolActivityGroupCell {
         self.summary().active
     }
 
+    pub(crate) fn freeze_snapshot(&mut self) {
+        for cell in &mut self.cells {
+            if let Some(exec) = cell.as_any_mut().downcast_mut::<ExecCell>() {
+                exec.freeze_snapshot();
+            } else if let Some(tool) = cell.as_any_mut().downcast_mut::<McpToolCallCell>() {
+                tool.freeze_snapshot();
+            }
+        }
+    }
+
     pub(crate) fn should_flush(&self) -> bool {
         !self.is_active()
             && self.cells.iter().any(|cell| {

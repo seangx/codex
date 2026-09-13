@@ -1843,6 +1843,8 @@ impl ChatWidget {
                 exec.freeze_snapshot();
             } else if let Some(tool) = cell.as_any_mut().downcast_mut::<McpToolCallCell>() {
                 tool.freeze_snapshot();
+            } else if let Some(group) = cell.as_any_mut().downcast_mut::<ToolActivityGroupCell>() {
+                group.freeze_snapshot();
             }
         }
         self.bottom_pane

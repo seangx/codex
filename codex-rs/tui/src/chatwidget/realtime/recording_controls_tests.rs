@@ -138,11 +138,11 @@ async fn voice_composer_preserves_normal_colors_across_microphone_states() {
                 .collect::<Vec<_>>()
                 .join("\n");
             insta::assert_snapshot!(rows, @r"
-            0:
-            1:  voice ● listening ctrl+x mute     /voice stop
-            2:    mic ▁▁▁▁▁▁  codex ▁▁▁▁▁▁
-            3:
-            4: › typed
+            0: ───────────────────────────────────────────────
+            1: ▌voice ● listening ctrl+x mute     /voice stop
+            2: ▌  mic ▁▁▁▁▁▁  codex ▁▁▁▁▁▁
+            3: ▌
+            4: ▌ typed
             ");
         }
         buffer
@@ -175,36 +175,34 @@ async fn voice_composer_preserves_normal_colors_across_microphone_states() {
 async fn voice_preserves_the_normal_composer_prompt() {
     let (mut chat, _sender, _events, _ops) = make_chatwidget_manual_with_sender().await;
     let thread_id = activate_voice(&mut chat);
-    let prompt = |chat: &mut ChatWidget| {
+    let input_prompt = |chat: &mut ChatWidget| {
         chat.update_realtime_footer();
         render_bottom_popup(chat, /*width*/ 80)
             .lines()
+            .rev()
             .filter_map(|line| line.chars().next())
-            .find(|glyph| matches!(glyph, '›' | '!'))
+            .find(|glyph| matches!(glyph, '▌' | '!'))
     };
     for level in 0..=5 {
         chat.realtime_conversation.microphone_level = level;
-        assert_eq!(prompt(&mut chat), Some('›'));
+        assert_eq!(input_prompt(&mut chat), Some('▌'));
     }
     for (muted, animations) in [(true, true), (false, false), (false, true)] {
         chat.realtime_conversation.microphone_muted = muted;
         chat.local_settings.tui.animations = animations;
-        assert_eq!(prompt(&mut chat), Some('›'));
+        assert_eq!(input_prompt(&mut chat), Some('▌'));
     }
     chat.thread_id = Some(ThreadId::new());
-    assert_eq!(prompt(&mut chat), Some('›'));
+    assert_eq!(input_prompt(&mut chat), Some('▌'));
     chat.thread_id = Some(thread_id);
     chat.bottom_pane
         .set_composer_text("!".to_string(), Vec::new(), Vec::new());
-    assert_eq!(prompt(&mut chat), Some('!'));
+    assert_eq!(input_prompt(&mut chat), Some('!'));
     chat.bottom_pane
         .handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert_eq!(prompt(&mut chat), Some('›'));
+    assert_eq!(input_prompt(&mut chat), Some('▌'));
     chat.reset_realtime_conversation();
-    assert_eq!(
-        render_bottom_popup(&chat, /*width*/ 80).chars().next(),
-        Some('›')
-    );
+    assert_eq!(input_prompt(&mut chat), Some('▌'));
 }
 
 #[tokio::test]
@@ -658,22 +656,22 @@ async fn clipped_voice_composer_keeps_the_draft_and_cursor_visible() {
             .filter(|line| line.contains("voice") || line.contains("typed"))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(rows.contains("› typed"));
+        assert!(rows.contains("▌ typed"));
         assert!(matches!(chat.bottom_pane.cursor_pos(area), Some((_, y)) if y < height));
         layouts.push(format!("{height} rows:\n{rows}"));
     }
 
     insta::assert_snapshot!(layouts.join("\n\n"), @r"
     5 rows:
-    › typed
+    ▌ typed
 
     6 rows:
-    voice ● listening ctrl+x mute     /voice stop
-    › typed
+    ▌voice ● listening ctrl+x mute     /voice stop
+    ▌ typed
 
     8 rows:
-    voice ● listening ctrl+x mute     /voice stop
-    › typed
+    ▌voice ● listening ctrl+x mute     /voice stop
+    ▌ typed
     ");
 }
 

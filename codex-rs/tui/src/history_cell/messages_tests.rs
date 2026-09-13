@@ -84,7 +84,7 @@ fn spoken_user_messages_have_a_red_chevron_without_changing_raw_text() {
         typed
             .display_lines(/*width*/ 40)
             .iter()
-            .any(|line| { line.to_string() == "›   hello from voice" })
+            .any(|line| { line.to_string() == "▌   hello from voice" })
     );
     assert_eq!(marker.style.fg, Some(Color::Red));
     assert!(marker.style.add_modifier.contains(Modifier::BOLD));
@@ -96,7 +96,7 @@ fn spoken_user_messages_have_a_red_chevron_without_changing_raw_text() {
     assert!(typed.display_lines(/*width*/ 40).iter().any(|line| {
         line.spans
             .iter()
-            .any(|span| span.content == "› " && span.style.fg != Some(Color::Red))
+            .any(|span| span.content == "▌ " && span.style.fg == user_message_accent_style().fg)
     }));
 
     let area = Rect::new(

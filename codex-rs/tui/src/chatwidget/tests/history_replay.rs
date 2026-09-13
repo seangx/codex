@@ -1354,7 +1354,9 @@ async fn deferred_mcp_lifecycle_events_keep_fifo_after_stream_finishes() {
     assert!(active_blob(&chat).contains("copilot-bridge.copilot"));
 
     chat.handle_streaming_delta("Continuing after tools".to_string());
-    assert!(chat.transcript.active_cell.is_none());
+    assert!(chat.active_cell_is_stream_tail());
+    let active = active_blob(&chat);
+    assert!(active.contains("Continuing after tools"), "{active}");
     let rendered = drain_insert_history(&mut rx)
         .into_iter()
         .map(|lines| lines_to_single_string(&lines))

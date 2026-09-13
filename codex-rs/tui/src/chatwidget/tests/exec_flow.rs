@@ -21,6 +21,14 @@ async fn external_writer_snapshot_freezes_active_command_and_mcp_rows() {
         } else {
             begin_exec(&mut chat, "call-running", "sleep 5");
         }
+        assert!(
+            chat.transcript
+                .active_cell
+                .as_ref()
+                .expect("active tool row")
+                .transcript_animation_tick()
+                .is_some()
+        );
 
         chat.show_external_writer_thread();
 
@@ -31,17 +39,7 @@ async fn external_writer_snapshot_freezes_active_command_and_mcp_rows() {
             .as_ref()
             .expect("active tool row");
         rendered.push(lines_to_single_string(&cell.display_lines(/*width*/ 80)));
-        if active_mcp {
-            assert!(cell.transcript_animation_tick().is_none());
-        } else {
-            assert!(
-                !cell
-                    .as_any()
-                    .downcast_ref::<ExecCell>()
-                    .expect("active command row")
-                    .animations_enabled()
-            );
-        }
+        assert!(cell.transcript_animation_tick().is_none());
     }
     insta::assert_snapshot!(rendered.join("\n---\n"));
 }
@@ -72,11 +70,14 @@ async fn compact_command_activity_groups_successes_and_preserves_full_transcript
 
     chat.on_agent_message_delta("Finished\n".to_string());
     let cells = drain_insert_history(&mut rx);
-    assert_eq!(cells.len(), 2);
+    assert_eq!(cells.len(), 1);
     assert_eq!(
         lines_to_single_string(&cells[0]),
         "• Ran 2 shell commands\n"
     );
+    assert!(chat.active_cell_is_stream_tail());
+    let active = active_blob(&chat);
+    assert!(active.contains("Finished"), "{active}");
 }
 
 #[tokio::test]

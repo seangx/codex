@@ -51,7 +51,7 @@ async fn background_task_sends_pasted_image_with_first_prompt() -> Result<()> {
             .lines()
             .find(|line| line.contains("[Image #1]"))
             .expect("image attachment visible"),
-        @"› [Image #1] Describe this"
+        @"▌ [Image #1] Describe this"
     );
     view.handle_key_event(KeyCode::Enter.into());
     let prompt = match events.try_recv()? {
