@@ -1,7 +1,13 @@
 //! Render persisted thread turns into history-cell building blocks.
 
+mod command_projection;
+#[cfg(test)]
+#[path = "thread_transcript_tests.rs"]
+mod tests;
+
 use std::sync::Arc;
 
+use self::command_projection::CommandExecutionCellProjector;
 use crate::app_server_session::AppServerSession;
 use crate::app_server_session::HistoryHydrationScope;
 use crate::git_action_directives::parse_assistant_markdown;
@@ -22,6 +28,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::items::UserMessageItem;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use ratatui::style::Stylize as _;
+#[cfg(test)]
 use ratatui::text::Line;
 
 pub(crate) type TranscriptCells = Vec<Arc<dyn HistoryCell>>;
@@ -67,13 +74,16 @@ pub(crate) fn thread_to_transcript_cells(
 ) -> TranscriptCells {
     let cwd = thread.cwd;
     let thread_id = ThreadId::from_string(&thread.id).ok();
-    let mut cells = thread_items_to_transcript_cells(
-        thread_id,
-        &cwd,
-        thread.turns.into_iter().flat_map(|turn| turn.items),
-        raw_reasoning_visibility,
-        config,
-    );
+    let mut cells = Vec::new();
+    for turn in thread.turns {
+        cells.extend(thread_items_to_transcript_cells(
+            thread_id,
+            &cwd,
+            turn.items,
+            raw_reasoning_visibility,
+            config,
+        ));
+    }
     if cells.is_empty() {
         cells.push(Arc::new(PlainHistoryCell::new(vec![
             "No transcript content available".italic().dim().into(),
@@ -93,7 +103,12 @@ pub(crate) fn thread_items_to_transcript_cells(
         thread_id.and_then(|thread_id| InlineVisualizationContext::from_config(config, thread_id))
     });
     let mut cells: TranscriptCells = Vec::new();
+    let mut command_projector = CommandExecutionCellProjector::new();
     for item in items {
+        if command_projector.push_if_command(&item, &mut cells) {
+            continue;
+        }
+        command_projector.flush(&mut cells);
         match item {
             ThreadItem::UserMessage {
                 id,
@@ -192,6 +207,7 @@ pub(crate) fn thread_items_to_transcript_cells(
             }
         }
     }
+    command_projector.flush(&mut cells);
     cells
 }
 
@@ -207,36 +223,6 @@ fn fallback_transcript_cell(item: &ThreadItem) -> Option<PlainHistoryCell> {
                 .into()
             })
             .collect::<Vec<_>>(),
-        ThreadItem::CommandExecution {
-            command,
-            status,
-            aggregated_output,
-            exit_code,
-            ..
-        } => {
-            let mut lines: Vec<Line<'static>> =
-                vec![vec!["$ ".dim(), command.clone().into()].into()];
-            lines.push(
-                format!(
-                    "status: {status:?}{}",
-                    exit_code
-                        .map(|code| format!(" · exit {code}"))
-                        .unwrap_or_default()
-                )
-                .dim()
-                .into(),
-            );
-            if let Some(output) = aggregated_output.as_deref()
-                && !output.trim().is_empty()
-            {
-                lines.extend(
-                    output
-                        .lines()
-                        .map(|line| vec!["  ".dim(), line.trim_end().to_string().dim()].into()),
-                );
-            }
-            lines
-        }
         ThreadItem::FileChange {
             changes, status, ..
         } => vec![
@@ -307,6 +293,7 @@ fn fallback_transcript_cell(item: &ThreadItem) -> Option<PlainHistoryCell> {
         | ThreadItem::FunctionCallOutput { .. }
         | ThreadItem::Plan { .. }
         | ThreadItem::Reasoning { .. }
+        | ThreadItem::CommandExecution { .. }
         | ThreadItem::Sleep(_) => return None,
     };
     (!lines.is_empty()).then(|| PlainHistoryCell::new(lines))

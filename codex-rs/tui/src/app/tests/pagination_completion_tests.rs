@@ -8,6 +8,8 @@ use chrono::TimeZone;
 use codex_app_server_protocol::ThreadItemsListResponse;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageItem;
+use codex_protocol::items::CommandExecutionItem;
+use codex_protocol::items::CommandExecutionStatus;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
 use codex_protocol::protocol::ItemCompletedEvent;
@@ -67,6 +69,26 @@ async fn older_pagination_completion_footers_follow_answers_without_overlap_dupl
                     text: format!("{name} prompt"),
                     text_elements: Vec::new(),
                 }],
+            }),
+            TurnItem::CommandExecution(CommandExecutionItem {
+                id: format!("command-{index}"),
+                plugin_id: None,
+                script_path: None,
+                process_id: None,
+                command: vec!["printf".to_string(), format!("{name}-command-output")],
+                cwd: codex_utils_path_uri::PathUri::from_abs_path(&app.config.cwd),
+                parsed_cmd: vec![codex_protocol::parse_command::ParsedCommand::Unknown {
+                    cmd: format!("printf {name}-command-output"),
+                }],
+                source: codex_protocol::protocol::ExecCommandSource::Agent,
+                interaction_input: None,
+                status: CommandExecutionStatus::Completed,
+                stdout: None,
+                stderr: None,
+                aggregated_output: Some(format!("{name}-command-output")),
+                exit_code: Some(0),
+                duration: Some(std::time::Duration::from_millis(100)),
+                formatted_output: None,
             }),
             TurnItem::AgentMessage(AgentMessageItem {
                 id: format!("answer-{index}"),
@@ -163,7 +185,10 @@ async fn older_pagination_completion_footers_follow_answers_without_overlap_dupl
                 .join("\n"),
         );
     }
-    insta::assert_snapshot!(snapshots.join("\n\n--- next overlapping page ---\n\n"));
+    let compact = snapshots.join("\n\n--- next overlapping page ---\n\n");
+    assert!(compact.contains("Ran 1 shell command"));
+    assert!(!compact.contains("command-output"));
+    insta::assert_snapshot!(compact);
     app_server.shutdown().await?;
     proxy.await??;
     Ok(())
