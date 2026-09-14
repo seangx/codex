@@ -57,7 +57,7 @@ impl CommandExecutionCellProjector {
             id.clone(),
             command,
             parsed,
-            source.clone(),
+            *source,
             /*interaction_input*/ None,
             /*animations_enabled*/ false,
         );
