@@ -5,8 +5,13 @@ set -eu
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 manifest="$repo_root/codex-rs/Cargo.toml"
 lockfile="$repo_root/codex-rs/Cargo.lock"
-binary="$repo_root/codex-rs/target/debug/codex"
-host_binary="$repo_root/codex-rs/target/debug/codex-code-mode-host"
+target_dir=${CARGO_TARGET_DIR:-"$repo_root/codex-rs/target"}
+case "$target_dir" in
+  /*) ;;
+  *) target_dir="$repo_root/codex-rs/$target_dir" ;;
+esac
+binary="$target_dir/debug/codex"
+host_binary="$target_dir/debug/codex-code-mode-host"
 install_dir=${CODEX_DEBUG_INSTALL_DIR:-"$HOME/.local/lib/codex"}
 bin_dir=${CODEX_DEBUG_BIN_DIR:-"$HOME/.local/bin"}
 installed_binary="$install_dir/codex-debug"
