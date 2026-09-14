@@ -1,7 +1,6 @@
 ---
 source: tui/src/app/tests/pagination_completion_tests.rs
-assertion_line: 166
-expression: "snapshots.join(\"\\n\\n--- next overlapping page ---\\n\\n\")"
+expression: compact
 ---
 Earlier messages are available — press ctrl + t to view the full transcript
 • Middle answer
@@ -13,6 +12,8 @@ Earlier messages are available — press ctrl + t to view the full transcript
 
 ▌ Oldest prompt
 
+
+• Ran 1 shell command
 
 • Oldest answer
 
