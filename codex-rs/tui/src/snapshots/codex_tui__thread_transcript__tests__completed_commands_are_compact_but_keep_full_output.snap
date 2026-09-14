@@ -1,0 +1,15 @@
+---
+source: tui/src/thread_transcript_tests.rs
+expression: "format!(\"COMPACT\\n{compact}\\n\\nFULL\\n{full}\")"
+---
+COMPACT
+• Ran 2 shell commands
+
+FULL
+$ printf first
+output-first
+✓ • 100ms
+
+$ printf second
+output-second
+✓ • 100ms

@@ -101,15 +101,22 @@ async fn older_pagination_completion_footers_follow_answers_without_overlap_dupl
                 questions: None,
             }),
         ];
-        events.extend(items.into_iter().map(|item| {
-            EventMsg::ItemCompleted(ItemCompletedEvent {
-                thread_id,
-                turn_id: turn_id.clone(),
-                item,
-                started_at_ms: None,
-                completed_at_ms: finished * 1_000,
-            })
-        }));
+        // Keep the newest turns' original item counts so the first older page still contains
+        // the middle answer, which the next page deliberately repeats.
+        events.extend(
+            items
+                .into_iter()
+                .filter(|item| index == 0 || !matches!(item, TurnItem::CommandExecution(_)))
+                .map(|item| {
+                    EventMsg::ItemCompleted(ItemCompletedEvent {
+                        thread_id,
+                        turn_id: turn_id.clone(),
+                        item,
+                        started_at_ms: None,
+                        completed_at_ms: finished * 1_000,
+                    })
+                }),
+        );
         events.push(EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id,
             last_agent_message: Some(format!("{name} answer")),

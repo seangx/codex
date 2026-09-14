@@ -1,0 +1,5 @@
+---
+source: tui/src/thread_transcript_tests.rs
+expression: "text(cells[0].display_lines(80))"
+---
+• Read 1 file, searched for 1 pattern

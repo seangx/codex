@@ -1,0 +1,8 @@
+---
+source: tui/src/thread_transcript_tests.rs
+expression: compact
+---
+• Ran 1 shell command
+• Ran printf failure
+  └ output-failure
+• Ran 1 shell command
