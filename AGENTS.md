@@ -59,7 +59,7 @@ In the codex-rs folder where the rust code lives:
     the new implementation so the invariants stay close to the code that owns them.
   - Avoid adding new standalone methods to `codex-rs/tui/src/chatwidget.rs` unless the change is
     trivial; prefer new modules/files and keep `chatwidget.rs` focused on orchestration.
-- When running Rust commands (e.g. `just fix` or `just test`) be patient with the command and never try to kill them using the PID. Rust lock can make the execution slow, this is expected.
+- Do not terminate Rust commands (e.g. `just fix` or `just test`) merely because they take a long time. If a command appears stuck, inspect its logs, lock ownership, and process activity first. When evidence shows no progress, preserve diagnostics and interrupt only the exact task-owned command within the user's authorization; do not kill unrelated build processes or remove live locks.
 
 Run `just fmt` (in the `codex-rs` directory) automatically after you have finished making code changes anywhere in this repository; do not ask for approval to run it. Additionally, run the tests:
 
@@ -67,7 +67,7 @@ Run `just fmt` (in the `codex-rs` directory) automatically after you have finish
 2. Run the test for the specific project that was changed. For example, if changes were made in `codex-rs/tui`, run `just test -p codex-tui`.
 3. Once those pass, if any changes were made in common, core, or protocol, run the complete test suite with `just test`. Avoid `--all-features` for routine local runs because it expands the build matrix and can significantly increase `target/` disk usage; use it only when you specifically need full feature coverage. project-specific or individual tests can be run without asking the user, but do ask the user before running the complete test suite.
 
-Before finalizing a large change to `codex-rs`, run `just fix -p <project>` (in `codex-rs` directory) to fix any linter issues in the code. Prefer scoping with `-p` to avoid slow workspace‑wide Clippy builds; only run `just fix` without `-p` if you changed shared crates. Do not re-run tests after running `fix` or `fmt`.
+Before finalizing a large change to `codex-rs`, run `just fix -p <project>` (in `codex-rs` directory) to fix any linter issues in the code. Prefer scoping with `-p` to avoid slow workspace‑wide Clippy builds; only run `just fix` without `-p` if you changed shared crates. Review the resulting diff: pure formatting does not require re-running tests, but behavior-changing fixes require the affected tests to run again. Do not repeat broader checks without a new change, failure, or specific unresolved concern.
 
 ## The `codex-core` crate
 
