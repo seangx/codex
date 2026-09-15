@@ -648,14 +648,9 @@ async fn lifecycle_footer_keeps_custom_chords_with_labels() {
                     .any(|line| line.contains(label) && line.contains("f5"))
             );
         }
-        assert!(lines.iter().any(|line| {
-            line.chars().all(|ch| ch == '─')
-                && unicode_width::UnicodeWidthStr::width(line.as_str()) == usize::from(area.width)
-        }));
         assert!(
             lines
                 .iter()
-                .filter(|line| !line.chars().all(|ch| ch == '─'))
                 .all(|line| unicode_width::UnicodeWidthStr::width(line.as_str())
                     <= usize::from(width))
         );

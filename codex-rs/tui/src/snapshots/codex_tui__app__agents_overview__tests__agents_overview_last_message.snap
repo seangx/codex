@@ -13,6 +13,9 @@ expression: "render_bottom_popup(&app.chat_widget,\n96).replace(&format!(\"{proj
                                                       │
                                                       │ Last message
                                                       │ Found the regression
+                                                      │ in the parser. Found the regression
+                                                      │ in the parser. Found the regression
+                                                      │ in the parser. Found the regression
                                                       │ …
                                                       │
                                                       │ Project
