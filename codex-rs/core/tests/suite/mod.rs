@@ -100,6 +100,8 @@ mod items;
 mod json_result;
 mod live_cli;
 mod mailbox_websocket;
+#[path = "managed_threads_tests.rs"]
+mod managed_threads;
 mod mcp_auth_elicitation;
 mod mcp_auth_refresh;
 mod mcp_ema_config;
@@ -130,6 +132,7 @@ mod openai_file_mcp;
 mod otel;
 mod override_updates;
 mod pending_input;
+mod pending_input_persistence;
 mod permissions_messages;
 mod personality;
 mod plugins;

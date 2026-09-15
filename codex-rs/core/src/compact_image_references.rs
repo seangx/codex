@@ -15,6 +15,7 @@ use codex_protocol::error::Result;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
+use codex_protocol::models::ImageReference;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::SessionSource;
 use sha1::Digest;
@@ -64,7 +65,10 @@ pub(crate) async fn prepare_history_for_compaction(
                 && let Some(mut content) = to_annotated_content(&mut envelope.item)
             {
                 for (item, original) in content.iter_mut().zip(original) {
-                    if let ContentItem::InputImage { image_url, .. } = original {
+                    if let ContentItem::InputImage { image, .. } = original {
+                        // Keep this exhaustive so a stored-reference variant cannot silently
+                        // remain model-visible without an explicit resolution policy.
+                        let ImageReference::Inline { image_url } = image;
                         let reference = archive_image(&codex_home, image_url)?;
                         *item = AnnotatedContent::input_text(
                             reference.body(),
@@ -103,9 +107,12 @@ pub(crate) async fn prepare_history_for_compaction(
                     ) = (&original.body, &mut output.body)
                     {
                         for (item, original) in content.iter_mut().zip(original) {
-                            if let FunctionCallOutputContentItem::InputImage { image_url, .. } =
+                            if let FunctionCallOutputContentItem::InputImage { image, .. } =
                                 original
                             {
+                                // See the message-image case above: future reference kinds must
+                                // choose a bounded archival or resolution policy explicitly.
+                                let ImageReference::Inline { image_url } = image;
                                 *item = FunctionCallOutputContentItem::InputText {
                                     text: archive_image(&codex_home, image_url)?.body(),
                                 };

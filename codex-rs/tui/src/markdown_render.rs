@@ -73,6 +73,7 @@ use std::path::PathBuf;
 
 mod file_citations;
 mod local_links;
+mod math;
 mod streaming;
 mod table_key_value;
 mod web_links;
@@ -358,7 +359,10 @@ pub(crate) fn render_markdown_lines_for_terminal(
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TABLES);
-    let parser = DecodedTextMerge::new(Parser::new_ext(input, options).into_offset_iter());
+    let math = math::MathMarkdown::new(input, options);
+    let parser = DecodedTextMerge::new(
+        math.events(Parser::new_ext(&math.markdown, options).into_offset_iter()),
+    );
     let mut w = Writer::new(
         input,
         parser,
