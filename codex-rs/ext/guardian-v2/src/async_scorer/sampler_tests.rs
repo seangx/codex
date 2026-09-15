@@ -714,6 +714,7 @@ async fn sampler_returns_classification_token_before_terminal_response_events() 
         requests: vec![vec![ev_output_text_delta("low")]],
         response_headers: Vec::new(),
         accept_delay: None,
+        idle_timeout: None,
         close_after_requests: false,
     };
     let idle_server = responses::start_websocket_server_with_headers(vec![config.clone()]).await;
@@ -813,6 +814,7 @@ async fn sampler_replaces_scored_drains_before_unfinished_classifications() -> R
         requests: vec![vec![ev_output_text_delta("low")]],
         response_headers: Vec::new(),
         accept_delay: None,
+        idle_timeout: None,
         close_after_requests: false,
     };
     let scored_response = WebSocketConnectionConfig {
@@ -823,6 +825,7 @@ async fn sampler_replaces_scored_drains_before_unfinished_classifications() -> R
         requests: vec![Vec::new()],
         response_headers: Vec::new(),
         accept_delay: None,
+        idle_timeout: None,
         close_after_requests: false,
     };
     let mut servers = Vec::with_capacity(MAX_CONCURRENT_REQUESTS + 2);

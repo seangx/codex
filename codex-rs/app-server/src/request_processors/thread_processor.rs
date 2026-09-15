@@ -5869,6 +5869,7 @@ mod thread_items_list_inline_media_tests {
                 turn_id: "turn-1".to_string(),
                 item: ThreadItem::ImageGeneration(ImageGenerationItem {
                     id: "image-1".to_string(),
+                    generation_id: None,
                     status: "completed".to_string(),
                     revised_prompt: Some("revised prompt".to_string()),
                     result: "large-inline-base64".repeat(1024),

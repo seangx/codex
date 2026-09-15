@@ -193,6 +193,7 @@ async fn cooldown_preserves_healthy_sockets_and_both_transports_share_capacity()
             requests: Vec::new(),
             response_headers: Vec::new(),
             accept_delay: None,
+            idle_timeout: None,
             close_after_requests: false,
         },
     ])

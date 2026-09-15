@@ -128,6 +128,7 @@ async fn installed_extension_warms_connections_without_blocking_thread_start() -
             requests: Vec::new(),
             response_headers: Vec::new(),
             accept_delay: None,
+            idle_timeout: None,
             close_after_requests: true,
         };
         INITIAL_WEBSOCKET_CONNECTIONS
