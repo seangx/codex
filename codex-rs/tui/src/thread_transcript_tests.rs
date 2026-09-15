@@ -15,6 +15,7 @@ fn command(id: &str, source: CommandExecutionSource, status: CommandExecutionSta
         id: id.to_string(),
         plugin_id: None,
         script_path: None,
+        model_context: None,
         command: format!("printf {id}"),
         cwd: LegacyAppPathString::from_string("/workspace"),
         process_id: None,

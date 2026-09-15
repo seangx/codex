@@ -74,6 +74,7 @@ async fn older_pagination_completion_footers_follow_answers_without_overlap_dupl
                 id: format!("command-{index}"),
                 plugin_id: None,
                 script_path: None,
+                model_context: None,
                 process_id: None,
                 command: vec!["printf".to_string(), format!("{name}-command-output")],
                 cwd: codex_utils_path_uri::PathUri::from_abs_path(&app.config.cwd),
