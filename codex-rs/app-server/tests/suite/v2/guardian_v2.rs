@@ -115,6 +115,7 @@ async fn resumed_thread_does_not_wait_for_guardian_websocket_warmup() -> Result<
             requests: Vec::new(),
             response_headers: Vec::new(),
             accept_delay: Some(Duration::from_secs(1)),
+            idle_timeout: None,
             close_after_requests: true,
         }])
         .await;

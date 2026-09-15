@@ -618,6 +618,7 @@ fn realtime_sideband_connection(
         requests: realtime_server_events,
         response_headers: Vec::new(),
         accept_delay: None,
+        idle_timeout: None,
         close_after_requests: true,
     }
 }
@@ -1918,6 +1919,7 @@ async fn realtime_webrtc_start_emits_sdp_notification() -> Result<()> {
         })]],
         response_headers: Vec::new(),
         accept_delay: None,
+        idle_timeout: None,
         close_after_requests: false,
     }])
     .await;

@@ -51,6 +51,7 @@ async fn attestation_generate_round_trip_adds_header_to_responses_websocket_hand
         ],
         response_headers: Vec::new(),
         accept_delay: None,
+        idle_timeout: None,
         close_after_requests: true,
     }])
     .await;
