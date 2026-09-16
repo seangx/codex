@@ -24,6 +24,7 @@ use streamable_http_test_support::arm_initialize_post_failure;
 use streamable_http_test_support::arm_initialize_post_json_rpc_failure;
 use streamable_http_test_support::arm_initialized_notification_post_json_rpc_failure;
 use streamable_http_test_support::arm_session_post_failure;
+use streamable_http_test_support::arm_session_post_failure_with_body;
 use streamable_http_test_support::arm_session_post_json_rpc_failure;
 use streamable_http_test_support::call_echo_tool;
 use streamable_http_test_support::create_client;
@@ -421,6 +422,123 @@ async fn streamable_http_404_recovery_only_retries_once() -> anyhow::Result<()> 
 
     let recovered = call_echo_tool(&client, "after-double-404").await?;
     assert_eq!(recovered, expected_echo_result("after-double-404"));
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn streamable_http_invalid_session_400_recovers_and_retries_once() -> anyhow::Result<()> {
+    let (_server, base_url) = spawn_streamable_http_server().await?;
+    let http_client = FailFirstInitializeHttpClient::new(
+        Environment::default_for_tests().get_http_client(),
+        /*failures_remaining*/ 0,
+    );
+    let client = create_client_with_http_client(&base_url, Arc::new(http_client.clone())).await?;
+
+    arm_session_post_failure_with_body(
+        &base_url,
+        /*status*/ 400,
+        /*remaining*/ 1,
+        "text/plain",
+        "Bad Request: No valid session ID provided",
+    )
+    .await?;
+
+    let recovered = call_echo_tool(&client, "recovered-after-invalid-session").await?;
+
+    assert_eq!(http_client.initialize_attempts(), 2);
+    assert_eq!(
+        recovered,
+        expected_echo_result("recovered-after-invalid-session")
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn streamable_http_invalid_session_400_recovery_only_retries_once() -> anyhow::Result<()> {
+    let (_server, base_url) = spawn_streamable_http_server().await?;
+    let http_client = FailFirstInitializeHttpClient::new(
+        Environment::default_for_tests().get_http_client(),
+        /*failures_remaining*/ 0,
+    );
+    let client = create_client_with_http_client(&base_url, Arc::new(http_client.clone())).await?;
+
+    arm_session_post_failure_with_body(
+        &base_url,
+        /*status*/ 400,
+        /*remaining*/ 2,
+        "text/plain",
+        "Bad Request: No valid session ID provided",
+    )
+    .await?;
+
+    let error = call_echo_tool(&client, "still-invalid-session")
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("400 Bad Request"),
+        "expected invalid-session error, got: {error:#}"
+    );
+    assert_eq!(http_client.initialize_attempts(), 2);
+
+    assert_eq!(
+        call_echo_tool(&client, "after-invalid-session-error").await?,
+        expected_echo_result("after-invalid-session-error")
+    );
+    assert_eq!(http_client.initialize_attempts(), 2);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn streamable_http_other_400_bodies_do_not_trigger_recovery_or_replay() -> anyhow::Result<()>
+{
+    for (content_type, body, expected_error) in [
+        ("text/plain", "Bad Request", "HTTP 400"),
+        (
+            "text/plain",
+            "Bad Request: No valid session ID provided.",
+            "HTTP 400",
+        ),
+        (
+            "application/json",
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"Bad Request: No valid session ID provided"}}"#,
+            "Bad Request: No valid session ID provided",
+        ),
+    ] {
+        let (_server, base_url) = spawn_streamable_http_server().await?;
+        let http_client = FailFirstInitializeHttpClient::new(
+            Environment::default_for_tests().get_http_client(),
+            /*failures_remaining*/ 0,
+        );
+        let client =
+            create_client_with_http_client(&base_url, Arc::new(http_client.clone())).await?;
+
+        arm_session_post_failure_with_body(
+            &base_url,
+            /*status*/ 400,
+            /*remaining*/ 1,
+            content_type,
+            body,
+        )
+        .await?;
+
+        let error = call_echo_tool(&client, "must-not-replay")
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains(expected_error),
+            "expected ordinary HTTP 400 error for {body:?}, got: {error:#}"
+        );
+        assert_eq!(http_client.initialize_attempts(), 1);
+
+        assert_eq!(
+            call_echo_tool(&client, "next-user-call").await?,
+            expected_echo_result("next-user-call")
+        );
+        assert_eq!(http_client.initialize_attempts(), 1);
+    }
 
     Ok(())
 }

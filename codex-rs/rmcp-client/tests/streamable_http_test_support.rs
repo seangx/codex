@@ -209,6 +209,28 @@ pub(crate) async fn arm_session_post_failure(
     Ok(())
 }
 
+pub(crate) async fn arm_session_post_failure_with_body(
+    base_url: &str,
+    status: u16,
+    remaining: usize,
+    content_type: &str,
+    body: &str,
+) -> anyhow::Result<()> {
+    let response = control_client()?
+        .post(format!("{base_url}{SESSION_POST_FAILURE_CONTROL_PATH}"))
+        .json(&json!({
+            "status": status,
+            "remaining": remaining,
+            "content_type": content_type,
+            "body": body,
+        }))
+        .send()
+        .await?;
+
+    assert_eq!(response.status(), http::StatusCode::NO_CONTENT);
+    Ok(())
+}
+
 pub(crate) async fn arm_session_post_json_rpc_failure(
     base_url: &str,
     status: u16,

@@ -1363,7 +1363,7 @@ impl RmcpClient {
         .await
         {
             Ok(result) => Ok(result),
-            Err(error) if Self::is_session_expired_404(&error) => {
+            Err(error) if Self::is_session_expired(&error) => {
                 self.reinitialize_after_session_expiry(&service).await?;
                 let recovered_service = self.service().await?;
                 Self::run_service_operation_with_transient_retries(
@@ -1477,7 +1477,7 @@ impl RmcpClient {
             .is_some_and(Self::is_retryable_streamable_http_error)
     }
 
-    fn is_session_expired_404(error: &ClientOperationError) -> bool {
+    fn is_session_expired(error: &ClientOperationError) -> bool {
         let ClientOperationError::Service(rmcp::service::ServiceError::TransportSend(error)) =
             error
         else {
@@ -1492,6 +1492,7 @@ impl RmcpClient {
                     error,
                     StreamableHttpError::Client(
                         StreamableHttpClientAdapterError::SessionExpired404
+                            | StreamableHttpClientAdapterError::SessionInvalid400
                     )
                 )
             })

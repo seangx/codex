@@ -103,6 +103,8 @@ impl Drop for EventStreamCancellation {
 pub(crate) enum StreamableHttpClientAdapterError {
     #[error("streamable HTTP session expired with 404 Not Found")]
     SessionExpired404,
+    #[error("streamable HTTP session rejected with 400 Bad Request")]
+    SessionInvalid400,
     #[error(transparent)]
     HttpRequest(#[from] ExecServerError),
     #[error("invalid HTTP header: {0}")]
@@ -310,6 +312,17 @@ impl StreamableHttpClient for StreamableHttpClientAdapter {
         let session_id = response_header(&response.headers, HEADER_SESSION_ID);
         if !status_is_success(response.status) {
             let body = collect_body(&mut body_stream, maximum_response_bytes).await?;
+            // Some legacy servers reject an unknown session with this plain-text
+            // 400 instead of 404. Match the entire transport error, not JSON-RPC
+            // tool errors or arbitrary 400s, which must not replay operations.
+            if has_session_id
+                && response.status == StatusCode::BAD_REQUEST.as_u16()
+                && body.as_slice() == b"Bad Request: No valid session ID provided"
+            {
+                return Err(StreamableHttpError::Client(
+                    StreamableHttpClientAdapterError::SessionInvalid400,
+                ));
+            }
             if !retryable_post_response_status(mcp_method.as_deref(), response.status)
                 && (content_type
                     .as_deref()
