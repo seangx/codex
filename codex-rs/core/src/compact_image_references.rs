@@ -29,9 +29,82 @@ use crate::context_manager::clone_envelope_for_compaction_prompt;
 
 const REFERENCE_PREFIX: &str = "codex-image:";
 const ARCHIVE_DIRECTORY: &str = "compacted-images";
+// A proactive history budget, not a provider request-size limit. Vision token estimates do not
+// reflect base64 wire size; compact well before repeated screenshots grow into a huge replay.
+const INLINE_IMAGE_HISTORY_BUDGET: usize = 16 * 1024 * 1024;
 // A defensive file-read bound, not a resizing or quality policy. Prompt images already have
 // a 1 GiB decoded input limit; allow its base64 representation and MIME header here.
 const MAX_ARCHIVE_BYTES: u64 = 1_500_000_000;
+
+/// Check borrowed history without serializing or cloning image payloads. This is independent of
+/// the token budget and also applies to histories restored from disk. Guardian evidence is not
+/// archived by compaction, so it must keep using its own admission limits instead.
+pub(crate) fn image_history_budget_reached(
+    history: &ContextManager,
+    session_source: &SessionSource,
+) -> bool {
+    if crate::guardian::is_basic_session_source(session_source) {
+        return false;
+    }
+    let inline_bytes = |image: &ImageReference| match image {
+        ImageReference::Inline { image_url } => image_url.len(),
+        ImageReference::File { .. } => 0,
+    };
+    let mut bytes = 0usize;
+    for envelope in history.annotated_items() {
+        let item_bytes = match &envelope.item {
+            ResponseItem::Message { content, .. } => content.iter().fold(0usize, |sum, item| {
+                sum.saturating_add(match item {
+                    ContentItem::InputImage { image, .. } => inline_bytes(image),
+                    ContentItem::InputText { .. }
+                    | ContentItem::OutputText { .. }
+                    | ContentItem::InputAudio { .. } => 0,
+                })
+            }),
+            ResponseItem::FunctionCallOutput { output, .. }
+            | ResponseItem::CustomToolCallOutput { output, .. } => match &output.body {
+                FunctionCallOutputBody::ContentItems(items) => {
+                    items.iter().fold(0usize, |sum, item| {
+                        sum.saturating_add(match item {
+                            FunctionCallOutputContentItem::InputImage { image, .. } => {
+                                inline_bytes(image)
+                            }
+                            FunctionCallOutputContentItem::InputText { .. }
+                            | FunctionCallOutputContentItem::InputAudio { .. }
+                            | FunctionCallOutputContentItem::EncryptedContent { .. } => 0,
+                        })
+                    })
+                }
+                FunctionCallOutputBody::Text(_) => 0,
+            },
+            ResponseItem::ImageGenerationCall { result, .. } => result.len(),
+            ResponseItem::AdditionalTools { .. }
+            | ResponseItem::AgentMessage { .. }
+            | ResponseItem::Reasoning { .. }
+            | ResponseItem::LocalShellCall { .. }
+            | ResponseItem::FunctionCall { .. }
+            | ResponseItem::ToolSearchCall { .. }
+            | ResponseItem::CustomToolCall { .. }
+            | ResponseItem::ToolSearchOutput { .. }
+            | ResponseItem::WebSearchCall { .. }
+            | ResponseItem::Compaction { .. }
+            | ResponseItem::ConfigurationUpdate { .. }
+            | ResponseItem::CompactionTrigger { .. }
+            | ResponseItem::ContextCompaction { .. }
+            | ResponseItem::Other => 0,
+        };
+        bytes = bytes.saturating_add(item_bytes);
+        if bytes >= INLINE_IMAGE_HISTORY_BUDGET {
+            tracing::info!(
+                inline_image_bytes = bytes,
+                inline_image_budget_bytes = INLINE_IMAGE_HISTORY_BUDGET,
+                "inline image history reached compaction budget"
+            );
+            return true;
+        }
+    }
+    false
+}
 
 pub(crate) async fn prepare_history_for_compaction(
     mut history: ContextManager,

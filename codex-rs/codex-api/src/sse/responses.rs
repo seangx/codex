@@ -529,6 +529,7 @@ pub fn process_responses_event(
             }
         }
         "codex.response.metadata"
+        | "response.compaction.compacting"
         | "response.content_part.added"
         | "response.content_part.done"
         | "response.custom_tool_call_input.done"
@@ -841,6 +842,23 @@ mod tests {
 
     fn idle_timeout() -> Duration {
         Duration::from_millis(1000)
+    }
+
+    #[tokio::test]
+    async fn ignores_compaction_progress_before_completion() {
+        let events = run_sse(vec![
+            json!({ "type": "response.compaction.compacting" }),
+            json!({
+                "type": "response.completed",
+                "response": { "id": "resp-compact" }
+            }),
+        ])
+        .await;
+
+        assert_matches!(
+            events.as_slice(),
+            [ResponseEvent::Completed { response_id, .. }] if response_id == "resp-compact"
+        );
     }
 
     #[tokio::test]

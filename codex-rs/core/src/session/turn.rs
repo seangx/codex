@@ -566,6 +566,11 @@ pub(crate) async fn run_turn(
                 .await;
                 let needs_follow_up = model_needs_follow_up || has_pending_input;
                 let token_limit_reached = token_status.token_limit_reached;
+                let image_limit_reached = needs_follow_up
+                    && crate::compact_image_references::image_history_budget_reached(
+                        &sess.clone_history().await,
+                        &turn_context.session_source,
+                    );
 
                 trace!(
                     turn_id = %turn_context.sub_id,
@@ -577,6 +582,7 @@ pub(crate) async fn run_turn(
                     full_context_window_limit = ?token_status.full_context_window_limit,
                     full_context_window_limit_reached = token_status.full_context_window_limit_reached,
                     token_limit_reached,
+                    image_limit_reached,
                     model_needs_follow_up,
                     has_pending_input,
                     needs_follow_up,
@@ -600,7 +606,9 @@ pub(crate) async fn run_turn(
                 }
 
                 let should_roll_over = needs_follow_up
-                    && (sess.take_new_context_window_request().await || token_limit_reached);
+                    && (sess.take_new_context_window_request().await
+                        || token_limit_reached
+                        || image_limit_reached);
                 let allow_auto_compact_fallback = !should_roll_over && !token_limit_reached;
                 super::token_budget::maybe_record(
                     sess.as_ref(),
@@ -1250,8 +1258,13 @@ async fn run_pre_sampling_compact(
     let token_status =
         super::context_window::context_window_token_status(sess.as_ref(), turn_context.as_ref())
             .await;
-    // Compact if the configured auto-compaction budget or usable context window is exhausted.
-    if token_status.token_limit_reached {
+    // Check restored history before sending it again, even if its vision token estimate is low.
+    if token_status.token_limit_reached
+        || crate::compact_image_references::image_history_budget_reached(
+            &sess.clone_history().await,
+            &turn_context.session_source,
+        )
+    {
         // Pre-turn compaction runs before run_turn creates the normal sampling step.
         let step_context = sess
             .capture_step_context(Arc::clone(turn_context), cancellation_token)

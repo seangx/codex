@@ -12,6 +12,37 @@ use codex_protocol::protocol::SubAgentSource;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 
+#[test]
+fn image_history_budget_counts_inline_payloads_but_not_file_references() -> anyhow::Result<()> {
+    let image = "x".repeat(super::INLINE_IMAGE_HISTORY_BUDGET / 2);
+    let mut history = ContextManager::default();
+    history.replace(serde_json::from_value(json!([
+        {"type":"message", "role":"user", "content":[
+            {"type":"input_image", "image_url":image},
+            {"type":"input_image", "file_id":"provider-image"}
+        ]}
+    ]))?);
+    assert!(!super::image_history_budget_reached(
+        &history,
+        &SessionSource::Exec
+    ));
+    let mut items = history.into_raw_items();
+    items.push(serde_json::from_value(json!({
+        "type":"image_generation_call", "id":"generated", "status":"completed", "result":image
+    }))?);
+    history = ContextManager::default();
+    history.replace(items);
+    assert!(super::image_history_budget_reached(
+        &history,
+        &SessionSource::Exec
+    ));
+    let guardian = SessionSource::SubAgent(SubAgentSource::Other(
+        crate::guardian::GUARDIAN_REVIEWER_NAME.to_string(),
+    ));
+    assert!(!super::image_history_budget_reached(&history, &guardian));
+    Ok(())
+}
+
 #[tokio::test]
 async fn compaction_snapshot_archives_inline_images_and_preserves_file_references_without_mutating_live_history()
 -> anyhow::Result<()> {

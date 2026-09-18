@@ -236,55 +236,71 @@ async fn run_remote_compact_task_inner_impl(
     sess.emit_turn_item_started(turn_context, &compaction_item)
         .await;
 
-    let attempt = run_remote_compact_v2_attempt(
-        sess,
-        step_context,
-        client_session.as_deref_mut(),
-        &compaction_trace,
-        compaction_metadata,
-        analytics_details,
-    )
+    // Remote compaction has no installable partial result. Bound the whole attempt, including
+    // stream retries, retry backoff, and model fallback, rather than letting non-terminal wire
+    // events refresh the transport's idle timeout forever.
+    let total_deadline = turn_context.provider.info().stream_idle_timeout();
+    let attempt = tokio::time::timeout(total_deadline, async {
+        let attempt = run_remote_compact_v2_attempt(
+            sess,
+            step_context,
+            client_session.as_deref_mut(),
+            &compaction_trace,
+            compaction_metadata,
+            analytics_details,
+        )
+        .await;
+        match attempt {
+            Ok(attempt) => Ok((attempt, turn_context)),
+            Err(error) => {
+                let Some(fallback_step_context) = fallback_step_context else {
+                    return Err(error);
+                };
+                if !should_retry_with_current_model(&error) {
+                    return Err(error);
+                }
+                sess.set_last_known_step_context(fallback_step_context)
+                    .await;
+                let fallback_turn_context = &fallback_step_context.turn;
+                let fallback_compaction_trace =
+                    sess.services.rollout_thread_trace.compaction_trace_context(
+                        fallback_turn_context.sub_id.as_str(),
+                        compaction_id.as_str(),
+                        fallback_turn_context.model_info().slug.as_str(),
+                        fallback_turn_context.provider.info().name.as_str(),
+                    );
+                let fallback_result = run_remote_compact_v2_attempt(
+                    sess,
+                    fallback_step_context,
+                    client_session,
+                    &fallback_compaction_trace,
+                    compaction_metadata,
+                    analytics_details,
+                )
+                .await;
+                record_model_fallback(
+                    &sess.services.session_telemetry,
+                    turn_context.model_info().slug.as_str(),
+                    fallback_turn_context.model_info().slug.as_str(),
+                    compaction_metadata.reason(),
+                    compaction_metadata.implementation(),
+                    fallback_result.as_ref().err(),
+                );
+                match fallback_result {
+                    Ok(attempt) => Ok((attempt, fallback_turn_context)),
+                    Err(_) => Err(error),
+                }
+            }
+        }
+    })
     .await;
     let (attempt, compaction_turn_context) = match attempt {
-        Ok(attempt) => (attempt, turn_context),
-        Err(error) => {
-            let Some(fallback_step_context) = fallback_step_context else {
-                return Err(error);
-            };
-            if !should_retry_with_current_model(&error) {
-                return Err(error);
-            }
-            sess.set_last_known_step_context(fallback_step_context)
-                .await;
-            let fallback_turn_context = &fallback_step_context.turn;
-            let fallback_compaction_trace =
-                sess.services.rollout_thread_trace.compaction_trace_context(
-                    fallback_turn_context.sub_id.as_str(),
-                    compaction_id.as_str(),
-                    fallback_turn_context.model_info().slug.as_str(),
-                    fallback_turn_context.provider.info().name.as_str(),
-                );
-            let fallback_result = run_remote_compact_v2_attempt(
-                sess,
-                fallback_step_context,
-                client_session,
-                &fallback_compaction_trace,
-                compaction_metadata,
-                analytics_details,
-            )
-            .await;
-            record_model_fallback(
-                &sess.services.session_telemetry,
-                turn_context.model_info().slug.as_str(),
-                fallback_turn_context.model_info().slug.as_str(),
-                compaction_metadata.reason(),
-                compaction_metadata.implementation(),
-                fallback_result.as_ref().err(),
-            );
-            match fallback_result {
-                Ok(attempt) => (attempt, fallback_turn_context),
-                Err(_) => return Err(error),
-            }
+        Ok(result) => result?,
+        Err(_) => {
+            return Err(CodexErr::Stream(format!(
+                "remote compaction v2 exceeded its total deadline of {} ms waiting for response.completed",
+                total_deadline.as_millis()
+            )));
         }
     };
     let RemoteCompactV2Attempt {

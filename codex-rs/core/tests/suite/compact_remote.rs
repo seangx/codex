@@ -51,6 +51,12 @@ use wiremock::ResponseTemplate;
 #[path = "compact_remote_trimming.rs"]
 mod trimming;
 
+#[path = "compact_image_budget.rs"]
+mod image_budget;
+
+#[path = "compact_remote_deadline.rs"]
+mod deadline;
+
 fn valid_png_data_url() -> Result<String> {
     let image = image::ImageBuffer::from_pixel(
         /*width*/ 1,
