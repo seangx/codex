@@ -1,0 +1,11 @@
+---
+source: tui/src/chatwidget/tests/tool_activity_tests.rs
+expression: "outputs[0]"
+---
+history:
+• Called Inspect screenshot
+
+transcript:
+• Called node_repl.js({"title":"Inspect screenshot","code":"showImage()"})
+  └ Screenshot captured
+    Returned image

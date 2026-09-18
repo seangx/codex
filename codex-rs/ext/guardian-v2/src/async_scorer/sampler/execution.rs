@@ -6,10 +6,10 @@ use super::ConnectionPool;
 use super::LunaSamplerConfig;
 use super::LunaSamplerError;
 use super::MAX_OUTPUT_BYTES;
+use super::connection_pool::RequestMode;
 use codex_api::ApiError;
 use codex_api::ResponseEvent;
 use codex_api::ResponsesApiRequest;
-use codex_api::ResponsesEndpoint;
 use codex_api::TransportError;
 use codex_extension_api::ExtensionMetrics;
 use codex_login::UnauthorizedRecovery;
@@ -82,14 +82,17 @@ impl SamplingExecution {
             | LunaSamplerError::IncompatibleCompaction
             | LunaSamplerError::InputTooLarge
             | LunaSamplerError::Api(
-                ApiError::Transport(TransportError::Build(_))
+                ApiError::Transport(
+                    TransportError::Build(_) | TransportError::ResponseTooLarge { .. },
+                )
                 | ApiError::ContextWindowExceeded
                 | ApiError::QuotaExceeded
                 | ApiError::UsageNotIncluded
                 | ApiError::RateLimit(_)
                 | ApiError::InvalidRequest { .. }
                 | ApiError::MisalignmentPolicyViolation { .. }
-                | ApiError::CyberPolicy { .. },
+                | ApiError::CyberPolicy { .. }
+                | ApiError::BioPolicy { .. },
             ) => false,
         };
         if retryable && *retries < MAX_SAMPLING_RETRIES {
@@ -127,7 +130,7 @@ impl SamplingExecution {
                     return Err(error);
                 }
             };
-            self.request.service_tier = if lease.endpoint == ResponsesEndpoint::GuardianClassifier {
+            self.request.service_tier = if lease.request_kind == RequestMode::GuardianClassifier {
                 None
             } else {
                 self.config.service_tier.clone()
@@ -157,7 +160,7 @@ impl SamplingExecution {
                 turn_metadata["root_turn_id"] = json!(root_turn_id);
             }
             client_metadata.insert(TURN_METADATA_KEY.to_owned(), turn_metadata.to_string());
-            if lease.endpoint == ResponsesEndpoint::GuardianClassifier
+            if lease.request_kind == RequestMode::GuardianClassifier
                 && let Some(parent_response_id) = &self.parent_response_id
             {
                 client_metadata.insert("parent_response_id".to_owned(), parent_response_id.clone());

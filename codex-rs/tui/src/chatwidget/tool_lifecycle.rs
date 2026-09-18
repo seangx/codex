@@ -13,10 +13,7 @@ impl ChatWidget {
 
     pub(super) fn on_view_image_tool_call(&mut self, path: LegacyAppPathString) {
         self.flush_answer_stream_with_separator();
-        self.add_to_history(history_cell::new_view_image_tool_call(
-            path,
-            &self.config.cwd,
-        ));
+        self.add_to_history(history_cell::new_view_image_tool_call(path));
         self.request_redraw();
     }
 
@@ -303,7 +300,7 @@ impl ChatWidget {
             return;
         }
 
-        let extra_cell = match self
+        match self
             .transcript
             .active_cell
             .as_mut()
@@ -317,17 +314,13 @@ impl ChatWidget {
                     invocation,
                     self.local_settings.tui.animations,
                 );
-                let extra_cell = cell.complete(duration, result);
+                cell.complete(duration, result);
                 self.push_tool_activity(cell);
-                extra_cell
             }
         };
 
         self.bump_active_cell_revision();
-        if let Some(extra) = extra_cell {
-            self.flush_active_cell();
-            self.add_boxed_history(extra);
-        } else if self
+        if self
             .transcript
             .active_cell
             .as_ref()

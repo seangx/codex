@@ -15,6 +15,8 @@ use codex_app_server_protocol::ThreadHistoryMode;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadItemsListParams;
 use codex_app_server_protocol::ThreadItemsListResponse;
+use codex_app_server_protocol::ThreadRevertParams;
+use codex_app_server_protocol::ThreadRevertResponse;
 use codex_app_server_protocol::ThreadTurnsListParams;
 use codex_app_server_protocol::ThreadTurnsListResponse;
 use codex_app_server_protocol::Turn;
@@ -32,9 +34,10 @@ pub(crate) const HISTORY_ITEM_PAGE_LIMIT: u32 = 100;
 pub(crate) const HISTORY_ITEM_SCAN_LIMIT: usize = 4 * HISTORY_ITEM_PAGE_LIMIT as usize;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum HistoryHydrationScope {
+pub(crate) enum HistoryHydrationScope<'a> {
     Initial,
     Complete,
+    ThroughTurn(&'a str),
 }
 
 pub(crate) fn thread_items_page_params(
@@ -74,6 +77,41 @@ pub(crate) struct ThreadHistoryPagination {
 }
 
 impl AppServerSession {
+    pub(crate) async fn revert_thread(
+        &mut self,
+        thread_id: ThreadId,
+        before_turn_id: String,
+        retained_turns: &[Turn],
+    ) -> std::result::Result<ThreadRevertResponse, codex_app_server_client::TypedRequestError> {
+        let request_id = self.next_request_id();
+        let response: ThreadRevertResponse = self
+            .client
+            .request_typed(ClientRequest::ThreadRevert {
+                request_id,
+                params: ThreadRevertParams {
+                    thread_id: thread_id.to_string(),
+                    before_turn_id,
+                },
+            })
+            .await?;
+        // Older cursors in the retained prefix remain valid. If the entire displayed window
+        // disappeared, resume paging at the replacement history's end instead.
+        if retained_turns.iter().all(|turn| turn.items.is_empty()) {
+            self.history_pagination.insert(
+                thread_id,
+                ThreadHistoryPagination {
+                    history_mode: ThreadHistoryMode::Paginated,
+                    next_turn_cursor: response.turns_backwards_cursor.clone(),
+                    next_item_cursor: response.items_backwards_cursor.clone(),
+                    ..ThreadHistoryPagination::default()
+                },
+            );
+        } else {
+            self.cancel_older_history_page(thread_id);
+        }
+        Ok(response)
+    }
+
     pub(crate) fn has_older_history(&self, thread_id: ThreadId) -> bool {
         self.history_pagination
             .get(&thread_id)
@@ -217,7 +255,7 @@ impl AppServerSession {
         item_cursor: Option<String>,
         config: Option<&Config>,
         local_settings: Option<&crate::local_settings::LocalSettings>,
-        scope: HistoryHydrationScope,
+        scope: HistoryHydrationScope<'_>,
     ) -> Result<()> {
         let thread_id = ThreadId::from_string(&thread.id)
             .wrap_err("invalid thread id in bounded history response")?;
@@ -275,15 +313,19 @@ impl AppServerSession {
                     .unwrap_or(/*default*/ 1)
                     .min(INITIAL_HISTORY_ROW_LIMIT),
             ),
-            HistoryHydrationScope::Complete => configured_row_budget,
+            HistoryHydrationScope::Complete | HistoryHydrationScope::ThroughTurn(_) => {
+                configured_row_budget
+            }
         };
         let item_budget = match scope {
             HistoryHydrationScope::Initial => Some(INITIAL_HISTORY_ITEM_SCAN_LIMIT),
-            HistoryHydrationScope::Complete => None,
+            HistoryHydrationScope::Complete | HistoryHydrationScope::ThroughTurn(_) => None,
         };
         let page_limit = match scope {
             HistoryHydrationScope::Initial => INITIAL_HISTORY_ITEM_PAGE_LIMIT,
-            HistoryHydrationScope::Complete => HISTORY_ITEM_PAGE_LIMIT,
+            HistoryHydrationScope::Complete | HistoryHydrationScope::ThroughTurn(_) => {
+                HISTORY_ITEM_PAGE_LIMIT
+            }
         };
         let mut scanned_items = 0;
         let mut rendered_rows = 0;
@@ -317,6 +359,16 @@ impl AppServerSession {
             let items = self
                 .merge_thread_item_page(thread_id, page, &mut state, &mut thread.turns)
                 .await?;
+            // Finish the anchor turn so prompt editing can detect earlier steers,
+            // but do not scan history older than the displayed transcript.
+            if let HistoryHydrationScope::ThroughTurn(anchor) = scope
+                && let Some(index) = thread.turns.iter().position(|turn| turn.id == anchor)
+                && thread.turns[..index]
+                    .iter()
+                    .any(|turn| !turn.items.is_empty())
+            {
+                break;
+            }
             if let Some((config, local_settings)) = config.zip(local_settings) {
                 rendered_rows = rendered_history_rows(
                     thread_id,

@@ -1,6 +1,7 @@
 //! User-message and shell-prompt submission behavior for `ChatWidget`.
 
 use super::*;
+use codex_app_server_protocol::ImageReference;
 
 impl ChatWidget {
     pub(crate) fn set_task_mentions_enabled(&mut self, enabled: bool) {
@@ -133,6 +134,7 @@ impl ChatWidget {
         source: UserMessageSource,
         prepared_images: Option<Vec<UserInput>>,
     ) -> (bool, Option<AppCommand>) {
+        self.bottom_pane.dismiss_composer_sparkle();
         if self.has_misalignment_policy_violation() {
             return (false, None);
         }
@@ -239,7 +241,9 @@ impl ChatWidget {
 
         for image_url in &remote_image_urls {
             items.push(UserInput::Image {
-                url: image_url.clone(),
+                image: ImageReference::Inline {
+                    url: image_url.clone(),
+                },
                 detail: None,
             });
         }

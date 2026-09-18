@@ -154,8 +154,12 @@ fn conversation_history_snapshot_shares_response_items_until_history_changes() {
     );
 }
 
-#[test]
-fn conversation_history_snapshot_binds_compaction_hash_to_the_latest_item() {
+#[test_case(None; "missing hash")]
+#[test_case(Some(""); "empty hash")]
+#[test_case(Some("other-producer"); "incompatible hash")]
+fn conversation_history_snapshot_binds_review_mode_and_hash_to_the_latest_item(
+    latest_hash: Option<&str>,
+) {
     let checkpoint = ResponseItemEnvelope {
         item: serde_json::from_value(serde_json::json!({
             "type": "compaction", "id": "known", "encrypted_content": "opaque checkpoint"
@@ -166,34 +170,155 @@ fn conversation_history_snapshot_binds_compaction_hash_to_the_latest_item() {
             ..Default::default()
         }),
     };
-    let mut history = ContextManager::new();
+    let mut history = ContextManager::with_guardian_context_mode(
+        GuardianContextMode::ThreadOwned,
+        &codex_protocol::protocol::SessionSource::Cli,
+    );
     history.replace_annotated(vec![checkpoint.clone()]);
+    history.restore_review_context(
+        /*retained_context*/ None,
+        /*checkpoint*/ None,
+        Some("producer-hash"),
+    );
     let snapshot = history.conversation_history_snapshot();
     let mut unknown = checkpoint.clone();
-    unknown.metadata = None;
+    unknown.metadata = latest_hash.map(|hash| CodexHarnessMetadata {
+        compaction_model_hash: Some(hash.to_owned()),
+        ..Default::default()
+    });
     unknown.item = serde_json::from_value(serde_json::json!({
         "type": "compaction", "id": "unknown", "encrypted_content": "newer opaque checkpoint"
     }))
     .expect("unknown checkpoint fixture");
     history.replace_annotated(vec![checkpoint.clone(), unknown]);
+    let mut legacy_context = RetainedContext::default();
+    legacy_context.mark_user_messages_incomplete();
+    history.restore_review_context(
+        Some(&legacy_context),
+        /*checkpoint*/ None,
+        Some("producer-hash"),
+    );
+    assert_eq!(
+        GuardianContextMode::from_history(history.conversation_history_snapshot().as_ref()),
+        GuardianContextMode::Legacy,
+    );
     assert_eq!(
         history
             .conversation_history_snapshot()
-            .latest_compaction_model_hash(),
-        None
+            .latest_compaction()
+            .and_then(|checkpoint| checkpoint.model_hash),
+        latest_hash
     );
     assert_eq!(
-        snapshot.latest_compaction_model_hash(),
+        snapshot
+            .latest_compaction()
+            .and_then(|checkpoint| checkpoint.model_hash),
         Some("producer-hash")
+    );
+    assert_eq!(
+        GuardianContextMode::from_history(snapshot.as_ref()),
+        GuardianContextMode::ThreadOwned,
     );
     // Checkpoint replay/rollback restores the item's own provenance, not a new model's metadata.
     history.replace_annotated(vec![checkpoint]);
+    history.restore_review_context(
+        /*retained_context*/ None,
+        /*checkpoint*/ None,
+        Some("producer-hash"),
+    );
+    assert_eq!(
+        GuardianContextMode::from_history(history.conversation_history_snapshot().as_ref()),
+        GuardianContextMode::ThreadOwned,
+    );
     assert_eq!(
         history
             .conversation_history_snapshot()
-            .latest_compaction_model_hash(),
+            .latest_compaction()
+            .and_then(|checkpoint| checkpoint.model_hash),
         Some("producer-hash")
     );
+}
+
+#[test_case(serde_json::json!({
+    "verified_answers": [], "incomplete": true
+}); "missing answers")]
+#[test_case(serde_json::json!({
+    "verified_answers": [], "incomplete": false, "next_order": 1,
+    "user_messages": [{
+        "turn_id": "turn", "message_id": "restriction",
+        "text": "Only publish to a private repository.", "complete": true
+    }]
+}); "retained instructions")]
+fn checkpoint_retained_evidence_survives_legacy_review(saved_context: serde_json::Value) {
+    let mut history = ContextManager::with_guardian_context_mode(
+        GuardianContextMode::ThreadOwned,
+        &codex_protocol::protocol::SessionSource::Cli,
+    );
+    history.replace_annotated(vec![ResponseItemEnvelope::new(
+        serde_json::from_value(serde_json::json!({
+            "type": "compaction", "id": "unknown", "encrypted_content": "opaque checkpoint"
+        }))
+        .expect("checkpoint fixture"),
+    )]);
+    let retained: RetainedContext =
+        serde_json::from_value(saved_context).expect("retained evidence checkpoint");
+    for (checkpoint, expected_mode) in [
+        (None, GuardianContextMode::ThreadOwned),
+        (
+            Some(GuardianHistoryCheckpoint(vec![assistant_msg(
+                "Original transcript",
+            )])),
+            GuardianContextMode::Legacy,
+        ),
+    ] {
+        history.restore_review_context(Some(&retained), checkpoint.as_ref(), Some("reviewer"));
+        let snapshot = history.conversation_history_snapshot();
+        assert_eq!(
+            GuardianContextMode::from_history(snapshot.as_ref()),
+            expected_mode
+        );
+        assert_eq!(snapshot.retained_context(), Some(&retained));
+        assert_eq!(
+            snapshot
+                .latest_compaction()
+                .and_then(|checkpoint| checkpoint.model_hash),
+            None
+        );
+    }
+}
+
+#[test]
+fn checkpoint_replayed_instructions_keep_legacy_review_when_the_source_survives() {
+    let mut history = ContextManager::with_guardian_context_mode(
+        GuardianContextMode::ThreadOwned,
+        &codex_protocol::protocol::SessionSource::Cli,
+    );
+    history.replace_annotated(vec![ResponseItemEnvelope::new(
+        serde_json::from_value(serde_json::json!({
+            "type": "compaction", "id": "unknown", "encrypted_content": "opaque checkpoint"
+        }))
+        .expect("checkpoint fixture"),
+    )]);
+    history.restore_review_context(
+        /*retained_context*/ None, /*checkpoint*/ None,
+        /*reviewer_compaction_hash*/ None,
+    );
+    history.record_items(
+        &[user_input_text_msg("Only publish privately.")],
+        TruncationPolicy::Bytes(10_000),
+    );
+    let retained = history.retained_context().clone();
+    history.restore_review_context(
+        Some(&retained),
+        /*checkpoint*/ None,
+        /*reviewer_compaction_hash*/ None,
+    );
+
+    assert_eq!(
+        GuardianContextMode::from_history(history.conversation_history_snapshot().as_ref()),
+        GuardianContextMode::Legacy,
+    );
+    assert_eq!(history.retained_context(), &retained);
 }
 
 #[test]
@@ -1444,7 +1569,7 @@ fn drop_last_n_user_turns_preserves_prefix() {
         }
     }
     history.drop_last_n_user_turns(/*num_turns*/ 1);
-    history.replace_compacted(Vec::new());
+    history.replace_compacted(Vec::new(), /*reviewer_compaction_hash*/ None);
     let retained = history.retained_context();
     assert!(retained.user_messages_complete());
     assert!(retained.verified_answers_complete());
@@ -2574,8 +2699,39 @@ fn image_data_url_payload_does_not_dominate_message_estimate() {
     assert!(estimated > text_only_estimated);
 }
 
+/// File images use the fixed estimate for normal detail and the maximum patch count for original.
 #[test]
-fn image_data_url_payload_does_not_dominate_function_call_output_estimate() {
+fn file_images_use_detail_appropriate_estimates() {
+    let item = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![
+            ContentItem::InputImage {
+                image: ImageReference::File {
+                    file_id: "file_high".to_string(),
+                },
+                detail: Some(ImageDetail::High),
+            },
+            ContentItem::InputImage {
+                image: ImageReference::File {
+                    file_id: "file_original".to_string(),
+                },
+                detail: Some(ImageDetail::Original),
+            },
+        ],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+
+    let estimated = estimate_response_item_model_visible_bytes(&item);
+    let expected = RESIZED_IMAGE_BYTES_ESTIMATE
+        .saturating_add(approx_bytes_for_tokens(/*tokens*/ 10_000) as i64);
+
+    assert_eq!(estimated, expected);
+}
+
+#[test]
+fn function_call_output_estimates_inline_and_file_images() {
     let payload = "B".repeat(50_000);
     let image_url = format!("data:image/png;base64,{payload}");
     let item = ResponseItem::FunctionCallOutput {
@@ -2591,14 +2747,22 @@ fn image_data_url_payload_does_not_dominate_function_call_output_estimate() {
                 image: ImageReference::Inline { image_url },
                 detail: Some(DEFAULT_IMAGE_DETAIL),
             },
+            FunctionCallOutputContentItem::InputImage {
+                image: ImageReference::File {
+                    file_id: "file_original".to_string(),
+                },
+                detail: Some(ImageDetail::Original),
+            },
         ]),
         internal_chat_message_metadata_passthrough: None,
     };
 
     let raw_len = serde_json::to_string(&item).unwrap().len() as i64;
     let estimated = estimate_response_item_model_visible_bytes(&item);
-    let expected =
-        "call-abc".len() as i64 + "Screenshot captured".len() as i64 + RESIZED_IMAGE_BYTES_ESTIMATE;
+    let expected = "call-abc".len() as i64
+        + "Screenshot captured".len() as i64
+        + RESIZED_IMAGE_BYTES_ESTIMATE
+        + approx_bytes_for_tokens(/*tokens*/ 10_000) as i64;
 
     assert_eq!(estimated, expected);
     assert!(estimated < raw_len);

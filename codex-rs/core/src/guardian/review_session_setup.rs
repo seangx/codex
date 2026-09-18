@@ -4,7 +4,6 @@
 use super::*;
 use codex_guardian_reviewer::ReviewerPool;
 use codex_guardian_reviewer::ReviewerRequest;
-use codex_guardian_reviewer::SessionDisposition;
 
 pub struct PreparedGuardianContext {
     parent: Arc<Session>,
@@ -30,15 +29,16 @@ impl PreparedGuardianContext {
         if reset_version != history.reset_version {
             history_reset.cancel();
         }
-        let context_policy =
-            ReviewContextPolicy::for_context(parent.guardian_context_mode, &config.features);
+        let context_mode =
+            GuardianContextMode::from_history(history.conversation_history_snapshot().as_ref());
+        let context_policy = ReviewContextPolicy::for_context(context_mode, &config.features);
         let root_authorization_version = context_policy.root_authorization_version(&parent).await;
         let parent_compaction = context_policy.parent_compaction(history, compaction_model_hash)?;
         let mut key = GuardianReviewSessionReuseKey::from_spawn_config(
             &config,
             parent.inherited_instructions().await,
             history.history_version(),
-            parent.guardian_context_mode,
+            context_mode,
         )
         .with_environments(context.environments())
         .with_node_repl_policy_eligibility(context.model_info.computer_use_review_required())
@@ -181,25 +181,16 @@ impl ReviewerRequest for PreparedReview {
         &self,
         session: &GuardianReviewSession,
         kind: GuardianReviewSessionKind,
-    ) -> (
-        GuardianReviewSessionOutcome,
-        SessionDisposition,
-        GuardianReviewAnalyticsResult,
-    ) {
-        let (outcome, keep_session, analytics) = Box::pin(run_review_on_session(
+    ) -> ReviewSessionResult {
+        let result = Box::pin(run_review_on_session(
             session,
             &self.params,
             kind,
             self.params.deadline,
         ))
         .await;
-        record_failed_review(&session.session, &self.params, &outcome).await;
-        let disposition = if keep_session {
-            SessionDisposition::Reusable
-        } else {
-            SessionDisposition::Discard
-        };
-        (outcome, disposition, analytics)
+        record_failed_review(&session.session, &self.params, &result.outcome).await;
+        result
     }
 }
 

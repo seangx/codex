@@ -123,7 +123,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
         .collect();
     sess.services
         .executed_tool_calls
-        .strip_disabled_direct_metadata(&mut input);
+        .attach_to_compaction_prompt(&mut input);
     let tool_router = &step_context.tool_router;
     input.push(ResponseItem::CompactionTrigger {});
     let prompt = Prompt {
@@ -171,13 +171,10 @@ pub(super) async fn run_remote_compact_v2_attempt(
     } = compaction_output_result?;
     let retained_prompt_history =
         retained_history.for_prompt_annotated(&turn_context.model_info().input_modalities);
-    let (mut prompt_input, prompt_input_metadata): (Vec<_>, Vec<_>) = retained_prompt_history
+    let (prompt_input, prompt_input_metadata): (Vec<_>, Vec<_>) = retained_prompt_history
         .into_iter()
         .map(|envelope| (envelope.item, envelope.metadata))
         .unzip();
-    sess.services
-        .executed_tool_calls
-        .strip_disabled_direct_metadata(&mut prompt_input);
     Ok(RemoteCompactV2Attempt {
         trace_input_history,
         prompt_input,

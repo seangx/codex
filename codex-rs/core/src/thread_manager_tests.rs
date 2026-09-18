@@ -235,6 +235,7 @@ async fn thread_analytics_opt_out_overrides_shared_client() {
                     app_name: None,
                     invocation_type: None,
                 },
+                /*elicitation_type*/ None,
             );
             services.analytics_events_client.flush().await;
         }
@@ -1348,6 +1349,7 @@ async fn spawn_internal_session_preserves_parent_lineage_without_forking_history
             permission_profile: config.permissions.permission_profile_state().snapshot(),
             shell_environment_policy: Default::default(),
             windows_sandbox_level: WindowsSandboxLevel::from_config(&config),
+            windows_sandbox_type: config.permissions.windows_sandbox_type,
             windows_sandbox_private_desktop: config.permissions.windows_sandbox_private_desktop,
             use_legacy_landlock: config.features.use_legacy_landlock(),
             exec_policy: Some(codex_execpolicy::RequirementsExecPolicy::new(
@@ -1694,7 +1696,9 @@ async fn start_thread_seeds_extension_data_for_mcp_and_lifecycle_contributors() 
                 session_source: &SessionSource::Exec,
                 originator: &first_originator,
                 disabled_plugin_ids: &[],
-                environments: McpEnvironmentScope::Live(&first_session.services.turn_environments),
+                environments: McpEnvironmentScope::Selected(
+                    &first_session.services.turn_environments.selections(),
+                ),
             },
             /*ready_selected_capability_roots*/ &[],
             /*executor_capability_discovery*/ None,
@@ -1713,7 +1717,9 @@ async fn start_thread_seeds_extension_data_for_mcp_and_lifecycle_contributors() 
                 session_source: &second_session_source,
                 originator: &second_originator,
                 disabled_plugin_ids: &[],
-                environments: McpEnvironmentScope::Live(&second_session.services.turn_environments),
+                environments: McpEnvironmentScope::Selected(
+                    &second_session.services.turn_environments.selections(),
+                ),
             },
             /*ready_selected_capability_roots*/ &[],
             /*executor_capability_discovery*/ None,
@@ -1785,8 +1791,8 @@ async fn start_thread_seeds_extension_data_for_mcp_and_lifecycle_contributors() 
                     session_source: &SessionSource::Exec,
                     originator: &first_originator,
                     disabled_plugin_ids: &disabled_plugin_ids,
-                    environments: McpEnvironmentScope::Live(
-                        &first_session.services.turn_environments,
+                    environments: McpEnvironmentScope::Selected(
+                        &first_session.services.turn_environments.selections(),
                     ),
                 },
                 /*ready_selected_capability_roots*/ &[],

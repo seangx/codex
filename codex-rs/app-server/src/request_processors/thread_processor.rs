@@ -1,3 +1,6 @@
+#[path = "daemon_continuation.rs"]
+mod daemon_continuation;
+
 #[path = "daemon_snapshot.rs"]
 mod daemon_snapshot;
 
@@ -18,6 +21,7 @@ use codex_app_server_protocol::ThreadSection;
 use codex_app_server_protocol::ThreadSectionAppearance;
 use codex_app_server_protocol::ThreadSectionMoveParams;
 use codex_app_server_protocol::ThreadSectionMoveResponse;
+use codex_config::types::WindowsSandboxModeToml;
 use codex_extension_api::ExtensionDataInit;
 use codex_extension_api::ThreadIdleCause;
 use codex_protocol::SanitizedGitUrl;
@@ -460,7 +464,7 @@ pub(crate) struct ThreadRequestProcessor {
 /// Whether resume attaches a client or restores a cold runtime during daemon startup.
 pub(crate) enum ThreadResumeTarget {
     Client(ConnectionRequestId),
-    DaemonRecovery,
+    DaemonRecovery(Option<codex_app_server_transport::daemon_recovery::InterruptedTurn>),
 }
 
 /// Outcome of trying to satisfy a resume request from an already loaded thread.
@@ -1356,6 +1360,7 @@ impl ThreadRequestProcessor {
 
         if requested_cwd.is_some()
             && config.active_project.trust_level.is_none()
+            && !config.config_layer_stack.is_projectless()
             && effective_permissions_trust_project
         {
             let trust_target = resolve_root_git_project_for_trust(LOCAL_FS.as_ref(), &config.cwd)
@@ -2031,7 +2036,7 @@ impl ThreadRequestProcessor {
             &self.config.cwd,
         );
         if let Ok(loaded_thread) = self.thread_manager.get_thread(thread_uuid).await {
-            thread.session_id = loaded_thread.session_configured().session_id.to_string();
+            thread.session_id = loaded_thread.startup_metadata().session_id.to_string();
             let config_snapshot = loaded_thread.config_snapshot().await;
             apply_live_thread_settings(&mut thread, &config_snapshot);
         }
@@ -3631,11 +3636,15 @@ impl ThreadRequestProcessor {
                 }
                 RunningThreadResumeResult::NotRunning(stored_thread) => stored_thread,
             },
-            ThreadResumeTarget::DaemonRecovery => {
+            ThreadResumeTarget::DaemonRecovery(saved) => {
                 let thread_id = ThreadId::from_string(&params.thread_id)
                     .map_err(|err| invalid_request(format!("invalid thread id: {err}")))?;
                 // Recheck under the same permit as client resume, including after config loading.
                 if self.thread_manager.get_thread(thread_id).await.is_ok() {
+                    if let Some(saved) = saved {
+                        self.continue_daemon_turn(&params.thread_id, saved.clone())
+                            .await;
+                    }
                     return Ok(ControlFlow::Break(()));
                 }
                 None
@@ -3919,7 +3928,7 @@ impl ThreadRequestProcessor {
                     ThreadResumeTarget::Client(request_id) => {
                         self.request_trace_context(request_id).await
                     }
-                    ThreadResumeTarget::DaemonRecovery => None,
+                    ThreadResumeTarget::DaemonRecovery(_) => None,
                 },
                 client_mcp_extensions,
             )
@@ -3940,6 +3949,10 @@ impl ThreadRequestProcessor {
                     codex_thread
                         .emit_thread_idle_lifecycle_if_idle(ThreadIdleCause::Completed)
                         .await;
+                    if let ThreadResumeTarget::DaemonRecovery(Some(saved)) = target {
+                        self.continue_daemon_turn(&thread_id.to_string(), saved.clone())
+                            .await;
+                    }
                     let state = self.thread_state_manager.thread_state(thread_id).await;
                     self.ensure_listener_task_running(thread_id, Arc::clone(&codex_thread), state)
                         .await?;
@@ -4385,7 +4398,7 @@ impl ThreadRequestProcessor {
                 config_snapshot.model_provider_id.as_str(),
                 /*include_turns*/ false,
             );
-            thread_summary.session_id = existing_thread.session_configured().session_id.to_string();
+            thread_summary.session_id = existing_thread.startup_metadata().session_id.to_string();
             thread_summary.thread_source = config_snapshot.thread_source.clone().map(Into::into);
             apply_live_thread_settings(&mut thread_summary, &config_snapshot);
             thread_summary.can_accept_direct_input = Some(can_accept_direct_input(
@@ -4675,7 +4688,7 @@ impl ThreadRequestProcessor {
         include_turns: bool,
     ) -> std::result::Result<Thread, String> {
         let config_snapshot = thread.config_snapshot().await;
-        let session_id = thread.session_configured().session_id.to_string();
+        let session_id = thread.startup_metadata().session_id.to_string();
         let can_accept_direct_input = can_accept_direct_input(
             thread.multi_agent_version(),
             &config_snapshot.session_source,
@@ -4921,18 +4934,17 @@ impl ThreadRequestProcessor {
         // Persist Windows sandbox mode.
         let mut cli_overrides = cli_overrides.unwrap_or_default();
         if cfg!(windows) {
-            match WindowsSandboxLevel::from_config(&self.config) {
-                WindowsSandboxLevel::Elevated => {
-                    cli_overrides
-                        .insert("windows.sandbox".to_string(), serde_json::json!("elevated"));
+            let mode = self.config.permissions.windows_sandbox_mode.or_else(|| {
+                match WindowsSandboxLevel::from_config(&self.config) {
+                    WindowsSandboxLevel::Elevated => Some(WindowsSandboxModeToml::Elevated),
+                    WindowsSandboxLevel::RestrictedToken => {
+                        Some(WindowsSandboxModeToml::Unelevated)
+                    }
+                    WindowsSandboxLevel::Disabled => None,
                 }
-                WindowsSandboxLevel::RestrictedToken => {
-                    cli_overrides.insert(
-                        "windows.sandbox".to_string(),
-                        serde_json::json!("unelevated"),
-                    );
-                }
-                WindowsSandboxLevel::Disabled | WindowsSandboxLevel::Mxc => {}
+            });
+            if let Some(mode) = mode {
+                cli_overrides.insert("windows.sandbox".to_string(), serde_json::json!(mode));
             }
         }
         let request_overrides = if cli_overrides.is_empty() {
@@ -6380,7 +6392,7 @@ fn build_thread_from_loaded_snapshot(
 ) -> Thread {
     build_thread_from_snapshot(
         thread_id,
-        loaded_thread.session_configured().session_id.to_string(),
+        loaded_thread.startup_metadata().session_id.to_string(),
         loaded_thread.multi_agent_version(),
         config_snapshot,
         loaded_thread.rollout_path(),

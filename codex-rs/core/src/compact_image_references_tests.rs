@@ -13,23 +13,26 @@ use pretty_assertions::assert_eq;
 use serde_json::json;
 
 #[tokio::test]
-async fn compaction_snapshot_archives_user_and_tool_images_without_mutating_live_history()
+async fn compaction_snapshot_archives_inline_images_and_preserves_file_references_without_mutating_live_history()
 -> anyhow::Result<()> {
     let home = tempfile::tempdir()?;
     let image = "data:image/png;base64,cGljdHVyZQ==";
     let items: Vec<ResponseItem> = serde_json::from_value(json!([
         {"type":"message", "role":"user", "content":[
             {"type":"input_text", "text":"Inspect the grip"},
-            {"type":"input_image", "image_url":image}
+            {"type":"input_image", "image_url":image},
+            {"type":"input_image", "file_id":"file-user", "detail":"low"}
         ]},
         {"type":"message", "role":"assistant", "content":[
             {"type":"output_text", "text":"The grip is aligned"}
         ]},
         {"type":"function_call_output", "call_id":"f", "output":[
-            {"type":"input_image", "image_url":image}
+            {"type":"input_image", "image_url":image},
+            {"type":"input_image", "file_id":"file-function"}
         ]},
         {"type":"custom_tool_call_output", "call_id":"c", "output":[
-            {"type":"input_image", "image_url":image}
+            {"type":"input_image", "image_url":image},
+            {"type":"input_image", "file_id":"file-custom", "detail":"original"}
         ]}
     ]))?;
     let mut history = ContextManager::default();
@@ -44,7 +47,7 @@ async fn compaction_snapshot_archives_user_and_tool_images_without_mutating_live
     let mut expected = serde_json::to_value(items)?;
     expected[0]["content"][1] = json!({"type":"input_text", "text":replacement});
     expected[0]["internal_chat_message_metadata_passthrough"] = json!({
-        "content_item_kinds": ["unknown", "user.image_reference"]
+        "content_item_kinds": ["unknown", "user.image_reference", "unknown"]
     });
     for index in [2, 3] {
         expected[index]["output"][0] = json!({"type":"input_text", "text":replacement});

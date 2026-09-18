@@ -852,7 +852,7 @@ pub struct Tui {
     notification_backend: Option<DesktopNotificationBackend>,
     notification_condition: NotificationCondition,
     scrollback: ScrollbackStrategy,
-    // When false, enter_alt_screen() becomes a no-op.
+    // When false, overlays stay on the inline screen.
     alt_screen_enabled: bool,
     // Keeps unmanaged process stderr writes out of the inline viewport.
     _stderr_guard: terminal_stderr::TerminalStderrGuard,
@@ -922,7 +922,7 @@ impl Tui {
         }
     }
 
-    /// Set whether alternate screen is enabled. When false, enter_alt_screen() becomes a no-op.
+    /// Set whether overlays switch to the alternate screen or stay inline.
     pub fn set_alt_screen_enabled(&mut self, enabled: bool) {
         self.alt_screen_enabled = enabled;
         if !enabled {
@@ -1128,7 +1128,19 @@ impl Tui {
     /// Enter alternate screen and expand the viewport to full terminal size, saving the current
     /// inline viewport for restoration when leaving.
     pub fn enter_alt_screen(&mut self) -> Result<()> {
-        if !self.alt_screen_enabled || self.is_alt_screen_active() {
+        if self.is_alt_screen_active() {
+            return Ok(());
+        }
+        // History queued before opening an overlay belongs to the inline transcript.
+        // Flush before switching screens or expanding an inline overlay's viewport.
+        let screen_size = self.terminal.last_known_screen_size;
+        Self::flush_pending_history_lines(
+            &mut self.terminal,
+            &mut self.pending_history_lines,
+            self.scrollback,
+            screen_size,
+        )?;
+        if !self.alt_screen_enabled {
             return Ok(());
         }
         self.pending_alt_screen_enter = false;

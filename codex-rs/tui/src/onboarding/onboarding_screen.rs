@@ -18,8 +18,6 @@ use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotification;
 use codex_exec_server::LOCAL_FS;
 use codex_git_utils::resolve_root_git_project_for_trust;
-#[cfg(target_os = "windows")]
-use codex_protocol::config_types::WindowsSandboxLevel;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
@@ -139,6 +137,22 @@ impl OnboardingScreen {
             tui.frame_requester(),
             local_settings.tui.animations,
         )));
+        #[cfg(target_os = "windows")]
+        let show_windows_create_sandbox_hint = if show_trust_screen
+            && remote_project_trust.is_none()
+            && let Some(handle) = &app_server_request_handle
+        {
+            crate::windows_sandbox::WindowsSandboxConfig::read(
+                handle.clone(),
+                config.cwd.display().to_string(),
+            )
+            .await
+            .is_ok_and(|state| !state.is_enabled())
+        } else {
+            false
+        };
+        #[cfg(not(target_os = "windows"))]
+        let show_windows_create_sandbox_hint = false;
         if show_login_screen {
             let highlighted_mode =
                 if auth_config.is_login_method_allowed(ForcedLoginMethod::Chatgpt) {
@@ -163,11 +177,6 @@ impl OnboardingScreen {
                 tracing::warn!("skipping onboarding login step without app-server request handle");
             }
         }
-        #[cfg(target_os = "windows")]
-        let show_windows_create_sandbox_hint = remote_project_trust.is_none()
-            && crate::windows_sandbox::level_from_config(&config) == WindowsSandboxLevel::Disabled;
-        #[cfg(not(target_os = "windows"))]
-        let show_windows_create_sandbox_hint = false;
         let highlighted = TrustDirectorySelection::Trust;
         if show_trust_screen {
             let (cwd, trust_target) = match remote_project_trust {

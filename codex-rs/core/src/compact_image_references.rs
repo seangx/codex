@@ -66,14 +66,21 @@ pub(crate) async fn prepare_history_for_compaction(
             {
                 for (item, original) in content.iter_mut().zip(original) {
                     if let ContentItem::InputImage { image, .. } = original {
-                        // Keep this exhaustive so a stored-reference variant cannot silently
-                        // remain model-visible without an explicit resolution policy.
-                        let ImageReference::Inline { image_url } = image;
-                        let reference = archive_image(&codex_home, image_url)?;
-                        *item = AnnotatedContent::input_text(
-                            reference.body(),
-                            reference.content_kind(),
-                        );
+                        match image {
+                            ImageReference::Inline { image_url } => {
+                                let reference = archive_image(&codex_home, image_url)?;
+                                *item = AnnotatedContent::input_text(
+                                    reference.body(),
+                                    reference.content_kind(),
+                                );
+                            }
+                            ImageReference::File { .. } => {
+                                // Provider-backed references remain model-visible so the retained
+                                // image budget can decide whether to keep them after compaction.
+                                *item =
+                                    AnnotatedContent::new(original.clone(), item.kind().clone());
+                            }
+                        }
                     } else if matches!(original, ContentItem::InputAudio { .. }) {
                         // Image archival does not change audio retention.
                         *item = AnnotatedContent::new(original.clone(), item.kind().clone());
@@ -110,12 +117,14 @@ pub(crate) async fn prepare_history_for_compaction(
                             if let FunctionCallOutputContentItem::InputImage { image, .. } =
                                 original
                             {
-                                // See the message-image case above: future reference kinds must
-                                // choose a bounded archival or resolution policy explicitly.
-                                let ImageReference::Inline { image_url } = image;
-                                *item = FunctionCallOutputContentItem::InputText {
-                                    text: archive_image(&codex_home, image_url)?.body(),
-                                };
+                                match image {
+                                    ImageReference::Inline { image_url } => {
+                                        *item = FunctionCallOutputContentItem::InputText {
+                                            text: archive_image(&codex_home, image_url)?.body(),
+                                        };
+                                    }
+                                    ImageReference::File { .. } => *item = original.clone(),
+                                }
                             } else if matches!(
                                 original,
                                 FunctionCallOutputContentItem::InputAudio { .. }
@@ -146,7 +155,7 @@ pub(crate) async fn prepare_history_for_compaction(
             ResponseItem::Message { content, .. } if content.is_empty())
         });
         // Preserve authorization and retained-context bookkeeping on this isolated snapshot.
-        history.replace_compacted(items);
+        history.replace_compacted(items, /*reviewer_compaction_hash*/ None);
         Ok(history)
     })
     .await

@@ -19,6 +19,8 @@ impl ChatWidget {
 
     /// Restore the exact draft entered before the fully initialized composer became available.
     pub(crate) fn restore_startup_draft(&mut self, draft: ComposerDraftSnapshot) {
+        self.bottom_pane
+            .inherit_startup_sparkle(draft.sparkle_draft);
         let existing_draft = self.bottom_pane.composer_draft_snapshot();
         let existing_cursor = existing_draft.cursor;
         let existing_message = UserMessage {
@@ -106,6 +108,10 @@ impl ChatWidget {
         &mut self,
         pending_draft: &mut Option<ComposerDraftSnapshot>,
     ) {
+        if let Some(draft) = pending_draft.as_ref() {
+            self.bottom_pane
+                .inherit_startup_sparkle(draft.sparkle_draft);
+        }
         if self.has_active_view()
             || self
                 .bottom_pane
@@ -119,7 +125,9 @@ impl ChatWidget {
         }
         #[cfg(any(target_os = "windows", test))]
         if self.windows_sandbox_host == crate::app::WindowsSandboxHost::Local
-            && self.elevated_windows_sandbox_setup_required()
+            && (self.windows_sandbox_local_server
+                && self.windows_sandbox_config.requirements.is_none()
+                || self.elevated_windows_sandbox_setup_required())
         {
             return;
         }
@@ -138,14 +146,23 @@ impl ChatWidget {
             return;
         }
         #[cfg(any(target_os = "windows", test))]
+        if self.windows_sandbox_local_server
+            && self.windows_sandbox_host != crate::app::WindowsSandboxHost::Remote
+            && self.windows_sandbox_config.requirements.is_none()
+        {
+            return;
+        }
+        #[cfg(any(target_os = "windows", test))]
         if self.windows_sandbox_host == crate::app::WindowsSandboxHost::Local
             && self.elevated_windows_sandbox_setup_required()
         {
             return;
         }
         #[cfg(any(target_os = "windows", test))]
-        if self.windows_sandbox_host == crate::app::WindowsSandboxHost::Mixed
-            && self.elevated_windows_sandbox_setup_required()
+        if matches!(
+            self.windows_sandbox_host,
+            crate::app::WindowsSandboxHost::Mixed | crate::app::WindowsSandboxHost::Unknown
+        ) && self.elevated_windows_sandbox_setup_required()
         {
             if let Some(user_message) = self.initial_user_message.take() {
                 self.restore_user_message_to_composer(user_message);
@@ -538,6 +555,7 @@ impl ChatWidget {
                 .submit_pending_steers_after_interrupt,
             current_collaboration_mode: self.current_collaboration_mode.clone(),
             active_collaboration_mask: self.active_collaboration_mask.clone(),
+            plan_mode_reasoning_effort: self.config.plan_mode_reasoning_effort.clone(),
             task_running: self.bottom_pane.is_task_running(),
             agent_turn_running: self.turn_lifecycle.agent_turn_running,
         })
@@ -556,6 +574,7 @@ impl ChatWidget {
             self.input_queue.recovered_queue = input_state.recovered_queue;
             self.current_collaboration_mode = input_state.current_collaboration_mode;
             self.active_collaboration_mask = input_state.active_collaboration_mask;
+            self.config.plan_mode_reasoning_effort = input_state.plan_mode_reasoning_effort;
             self.safety_buffering_prompt = input_state.safety_buffering_prompt;
             self.safety_buffering_source = input_state.safety_buffering_source;
             self.turn_lifecycle.restore_running(

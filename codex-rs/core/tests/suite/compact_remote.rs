@@ -17,6 +17,7 @@ use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::AgentPath;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::ImageReference;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::ConversationStartParams;
 use codex_protocol::protocol::EventMsg;
@@ -733,12 +734,15 @@ async fn amazon_bedrock_automatic_compaction_uses_v2_responses_endpoint() -> Res
     Ok(())
 }
 
-#[test_case(None; "default_archives_images")]
-#[test_case(Some(false); "disabled_budget_archives_images")]
-#[test_case(Some(true); "enabled_budget_archives_images")]
+#[test_case(None, "image_url"; "default_archives_inline_images")]
+#[test_case(Some(false), "image_url"; "disabled_budget_archives_inline_images")]
+#[test_case(Some(true), "image_url"; "enabled_budget_archives_inline_images")]
+#[test_case(None, "file_id"; "default_trims_file_images")]
+#[test_case(Some(false), "file_id"; "disabled_preserves_file_images")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remote_compact_v2_archives_images_independently_of_token_budget(
+async fn remote_compact_v2_archives_inline_images_and_budgets_file_references(
     image_budget_enabled: Option<bool>,
+    image_field: &str,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -759,6 +763,14 @@ async fn remote_compact_v2_archives_images_independently_of_token_budget(
     // Each original-detail image costs 10,000 estimated patch tokens.
     let image_inputs = (1..=8)
         .map(|number| {
+            if image_field == "file_id" {
+                return Ok(UserInput::Image {
+                    image: ImageReference::File {
+                        file_id: format!("file_{number}"),
+                    },
+                    detail: Some(codex_protocol::models::ImageDetail::Original),
+                });
+            }
             let image = image::ImageBuffer::from_pixel(
                 /*width*/ 3200,
                 /*height*/ 3200,
@@ -767,10 +779,12 @@ async fn remote_compact_v2_archives_images_independently_of_token_budget(
             let mut bytes = std::io::Cursor::new(Vec::new());
             image.write_to(&mut bytes, image::ImageFormat::Png)?;
             Ok(UserInput::Image {
-                image_url: format!(
-                    "data:image/png;base64,{}",
-                    BASE64_STANDARD.encode(bytes.get_ref())
-                ),
+                image: ImageReference::Inline {
+                    image_url: format!(
+                        "data:image/png;base64,{}",
+                        BASE64_STANDARD.encode(bytes.get_ref())
+                    ),
+                },
                 detail: Some(codex_protocol::models::ImageDetail::Original),
             })
         })
@@ -793,7 +807,24 @@ async fn remote_compact_v2_archives_images_independently_of_token_budget(
         .await?;
     wait_for_turn_complete(codex).await;
     let initial_request = initial_mock.single_request();
-    let prepared_images = initial_request.message_input_image_urls("user");
+    let prepared_images = initial_request
+        .inputs_of_type("message")
+        .into_iter()
+        .filter(|item| item["role"] == "user")
+        .flat_map(|item| {
+            item["content"]
+                .as_array()
+                .expect("message content is an array")
+                .clone()
+        })
+        .filter(|item| item["type"] == "input_image")
+        .map(|item| {
+            item[image_field]
+                .as_str()
+                .expect("image input has a string reference")
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
     assert_eq!(prepared_images.len(), 7);
 
     for cycle in 1..=2 {
@@ -816,15 +847,17 @@ async fn remote_compact_v2_archives_images_independently_of_token_budget(
             compact_request.inputs_of_type("compaction_trigger").len(),
             1
         );
-        assert!(compact_request.message_input_image_urls("user").is_empty());
-        assert_eq!(
-            compact_request
-                .message_input_texts("user")
-                .iter()
-                .filter(|text| text.contains("codex-image:"))
-                .count(),
-            7 + usize::from(cycle > 1),
-        );
+        if image_field == "image_url" {
+            assert!(compact_request.message_input_image_urls("user").is_empty());
+            assert_eq!(
+                compact_request
+                    .message_input_texts("user")
+                    .iter()
+                    .filter(|text| text.contains("codex-image:"))
+                    .count(),
+                7 + usize::from(cycle > 1),
+            );
+        }
 
         let follow_up_mock = mount_sse_once(
             harness.server(),
@@ -846,19 +879,56 @@ async fn remote_compact_v2_archives_images_independently_of_token_budget(
             follow_up.inputs_of_type("compaction")[0]["encrypted_content"],
             "IMAGE_BUDGET_SUMMARY"
         );
-        assert!(follow_up.message_input_image_urls("user").is_empty());
-        assert_eq!(
-            follow_up
-                .message_input_texts("user")
+        if image_field == "image_url" {
+            assert!(follow_up.message_input_image_urls("user").is_empty());
+            assert_eq!(
+                follow_up
+                    .message_input_texts("user")
+                    .into_iter()
+                    .filter(|text| text.contains("codex-image:"))
+                    .collect::<Vec<_>>(),
+                compact_request
+                    .message_input_texts("user")
+                    .into_iter()
+                    .filter(|text| text.contains("codex-image:"))
+                    .collect::<Vec<_>>(),
+            );
+        } else {
+            let dropped = if image_budget_enabled.unwrap_or(true) {
+                cycle
+            } else {
+                0
+            };
+            let mut expected_images = prepared_images[dropped..].to_vec();
+            if cycle == 2 {
+                let UserInput::Image { image, .. } = &image_inputs[7] else {
+                    unreachable!()
+                };
+                expected_images.push(match image {
+                    ImageReference::Inline { image_url } => image_url.clone(),
+                    ImageReference::File { file_id } => file_id.clone(),
+                });
+            }
+            let retained_images = follow_up
+                .inputs_of_type("message")
                 .into_iter()
-                .filter(|text| text.contains("codex-image:"))
-                .collect::<Vec<_>>(),
-            compact_request
-                .message_input_texts("user")
-                .into_iter()
-                .filter(|text| text.contains("codex-image:"))
-                .collect::<Vec<_>>(),
-        );
+                .filter(|item| item["role"] == "user")
+                .flat_map(|item| {
+                    item["content"]
+                        .as_array()
+                        .expect("message content is an array")
+                        .clone()
+                })
+                .filter(|item| item["type"] == "input_image")
+                .map(|item| {
+                    item[image_field]
+                        .as_str()
+                        .expect("image input has a string reference")
+                        .to_owned()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(retained_images, expected_images);
+        }
         assert!(
             follow_up
                 .message_input_texts("user")
@@ -879,13 +949,10 @@ async fn remote_compact_v2_archives_images_independently_of_token_budget(
                 .start_or_steer_turn(TurnInputRequest::user_input(vec![image_inputs[7].clone()]))
                 .await?;
             wait_for_turn_complete(codex).await;
-            assert_eq!(
-                append_mock
-                    .single_request()
-                    .message_input_image_urls("user")
-                    .len(),
-                1
-            );
+            let append_request = append_mock.single_request();
+            if image_field == "image_url" {
+                assert_eq!(append_request.message_input_image_urls("user").len(), 1);
+            }
         }
     }
     Ok(())
@@ -922,7 +989,9 @@ async fn remote_compact_archives_old_images_only_at_the_compaction_boundary() ->
                 text_elements: Vec::new(),
             },
             UserInput::Image {
-                image_url: image_url.to_string(),
+                image: ImageReference::Inline {
+                    image_url: image_url.to_string(),
+                },
                 detail: None,
             },
         ]))

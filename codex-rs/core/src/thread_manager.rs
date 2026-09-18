@@ -21,6 +21,7 @@ use crate::session::resolve_multi_agent_version;
 use crate::session::session::Session;
 use crate::tasks::InterruptedTurnHistoryMarker;
 use crate::tasks::interrupted_turn_history_marker;
+use crate::thread_startup_metadata::ThreadStartupMetadata;
 use codex_agent_graph_store::AgentGraphStore;
 use codex_agent_graph_store::LocalAgentGraphStore;
 use codex_analytics::AnalyticsEventsClient;
@@ -458,11 +459,17 @@ pub fn thread_store_from_config(
                         warn!("failed to migrate legacy rollouts on startup: {err}");
                     }
                     if compression_enabled {
-                        codex_rollout::spawn_rollout_compression_worker(codex_home);
+                        codex_rollout::spawn_rollout_compression_worker(
+                            codex_home,
+                            codex_rollout::RolloutCompressionTrigger::Startup,
+                        );
                     }
                 });
             } else if compression_enabled {
-                codex_rollout::spawn_rollout_compression_worker(config.codex_home.to_path_buf());
+                codex_rollout::spawn_rollout_compression_worker(
+                    config.codex_home.to_path_buf(),
+                    codex_rollout::RolloutCompressionTrigger::Startup,
+                );
             }
             store
         }
@@ -2055,9 +2062,13 @@ impl ThreadManagerState {
                             resumed.conversation_id
                         )));
                     }
+                    drop(threads);
+                    let session_configured = thread
+                        .startup_metadata()
+                        .to_session_configured_event(initial_history.get_event_msgs());
                     return Ok(NewThread {
                         thread_id: resumed.conversation_id,
-                        session_configured: thread.session_configured(),
+                        session_configured,
                         thread,
                     });
                 }
@@ -2145,6 +2156,8 @@ impl ThreadManagerState {
         } else {
             codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile
         };
+        let attachment_source =
+            forked_from_thread_id.filter(|_| matches!(&initial_history, InitialHistory::Forked(_)));
         let (session, io) = Session::spawn(SessionSpawnArgs {
             startup,
             config,
@@ -2207,6 +2220,21 @@ impl ThreadManagerState {
             windows_sandbox_proxy_settings_mode,
         })
         .await?;
+        if let Some(source_thread_id) = attachment_source
+            && session.live_thread().is_some()
+            && self.thread_store.supports_thread_attachments()
+        {
+            // Fork initialization already handles persistence. Copy current membership before
+            // registration, but do not fail the conversation fork for attachment metadata errors.
+            let thread_id = session.thread_id();
+            if let Err(error) = self
+                .thread_store
+                .copy_thread_attachments(source_thread_id, thread_id)
+                .await
+            {
+                warn!(%thread_id, %source_thread_id, %error, "failed to copy fork attachments");
+            }
+        }
         // Enable Full Access form input only after session startup so a required MCP server cannot
         // block startup while waiting for form input.
         if session
@@ -2255,7 +2283,7 @@ impl ThreadManagerState {
                 let thread = Arc::new(CodexThread::new(
                     session,
                     io,
-                    session_configured.clone(),
+                    ThreadStartupMetadata::from(&session_configured),
                     session_configured.rollout_path.clone(),
                     session_source,
                 ));

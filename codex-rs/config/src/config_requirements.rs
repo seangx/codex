@@ -1,6 +1,7 @@
 use crate::ApplicationRequirementsToml;
 use codex_features::FeatureToml;
 use codex_model_provider_info::ModelProviderInfo;
+pub use codex_model_provider_info::ResidencyRequirement;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::ForcedLoginMethod;
 use codex_protocol::config_types::SandboxMode;
@@ -866,8 +867,15 @@ impl fmt::Display for WebSearchModeRequirement {
 
 #[derive(Deserialize, Debug, Clone, Default, PartialEq, Eq)]
 pub struct WindowsRequirementsToml {
-    pub allowed_sandbox_implementations: Option<Vec<WindowsSandboxModeToml>>,
+    pub allowed_sandbox_implementations: Option<Vec<WindowsSandboxImplementationToml>>,
     pub sandbox_private_desktop: Option<bool>,
+}
+
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum WindowsSandboxImplementationToml {
+    Elevated,
+    Unelevated,
 }
 
 impl WindowsRequirementsToml {
@@ -1463,12 +1471,6 @@ impl From<SandboxMode> for SandboxModeRequirement {
     }
 }
 
-#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum ResidencyRequirement {
-    Us,
-}
-
 impl ConfigRequirementsToml {
     pub fn apply_remote_sandbox_config(&mut self, hostname: Option<&str>) {
         let Some(remote_sandbox_config) = self.remote_sandbox_config.as_ref() else {
@@ -1931,18 +1933,32 @@ impl TryFrom<ConfigRequirementsWithSources> for ConfigRequirements {
                             ));
                         }
                         // Prefer elevated when both Windows sandbox implementations are allowed.
-                        let initial_value =
-                            if implementations.contains(&WindowsSandboxModeToml::Elevated) {
-                                WindowsSandboxModeToml::Elevated
-                            } else {
-                                WindowsSandboxModeToml::Unelevated
-                            };
+                        let initial_value = if implementations
+                            .contains(&WindowsSandboxImplementationToml::Elevated)
+                        {
+                            WindowsSandboxModeToml::Elevated
+                        } else {
+                            WindowsSandboxModeToml::Unelevated
+                        };
 
                         let requirement_source_for_error = requirement_source.clone();
                         let constrained = Constrained::new(
                             Some(initial_value),
                             move |candidate| match candidate {
-                                Some(candidate) if implementations.contains(candidate) => Ok(()),
+                                Some(WindowsSandboxModeToml::Mxc) => Ok(()),
+                                Some(WindowsSandboxModeToml::Elevated)
+                                    if implementations
+                                        .contains(&WindowsSandboxImplementationToml::Elevated) =>
+                                {
+                                    Ok(())
+                                }
+                                Some(WindowsSandboxModeToml::Unelevated)
+                                    if implementations.contains(
+                                        &WindowsSandboxImplementationToml::Unelevated,
+                                    ) =>
+                                {
+                                    Ok(())
+                                }
                                 _ => Err(ConstraintError::InvalidValue {
                                     field_name: "windows.sandbox",
                                     candidate: format!("{candidate:?}"),
@@ -3783,6 +3799,12 @@ allowed_approvals_reviewers = ["user"]
                 .windows_sandbox_mode
                 .can_set(&Some(WindowsSandboxModeToml::Unelevated))
                 .is_err()
+        );
+        assert!(
+            requirements
+                .windows_sandbox_mode
+                .can_set(&Some(WindowsSandboxModeToml::Mxc))
+                .is_ok()
         );
         assert!(requirements.windows_sandbox_mode.can_set(&None).is_err());
 

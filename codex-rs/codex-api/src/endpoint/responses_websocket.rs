@@ -4,7 +4,6 @@ use crate::common::ResponseStream;
 use crate::common::ResponsesWsRequest;
 use crate::common::SafetyBufferingTreatment;
 use crate::common::WS_REQUEST_HEADER_TRACEPARENT_CLIENT_METADATA_KEY;
-use crate::endpoint::responses::ResponsesEndpoint;
 use crate::error::ApiError;
 use crate::provider::Provider;
 use crate::rate_limits::parse_rate_limit_event;
@@ -230,7 +229,6 @@ struct ResponsesWebsocketTimingLogContext {
 pub struct ResponsesWebsocketConnection {
     connection_id: u64,
     stream: Arc<Mutex<Option<WsStream>>>,
-    endpoint: ResponsesEndpoint,
     // TODO (pakrym): is this the right place for timeout?
     idle_timeout: Duration,
     server_reasoning_included: bool,
@@ -242,7 +240,6 @@ impl std::fmt::Debug for ResponsesWebsocketConnection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ResponsesWebsocketConnection")
             .field("stream", &"<ws-stream>")
-            .field("endpoint", &self.endpoint)
             .field("idle_timeout", &self.idle_timeout)
             .field("server_reasoning_included", &self.server_reasoning_included)
             .field("server_model", &self.server_model)
@@ -258,12 +255,10 @@ impl ResponsesWebsocketConnection {
         server_reasoning_included: bool,
         server_model: Option<String>,
         telemetry: Option<Arc<dyn WebsocketTelemetry>>,
-        endpoint: ResponsesEndpoint,
     ) -> Self {
         Self {
             connection_id: stream.connection_id,
             stream: Arc::new(Mutex::new(Some(stream))),
-            endpoint,
             idle_timeout,
             server_reasoning_included,
             server_model,
@@ -288,7 +283,7 @@ impl ResponsesWebsocketConnection {
         name = "responses_websocket.stream_request",
         level = "info",
         skip_all,
-        fields(transport = "responses_websocket", api.path = self.endpoint.path())
+        fields(transport = "responses_websocket", api.path = "/responses")
     )]
     pub async fn stream_request(
         &self,
@@ -404,7 +399,6 @@ impl ResponsesWebsocketConnection {
 pub struct ResponsesWebsocketClient {
     provider: Provider,
     auth: SharedAuthProvider,
-    endpoint: ResponsesEndpoint,
 }
 
 /// Close frame information captured by a handshake probe.
@@ -434,24 +428,14 @@ pub struct ResponsesWebsocketProbe {
 impl ResponsesWebsocketClient {
     /// Creates a Responses WebSocket client for an already-resolved provider and auth source.
     pub fn new(provider: Provider, auth: SharedAuthProvider) -> Self {
-        Self {
-            provider,
-            auth,
-            endpoint: ResponsesEndpoint::Responses,
-        }
-    }
-
-    /// Selects a Responses-compatible backend route for subsequent connections.
-    pub fn with_endpoint(mut self, endpoint: ResponsesEndpoint) -> Self {
-        self.endpoint = endpoint;
-        self
+        Self { provider, auth }
     }
 
     #[instrument(
         name = "responses_websocket.connect",
         level = "info",
         skip_all,
-        fields(transport = "responses_websocket", api.path = self.endpoint.path())
+        fields(transport = "responses_websocket", api.path = "/responses")
     )]
     pub async fn connect(
         &self,
@@ -463,7 +447,7 @@ impl ResponsesWebsocketClient {
     ) -> Result<ResponsesWebsocketConnection, ApiError> {
         let ws_url = self
             .provider
-            .websocket_url_for_path(self.endpoint.path())
+            .websocket_url_for_path("/responses")
             .map_err(|err| ApiError::Stream(format!("failed to build websocket URL: {err}")))?;
 
         let mut headers =
@@ -484,7 +468,6 @@ impl ResponsesWebsocketClient {
             server_reasoning_included,
             server_model,
             telemetry,
-            self.endpoint,
         ))
     }
 
@@ -504,7 +487,7 @@ impl ResponsesWebsocketClient {
     ) -> Result<ResponsesWebsocketProbe, ApiError> {
         let ws_url = self
             .provider
-            .websocket_url_for_path(self.endpoint.path())
+            .websocket_url_for_path("/responses")
             .map_err(|err| ApiError::Stream(format!("failed to build websocket URL: {err}")))?;
 
         let mut headers =

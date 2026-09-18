@@ -18,6 +18,7 @@ pub(crate) use request_budget::observe as observe_guardian_request;
 mod review;
 mod review_session;
 mod reviewer_config;
+pub(crate) use reviewer_config::resolve_review_model;
 mod runtime;
 #[cfg(test)]
 pub(crate) mod test_host;
@@ -44,17 +45,12 @@ pub(crate) use approval_request::GuardianMcpAnnotations;
 pub(crate) use approval_request::GuardianNetworkAccessTrigger;
 #[cfg(test)]
 pub(crate) use approval_request::guardian_approval_request_to_json;
-pub(crate) use codex_guardian_reviewer::guardian_timeout_message;
 pub(crate) use decision::decide_approval;
 pub(crate) use decision::spawn_approval_decision;
-pub(crate) use prompt::BUNDLED_GUARDIAN_POLICY;
-pub(crate) use prompt::BUNDLED_GUARDIAN_POLICY_TEMPLATE;
 pub(crate) use prompt::guardian_truncate_text;
 pub(crate) use review::GuardianReviewOptions;
 pub(crate) use review::is_basic_session_source;
 pub(crate) use review::new_guardian_review_id;
-#[cfg(test)]
-pub(crate) use review::record_guardian_denial_for_test;
 pub(crate) use review::routes_approval_policy_to_guardian;
 pub use review_session::GuardianReviewSession;
 pub(crate) use review_session::GuardianReviewSessionManager;

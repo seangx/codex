@@ -26,54 +26,12 @@ use std::collections::HashMap;
 use tempfile::TempDir;
 
 #[test]
-fn mxc_selection_preserves_unsandboxed_requests_and_other_platforms() {
-    let manager = SandboxManager::new();
-    let platform_sandbox = if cfg!(windows) {
-        SandboxType::WindowsMxc
-    } else {
-        get_platform_sandbox(/*windows_sandbox_enabled*/ false).unwrap_or(SandboxType::None)
-    };
-    for (permissions, preference, expected) in [
-        (
-            PermissionProfile::read_only(),
-            SandboxablePreference::Auto,
-            platform_sandbox,
-        ),
-        (
-            PermissionProfile::Disabled,
-            SandboxablePreference::Require,
-            platform_sandbox,
-        ),
-        (
-            PermissionProfile::read_only(),
-            SandboxablePreference::Forbid,
-            SandboxType::None,
-        ),
-        (
-            PermissionProfile::Disabled,
-            SandboxablePreference::Auto,
-            SandboxType::None,
-        ),
-    ] {
-        assert_eq!(
-            manager.select_initial(
-                &permissions,
-                preference,
-                WindowsSandboxLevel::Mxc,
-                /*has_managed_network_requirements*/ false,
-            ),
-            expected,
-        );
-    }
-}
-
-#[test]
 fn danger_full_access_defaults_to_no_sandbox_without_network_requirements() {
     let manager = SandboxManager::new();
     let sandbox = manager.select_initial(
         &PermissionProfile::Disabled,
         SandboxablePreference::Auto,
-        WindowsSandboxLevel::Disabled,
+        SandboxType::None,
         /*has_managed_network_requirements*/ false,
     );
     assert_eq!(sandbox, SandboxType::None);
@@ -87,7 +45,7 @@ fn danger_full_access_uses_platform_sandbox_with_network_requirements() {
     let sandbox = manager.select_initial(
         &PermissionProfile::Disabled,
         SandboxablePreference::Auto,
-        WindowsSandboxLevel::Disabled,
+        SandboxType::None,
         /*has_managed_network_requirements*/ true,
     );
     assert_eq!(sandbox, expected);
@@ -111,9 +69,26 @@ fn restricted_file_system_uses_platform_sandbox_without_managed_network() {
     let sandbox = manager.select_initial(
         &permissions,
         SandboxablePreference::Auto,
-        WindowsSandboxLevel::Disabled,
+        SandboxType::None,
         /*has_managed_network_requirements*/ false,
     );
+    assert_eq!(sandbox, expected);
+}
+
+#[test]
+fn explicit_mxc_only_overrides_the_windows_sandbox() {
+    let manager = SandboxManager::new();
+    let sandbox = manager.select_initial(
+        &PermissionProfile::read_only(),
+        SandboxablePreference::Auto,
+        SandboxType::WindowsMxc,
+        /*has_managed_network_requirements*/ false,
+    );
+    let expected = if cfg!(windows) {
+        SandboxType::WindowsMxc
+    } else {
+        get_platform_sandbox(/*windows_sandbox_enabled*/ false).unwrap_or(SandboxType::None)
+    };
     assert_eq!(sandbox, expected);
 }
 
@@ -562,10 +537,11 @@ async fn linux_unix_socket_grant_uses_effective_managed_policy() -> anyhow::Resu
     let state = build_config_state(
         NetworkProxyConfig {
             enabled: true,
-            dangerously_allow_all_unix_sockets: true,
+            dangerously_allow_all_unix_sockets: Some(true),
             ..Default::default()
         },
         NetworkProxyConstraints::default(),
+        codex_utils_path_uri::Platform::native(),
     )?;
     let network = NetworkProxy::builder()
         .state(Arc::new(NetworkProxyState::with_reloader(

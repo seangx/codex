@@ -1,13 +1,13 @@
 use crate::config::edit::ConfigEdit;
 use crate::config::edit::ConfigEditsBuilder;
 use crate::context::world_state::validate_managed_developer_instructions;
-use crate::guardian::BUNDLED_GUARDIAN_POLICY;
 use crate::path_utils::normalize_for_native_workdir;
 use crate::unified_exec::DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS;
 use crate::unified_exec::MIN_EMPTY_YIELD_TIME_MS;
 use crate::windows_sandbox::WindowsSandboxLevelExt;
 use crate::windows_sandbox::resolve_windows_sandbox_mode;
 use crate::windows_sandbox::resolve_windows_sandbox_private_desktop;
+use crate::windows_sandbox::windows_sandbox_level_for_legacy_checks;
 use codex_agent_roles::load_agent_roles;
 use codex_config::CloudConfigBundleLoader;
 use codex_config::ConfigLayerSource;
@@ -96,6 +96,7 @@ use codex_model_provider_info::OLLAMA_CHAT_PROVIDER_REMOVED_ERROR;
 use codex_model_provider_info::built_in_model_providers;
 use codex_model_provider_info::merge_configured_model_providers;
 use codex_models_manager::ModelsManagerConfig;
+use codex_prompts::ResolvedModelMessages;
 use codex_protocol::config_types::AltScreenMode;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::ForcedLoginMethod;
@@ -114,8 +115,8 @@ use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::BaseInstructionsProvenance;
 use codex_protocol::models::PermissionProfile;
 pub use codex_protocol::models::PermissionProfileSnapshot;
+use codex_protocol::models::ProfileWorkspaceRoot;
 use codex_protocol::models::SandboxEnforcement;
-use codex_protocol::openai_models::ModelMessages;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::permissions::DenyReadValidator;
@@ -128,6 +129,7 @@ use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_rmcp_client::McpOAuthRefreshMode;
+use codex_sandboxing::SandboxType;
 pub use codex_thread_store::ExtraConfig;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_absolute_path::AbsolutePathBufGuard;
@@ -345,6 +347,8 @@ pub struct Permissions {
     /// Effective Windows sandbox mode derived from `[windows].sandbox` or
     /// legacy feature keys.
     pub windows_sandbox_mode: Option<WindowsSandboxModeToml>,
+    /// Selected Windows sandbox implementation, separate from the legacy setup level.
+    pub windows_sandbox_type: SandboxType,
     /// Whether the final Windows sandboxed child should run on a private desktop.
     pub windows_sandbox_private_desktop: bool,
 }
@@ -367,6 +371,7 @@ impl Permissions {
             allow_login_shell: true,
             shell_environment_policy: ShellEnvironmentPolicy::default(),
             windows_sandbox_mode: None,
+            windows_sandbox_type: SandboxType::None,
             windows_sandbox_private_desktop: true,
         })
     }
@@ -438,7 +443,7 @@ impl Permissions {
         &self.workspace_roots
     }
 
-    pub fn profile_workspace_roots(&self) -> &[AbsolutePathBuf] {
+    pub fn profile_workspace_roots(&self) -> &[ProfileWorkspaceRoot] {
         self.permission_profile_state.profile_workspace_roots()
     }
 
@@ -636,7 +641,7 @@ pub struct Config {
     /// Info needed to make an API request to the model.
     pub model_provider: ModelProviderInfo,
 
-    /// Optionally specify the personality of the model
+    /// Deprecated: `friendly` and `pragmatic` no longer select a style.
     pub personality: Option<Personality>,
 
     /// Effective permission configuration for shell tool execution.
@@ -1121,6 +1126,10 @@ const DEFAULT_CODE_MODE_EXEC_YIELD_TIME_MS: u64 = 30_000;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CodeModeConfig {
     pub default_exec_yield_time_ms: u64,
+    /// Show handler duration, code-mode host duration, and harness overhead
+    /// in each code-mode cell response.
+    /// Experimental: this option and the response format may change or be removed.
+    pub experimental_show_cell_overhead: bool,
     pub excluded_tool_namespaces: Vec<String>,
     pub direct_only_tool_namespaces: Vec<String>,
     /// Keep code mode fail-closed when the standalone host is unavailable.
@@ -1131,6 +1140,7 @@ impl Default for CodeModeConfig {
     fn default() -> Self {
         Self {
             default_exec_yield_time_ms: DEFAULT_CODE_MODE_EXEC_YIELD_TIME_MS,
+            experimental_show_cell_overhead: false,
             excluded_tool_namespaces: Vec::new(),
             direct_only_tool_namespaces: Vec::new(),
             disable_in_process_fallback: false,
@@ -1138,10 +1148,6 @@ impl Default for CodeModeConfig {
     }
 }
 
-pub(crate) const DEFAULT_TOKEN_BUDGET_REMINDER_MESSAGE_TEMPLATE: &str = concat!(
-    "Your context window is nearly exhausted (only {n_remaining} tokens remaining) and will be automatically reset for you soon. ",
-    "Once reset, message items in current context window will be cleared in the new window, but notes and history items will be persistent across windows."
-);
 const TOKEN_BUDGET_REMINDER_MESSAGE_TEMPLATE_MAX_BYTES: usize = 2000;
 const TOKEN_BUDGET_GUIDANCE_MESSAGE_MAX_BYTES: usize = 2000;
 const AUTO_COMPACT_FALLBACK_PROMPT_MAX_BYTES: usize = 2000;
@@ -1243,7 +1249,9 @@ impl Default for TokenBudgetConfig {
         Self {
             use_history_notes_extension: false,
             reminder_threshold_tokens: None,
-            reminder_message_template: DEFAULT_TOKEN_BUDGET_REMINDER_MESSAGE_TEMPLATE.to_string(),
+            reminder_message_template: ResolvedModelMessages::bundled()
+                .token_budget_reminder_template()
+                .to_owned(),
             guidance_message: None,
             auto_compact_fallback_prompt: None,
             auto_compact_fallback_buffer_tokens: None,
@@ -1521,30 +1529,14 @@ impl Config {
         &self.sqlite
     }
 
-    /// Whether Guardian may use the unmetered Codex inference endpoints.
-    pub fn free_guardian_enabled(&self) -> bool {
-        self.config_layer_stack
-            .effective_config()
-            .get("features")
-            .and_then(|features| features.get("guardianv2"))
-            .and_then(|guardian| guardian.get("free_guardian"))
-            .and_then(toml::Value::as_bool)
-            .unwrap_or(false)
-    }
-
     /// Resolves the configured, reviewer-catalog, or bundled Guardian policy.
     pub fn resolve_guardian_policy<'a>(
         &'a self,
-        model_messages: Option<&'a ModelMessages>,
+        model_messages: ResolvedModelMessages<'a>,
     ) -> &'a str {
         self.guardian_policy_config
             .as_deref()
-            .or_else(|| {
-                model_messages
-                    .and_then(|messages| messages.auto_review.as_ref())
-                    .and_then(|messages| messages.policy.as_deref())
-            })
-            .unwrap_or(BUNDLED_GUARDIAN_POLICY)
+            .unwrap_or(model_messages.auto_review().policy)
     }
 
     pub(crate) fn multi_agent_version_override(&self) -> Option<MultiAgentVersion> {
@@ -1610,10 +1602,22 @@ impl Config {
         Ok(())
     }
 
-    pub fn effective_workspace_roots(&self) -> Vec<AbsolutePathBuf> {
-        let mut workspace_roots = self.workspace_roots.clone();
-        workspace_roots.extend(self.permissions.profile_workspace_roots().iter().cloned());
-        dedupe_absolute_paths(&mut workspace_roots);
+    /// Combine runtime and profile roots without interpreting them on the current host.
+    pub fn effective_workspace_roots(&self) -> Vec<PathUri> {
+        let mut workspace_roots = self
+            .workspace_roots
+            .iter()
+            .map(PathUri::from_abs_path)
+            .collect::<Vec<_>>();
+        workspace_roots.extend(
+            self.permissions
+                .profile_workspace_roots()
+                .iter()
+                .map(|root| root.as_uri().clone()),
+        );
+        // Preserve spelling changes even when Windows path comparison folds case.
+        let mut seen = HashSet::new();
+        workspace_roots.retain(|root| seen.insert(root.to_string()));
         workspace_roots
     }
 
@@ -1628,7 +1632,6 @@ impl Config {
                     Some(BaseInstructionsProvenance::Model { .. })
                 )
             }),
-            personality_enabled: self.features.enabled(Feature::Personality),
             personality: self.personality,
             model_catalog: self.model_catalog.clone(),
         }
@@ -1760,6 +1763,7 @@ impl Config {
         McpConfig {
             chatgpt_base_url: self.chatgpt_base_url.clone(),
             apps_mcp_product_sku: self.apps_mcp_product_sku.clone(),
+            requires_read_only_mcp_tools: false,
             codex_home: self.codex_home.to_path_buf(),
             mcp_enterprise_managed_auth: self.mcp_enterprise_managed_auth.clone(),
             xaa_enabled: self.features.enabled(Feature::UseXaa)
@@ -1833,38 +1837,43 @@ impl Config {
         }
     }
 
-    pub async fn rebuild_preserving_session_layers(
-        &self,
-        refreshed_config: &Config,
+    pub fn workspace_routing_context(&self) -> codex_model_provider::WorkspaceRoutingContext {
+        codex_model_provider::WorkspaceRoutingContext::new(self.chatgpt_base_url.clone())
+            .with_session(codex_login::WorkspaceRoutingSession {
+                cwd: self.cwd.to_path_buf(),
+                config_layer_stack: self.config_layer_stack.clone(),
+            })
+    }
+
+    pub async fn rebuild_with_session_layers(
+        session_layers: &ConfigLayerStack,
+        cwd: PathBuf,
+        refreshed_layers: &ConfigLayerStack,
+        codex_home: AbsolutePathBuf,
+        default_zsh_path: Option<AbsolutePathBuf>,
     ) -> std::io::Result<Self> {
         let config_layer_stack =
-            self.layer_stack_preserving_session(&refreshed_config.config_layer_stack)?;
+            Self::layer_stack_preserving_session(session_layers, refreshed_layers)?;
         let cfg: ConfigToml = config_layer_stack
             .effective_config()
             .try_into()
             .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
-        let default_zsh_path = refreshed_config
-            .zsh_path
-            .clone()
-            .map(AbsolutePathBuf::try_from)
-            .transpose()?;
-
         Self::load_config_with_layer_stack(
             LOCAL_FS.as_ref(),
             cfg,
             ConfigOverrides {
-                cwd: Some(self.cwd.to_path_buf()),
+                cwd: Some(cwd),
                 default_zsh_path,
                 ..Default::default()
             },
-            refreshed_config.codex_home.clone(),
+            codex_home,
             config_layer_stack,
         )
         .await
     }
 
     fn layer_stack_preserving_session(
-        &self,
+        session_layers: &ConfigLayerStack,
         refreshed_layers: &ConfigLayerStack,
     ) -> std::io::Result<ConfigLayerStack> {
         let mut layers = refreshed_layers
@@ -1873,7 +1882,7 @@ impl Config {
             .cloned()
             .collect::<Vec<_>>();
         layers.extend(
-            self.config_layer_stack
+            session_layers
                 .all_layers_low_to_high()
                 .filter(|layer| is_session_layer(&layer.name))
                 .cloned(),
@@ -2581,6 +2590,7 @@ pub struct ConfigOverrides {
     pub default_zsh_path: Option<AbsolutePathBuf>,
     pub base_instructions: Option<String>,
     pub developer_instructions: Option<String>,
+    /// Deprecated: `friendly` and `pragmatic` no longer select a style.
     pub personality: Option<Personality>,
     pub compact_prompt: Option<String>,
     pub show_raw_agent_reasoning: Option<bool>,
@@ -2673,6 +2683,9 @@ fn resolve_code_mode_config(config_toml: &ConfigToml) -> CodeModeConfig {
         default_exec_yield_time_ms: base
             .and_then(|config| config.default_exec_yield_time_ms)
             .unwrap_or(DEFAULT_CODE_MODE_EXEC_YIELD_TIME_MS),
+        experimental_show_cell_overhead: base
+            .and_then(|config| config.experimental_show_cell_overhead)
+            .unwrap_or_default(),
         excluded_tool_namespaces: base
             .and_then(|config| config.excluded_tool_namespaces.as_ref())
             .cloned()
@@ -2778,7 +2791,11 @@ pub(crate) fn resolve_token_budget_config(
         token_budget_config.and_then(|config| config.reminder_threshold_tokens);
     let reminder_message_template = token_budget_config
         .and_then(|config| config.reminder_message_template.clone())
-        .unwrap_or_else(|| DEFAULT_TOKEN_BUDGET_REMINDER_MESSAGE_TEMPLATE.to_string());
+        .unwrap_or_else(|| {
+            ResolvedModelMessages::bundled()
+                .token_budget_reminder_template()
+                .to_owned()
+        });
     let guidance_message = token_budget_config
         .and_then(|config| config.guidance_message.clone())
         .filter(|message| !message.trim().is_empty());
@@ -3329,6 +3346,7 @@ impl Config {
         let enable_network_proxy = features.enabled(Feature::NetworkProxy);
         let PreparedWindowsSandboxConfig {
             mode: windows_sandbox_mode,
+            sandbox_type: windows_sandbox_type,
             level: windows_sandbox_level,
         } = prepare_windows_sandbox_config(
             resolve_windows_sandbox_mode(&cfg),
@@ -3336,6 +3354,10 @@ impl Config {
             &mut constrained_windows_sandbox_mode,
             &mut startup_warnings,
         )?;
+        let legacy_windows_sandbox_level = windows_sandbox_level_for_legacy_checks(
+            windows_sandbox_type,
+            windows_sandbox_level,
+        );
         let windows_sandbox_private_desktop = resolve_windows_sandbox_private_desktop(&cfg);
         let resolved_cwd = AbsolutePathBuf::try_from(normalize_for_native_workdir({
             use std::env;
@@ -3486,7 +3508,7 @@ impl Config {
                         .unwrap_or_else(|| {
                             default_builtin_permission_profile_name(
                                 &active_project,
-                                windows_sandbox_level,
+                                legacy_windows_sandbox_level,
                             )
                         });
                     network_proxy_config_for_profile_selection(
@@ -3507,7 +3529,10 @@ impl Config {
             let default_permissions = effective_permission_selection
                 .selected_profile_id
                 .unwrap_or_else(|| {
-                    default_builtin_permission_profile_name(&active_project, windows_sandbox_level)
+                    default_builtin_permission_profile_name(
+                        &active_project,
+                        legacy_windows_sandbox_level,
+                    )
                 });
             let builtin_workspace_write_settings = if using_implicit_builtin_profile {
                 cfg.sandbox_workspace_write.as_ref().map(|settings| WorkspaceWriteSettings {
@@ -3534,10 +3559,6 @@ impl Config {
                 &mut startup_warnings,
             )?;
             let file_system_sandbox_policy = permission_profile.file_system_sandbox_policy();
-            let configured_workspace_roots = configured_workspace_roots
-                .iter()
-                .map(PathUri::to_abs_path)
-                .collect::<std::io::Result<Vec<_>>>()?;
             let active_permission_profile = if using_implicit_builtin_profile
                 && default_permissions == BUILT_IN_WORKSPACE_PROFILE
                 && cfg.sandbox_workspace_write.is_some()
@@ -3576,7 +3597,7 @@ impl Config {
             let mut permission_profile = cfg
                 .derive_permission_profile(
                     sandbox_mode,
-                    windows_sandbox_level,
+                    legacy_windows_sandbox_level,
                     Some(&active_project),
                     Some(&constrained_permission_profile),
                 )
@@ -4164,6 +4185,7 @@ impl Config {
                 allow_login_shell,
                 shell_environment_policy,
                 windows_sandbox_mode,
+                windows_sandbox_type,
                 windows_sandbox_private_desktop,
             },
             explicit_permission_profile_mode,

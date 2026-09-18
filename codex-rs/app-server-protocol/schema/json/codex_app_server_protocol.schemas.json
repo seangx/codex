@@ -7094,6 +7094,16 @@
             ],
             "description": "Per-account approval settings keyed by link ID."
           },
+          "omit_tools_from": {
+            "description": "Additional model-facing surfaces omitted for this connector's tools.",
+            "items": {
+              "$ref": "#/definitions/v2/ToolExposureSurface"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "open_world_enabled": {
             "type": [
               "boolean",
@@ -9463,7 +9473,7 @@
             ]
           },
           "reloadUserConfig": {
-            "description": "When true, hot-reload updated runtime settings into loaded threads after writing. Session-static model, reasoning-effort, Plan-mode reasoning-effort, service-tier, and personality defaults are not reloaded.",
+            "description": "When true, hot-reload updated runtime settings into loaded threads after writing. Session-static model, reasoning-effort, Plan-mode reasoning-effort, and service-tier defaults are not reloaded. The deprecated personality setting is also not reloaded.",
             "type": "boolean"
           }
         },
@@ -9876,7 +9886,7 @@
           },
           "allowedWindowsSandboxImplementations": {
             "items": {
-              "$ref": "#/definitions/v2/WindowsSandboxSetupMode"
+              "$ref": "#/definitions/v2/WindowsSandboxImplementation"
             },
             "type": [
               "array",
@@ -10483,6 +10493,18 @@
                   "image_url"
                 ],
                 "title": "ImageUrlContentItem",
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "file_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "file_id"
+                ],
+                "title": "FileIdContentItem",
                 "type": "object"
               }
             ],
@@ -12354,6 +12376,18 @@
                   "image_url"
                 ],
                 "title": "ImageUrlFunctionCallOutputContentItem",
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "file_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "file_id"
+                ],
+                "title": "FileIdFunctionCallOutputContentItem",
                 "type": "object"
               }
             ],
@@ -14386,6 +14420,29 @@
         "title": "MarketplaceUpgradeResponse",
         "type": "object"
       },
+      "McpAppDisplayMode": {
+        "enum": [
+          "inline",
+          "fullscreen"
+        ],
+        "type": "string"
+      },
+      "McpAppUi": {
+        "description": "UI resource and display preference for model invocations, captured from the tool descriptor.",
+        "properties": {
+          "preferredModelDisplayMode": {
+            "$ref": "#/definitions/v2/McpAppDisplayMode"
+          },
+          "resourceUri": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "preferredModelDisplayMode",
+          "resourceUri"
+        ],
+        "type": "object"
+      },
       "McpAuthStatus": {
         "enum": [
           "unknown",
@@ -15209,6 +15266,7 @@
           },
           "supportsPersonality": {
             "default": false,
+            "description": "@deprecated Always false; models no longer support personality selection.",
             "type": "boolean"
           },
           "upgrade": {
@@ -15922,6 +15980,7 @@
         "type": "object"
       },
       "Personality": {
+        "description": "Deprecated: `friendly` and `pragmatic` no longer select a style.",
         "enum": [
           "none",
           "friendly",
@@ -21802,11 +21861,22 @@
                 "type": "string"
               },
               "mcpAppResourceUri": {
-                "description": "Deprecated: use `appContext.resourceUri` instead.",
+                "description": "Legacy compatibility field; prefer `mcpAppUi.resourceUri` when available.",
                 "type": [
                   "string",
                   "null"
                 ]
+              },
+              "mcpAppUi": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/McpAppUi"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Presentation captured from the invoked descriptor; absent in older history."
               },
               "pluginId": {
                 "type": [
@@ -23331,7 +23401,8 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "description": "@deprecated `friendly` and `pragmatic` no longer select a style. Changing this does not rewrite the thread's existing instructions."
           },
           "sandbox": {
             "anyOf": [
@@ -23867,7 +23938,8 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "description": "@deprecated Reports the saved setting; `friendly` and `pragmatic` no longer select a style."
           },
           "sandboxPolicy": {
             "$ref": "#/definitions/v2/SandboxPolicy"
@@ -24050,7 +24122,8 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "description": "@deprecated `friendly` and `pragmatic` no longer select a style."
           },
           "sandbox": {
             "anyOf": [
@@ -24810,6 +24883,32 @@
         ],
         "type": "object"
       },
+      "ToolExposureSurface": {
+        "description": "A model-facing surface on which a tool can be exposed.",
+        "oneOf": [
+          {
+            "description": "Nested tools available to Code Mode scripts.",
+            "enum": [
+              "code_mode"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Tools discovered later through tool search.",
+            "enum": [
+              "deferred"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Tools present in the model's initial tool list.",
+            "enum": [
+              "direct"
+            ],
+            "type": "string"
+          }
+        ]
+      },
       "ToolsV2": {
         "properties": {
           "web_search": {
@@ -25200,7 +25299,7 @@
                 "type": "null"
               }
             ],
-            "description": "Override the personality for this turn and subsequent turns."
+            "description": "@deprecated `friendly` and `pragmatic` no longer select a style. Changing this does not rewrite the thread's existing instructions."
           },
           "sandboxPolicy": {
             "anyOf": [
@@ -25427,6 +25526,32 @@
             "type": "object"
           },
           {
+            "anyOf": [
+              {
+                "properties": {
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "url"
+                ],
+                "title": "UrlUserInput",
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "fileId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "fileId"
+                ],
+                "title": "FileIdUserInput",
+                "type": "object"
+              }
+            ],
             "properties": {
               "detail": {
                 "anyOf": [
@@ -25445,14 +25570,10 @@
                 ],
                 "title": "ImageUserInputType",
                 "type": "string"
-              },
-              "url": {
-                "type": "string"
               }
             },
             "required": [
-              "type",
-              "url"
+              "type"
             ],
             "title": "ImageUserInput",
             "type": "object"
@@ -25790,6 +25911,14 @@
           }
         },
         "type": "object"
+      },
+      "WindowsSandboxImplementation": {
+        "enum": [
+          "elevated",
+          "unelevated",
+          "mxc"
+        ],
+        "type": "string"
       },
       "WindowsSandboxReadiness": {
         "enum": [

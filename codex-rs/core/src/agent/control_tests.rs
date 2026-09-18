@@ -14,6 +14,7 @@ use crate::context::ManagedDeveloperInstructions;
 use crate::context::MultiAgentRoleInstructions;
 use crate::context::SubagentNotification;
 use crate::init_state_db;
+use crate::session::SessionSettingsUpdate;
 use crate::thread_manager::StartThreadOptions;
 use crate::tools::handlers::multi_agents_common::thread_spawn_source;
 use assert_matches::assert_matches;
@@ -66,6 +67,7 @@ use codex_protocol::protocol::TokenUsageRecord;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
+use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_thread_store::ArchiveThreadParams;
 use codex_thread_store::InMemoryThreadStore;
@@ -897,17 +899,21 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
                 .environments
                 .primary()
                 .expect("parent environment");
-            let thread_config = environment.config().clone();
-            let mut owner_config = thread_config.clone();
+            let mut owner_config = environment.config().clone();
             owner_config.allow_login_shell = false;
             let mut selection = environment.selection();
             selection.config = EnvironmentConfigState::Ready(owner_config);
             parent_thread
                 .session
-                .services
-                .turn_environments
-                .update_selections(std::slice::from_ref(&selection), &thread_config);
-            parent_turn = parent_thread.session.new_default_turn().await;
+                .update_settings(SessionSettingsUpdate {
+                    environments: Some(TurnEnvironmentSelections::new(
+                        parent_turn.config.cwd.clone(),
+                        vec![selection],
+                    )),
+                    ..Default::default()
+                })
+                .await
+                .expect("save parent environments");
             parent_thread.session.mark_interrupted();
             // The fixture has no task runner to finish the turn or consume child results.
             *parent_thread.session.active_turn.lock().await = None;
@@ -921,6 +927,7 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
                 .ensure_multi_agent_v2_child_loaded(spawned_agent.thread_id)
                 .await
                 .expect("known child should reload through its parent");
+            parent_turn = parent_thread.session.new_default_turn().await;
             assert!(harness.manager.get_thread(parent_thread_id).await.is_err());
         }
     }
@@ -2000,8 +2007,8 @@ async fn spawn_agent_can_fork_parent_thread_history_with_sanitized_items() {
         expected_developer_message,
         expected_final_answer,
         expected_standalone_output,
-        ContextualUserFragment::into(MultiAgentRoleInstructions::unmarked(
-            "Child subagent guidance.",
+        ContextualUserFragment::into(MultiAgentRoleInstructions::Configured(
+            "Child subagent guidance.".to_string(),
         )),
     ];
     assert_eq!(
@@ -2141,6 +2148,14 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(
     let parent_thread = new_thread.thread;
     let turn_context = parent_thread.session.new_default_turn().await;
     let parent_spawn_call_id = "spawn-call-compacted-usage-hints".to_string();
+    let catalog_role = |base: &str| MultiAgentRoleInstructions::Composed {
+        base: base.to_string(),
+        marked: true,
+        omit_update_plan_instructions: false,
+        max_concurrency: 2,
+        wait_agent_enabled: false,
+        expose_model_overrides: false,
+    };
     let parent_task = InterAgentCommunication::new(
         AgentPath::root(),
         AgentPath::root().join("worker").expect("valid worker path"),
@@ -2159,9 +2174,7 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(
             phase: None,
             internal_chat_message_metadata_passthrough: None,
         },
-        ContextualUserFragment::into(MultiAgentRoleInstructions::catalog(
-            "Catalog parent root guidance.",
-        )),
+        ContextualUserFragment::into(catalog_role("Catalog parent root guidance.")),
         parent_task.to_model_input_item(),
         ResponseItem::Message {
             id: None,
@@ -2196,15 +2209,36 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(
         "type": "verified_answer", "turn_id": "parent-answer-turn", "call_id": "parent-answer-call",
         "questions": [{"question": "Parent-local action?", "answer": "Parent only."}]
     })).expect("verified answer fixture");
+    let delivery = codex_history::ResponseItemEnvelope {
+        item: serde_json::from_value(serde_json::json!({
+            "type": "function_call_output", "id": "parent-delivery",
+            "name": "send_message_to_thread", "output": "Parent delivery"
+        }))
+        .unwrap(),
+        metadata: Some(codex_history::CodexHarnessMetadata {
+            user_input_order: Some(7),
+            sender_user_messages: Some(Box::new(codex_history::SenderUserMessages {
+                receiver_turn_id: "parent-turn".to_owned(),
+                receiver_message_id: "parent-delivery".to_owned(),
+                text: "Parent-only sender context".to_owned(),
+            })),
+            ..Default::default()
+        }),
+    };
     let mut retained_context = codex_history::RetainedContext::default();
     retained_context.record(&answer_event);
+    retained_context.record_sender_user_messages(delivery.metadata.as_ref().unwrap());
     parent_thread
         .session
         .persist_rollout_items(&[
             RolloutItem::Compacted(CompactedItem {
                 message: String::new(),
                 replacement_history: Some(
-                    replacement_history.into_iter().map(Into::into).collect(),
+                    replacement_history
+                        .into_iter()
+                        .map(Into::into)
+                        .chain([delivery.clone()])
+                        .collect(),
                 ),
                 retained_context: Some(retained_context),
                 guardian_history: Some(codex_history::GuardianHistoryCheckpoint(vec![
@@ -2219,6 +2253,7 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(
                 latest_token_usage_record: None,
             }),
             RolloutItem::RetainedContext(answer_event),
+            RolloutItem::ResponseItem(delivery),
             RolloutItem::TurnContext(turn_context.to_turn_context_item()),
             rollout_response_item(spawn_agent_call(&parent_spawn_call_id)),
         ])
@@ -2250,9 +2285,7 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(
                 fork_mode: Some(SpawnAgentForkMode::FullHistory),
                 multi_agent_v2_usage_hints: Some(ResolvedMultiAgentV2UsageHints {
                     root: None,
-                    subagent: Some(MultiAgentRoleInstructions::catalog(
-                        "Catalog child subagent guidance.",
-                    )),
+                    subagent: Some(catalog_role("Catalog child subagent guidance.")),
                 }),
                 ..Default::default()
             },

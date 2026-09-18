@@ -91,6 +91,8 @@ mod process_exec;
 mod projects;
 mod rate_limit_reset_credits;
 mod rate_limits;
+#[path = "rate_limits_identity_tests.rs"]
+mod rate_limits_identity;
 mod realtime_conversation;
 mod recommended_plugins;
 mod remote_control;
@@ -101,6 +103,8 @@ mod request_user_input;
 mod request_validation;
 mod residency;
 mod review;
+#[path = "rollout_compress_tests.rs"]
+mod rollout_compress;
 mod rollout_migration;
 mod safety_check_downgrade;
 #[cfg(not(target_os = "windows"))]
