@@ -1,10 +1,9 @@
 ---
 source: tui/src/chatwidget/tests/status_and_layout.rs
-assertion_line: 3476
 expression: normalized_backend_snapshot(terminal.backend())
 ---
 "                                                                                "
 "────────────────────────────────────────────────────────────────────────────────"
 "▌ Ask Codex to do anything                                                      "
 "────────────────────────────────────────────────────────────────────────────────"
-"  gpt-5.6-sol default · 5.2 credits · ~$0.21                                    "
+"  GPT-5.6-Sol default · 5.2 credits · ~$0.21                                    "

@@ -3,6 +3,7 @@ use crate::config::ConstraintResult;
 use crate::context::ContextualUserFragment;
 use crate::context::GuardianReviewEvidence;
 use crate::elicitation::ElicitationRegistration;
+use crate::environment_selection::TurnEnvironmentState;
 use crate::session::SessionIo;
 use crate::session::SessionSettingsUpdate;
 use crate::session::new_submission_id;
@@ -173,6 +174,8 @@ pub struct GuardianAuthorizationVersion {
 /// Bounded root conversation and authorization state from one history snapshot.
 #[derive(Debug, Eq, PartialEq)]
 pub struct GuardianRootSnapshot {
+    /// Authoritative root from which this evidence was captured.
+    pub root_thread_id: ThreadId,
     pub authorization_version: GuardianAuthorizationVersion,
     pub messages: Vec<GuardianRootMessage>,
     pub trusted_skill_paths: Vec<String>,
@@ -295,6 +298,13 @@ impl CodexThread {
 
     pub async fn emit_thread_idle_lifecycle_if_idle(&self, cause: ThreadIdleCause) {
         self.session.emit_thread_idle_lifecycle_if_idle(cause).await;
+    }
+
+    /// Checkpoint initialization without activating speculative persistence.
+    pub async fn checkpoint_preparation(&self) -> std::io::Result<()> {
+        self.session
+            .try_ensure_rollout_materialized(PersistContext::ThreadPreparation)
+            .await
     }
 
     #[doc(hidden)]
@@ -515,6 +525,28 @@ impl CodexThread {
         self.session.inject_if_running(items).await
     }
 
+    /// Environment selections captured by the active turn, before later settings updates.
+    /// Includes environments that are still starting or have failed. Hosts use this snapshot
+    /// to authorize steering against every executor that the active turn selected.
+    pub async fn active_turn_environment_selections(
+        &self,
+    ) -> Option<Vec<TurnEnvironmentSelection>> {
+        let active = self.session.active_turn.lock().await;
+        let task = active.as_ref()?.task.as_ref()?;
+        Some(
+            task.turn_context
+                .initial_environments
+                .environments
+                .iter()
+                .map(|environment| match environment {
+                    TurnEnvironmentState::Ready(environment) => environment.selection(),
+                    TurnEnvironmentState::Starting(environment) => environment.selection.clone(),
+                    TurnEnvironmentState::Failed { selection, .. } => selection.clone(),
+                })
+                .collect(),
+        )
+    }
+
     /// Captures a regular turn only after its input is recorded. The caller must flush the rollout.
     pub async fn interrupted_turn(
         &self,
@@ -667,7 +699,7 @@ impl CodexThread {
     /// Record raw Responses API items without starting a new turn.
     pub async fn inject_response_items(&self, items: Vec<ResponseItem>) -> CodexResult<()> {
         self.inject_response_items_for_turn(items).await?;
-        self.session.flush_rollout().await?;
+        self.checkpoint_preparation().await?;
         Ok(())
     }
 
@@ -686,8 +718,18 @@ impl CodexThread {
             ));
         }
 
-        let turn_context = self.session.new_default_turn().await;
+        let had_reference_context = self.session.reference_context_item().await.is_some();
+        let mut turn_context = if had_reference_context {
+            self.session.new_inject_items_context().await
+        } else {
+            self.session.new_default_turn().await
+        };
         if self.session.reference_context_item().await.is_none() {
+            // Compaction can clear the reference while the recording context is built.
+            // Initial context must capture a step with a complete skills snapshot.
+            if had_reference_context {
+                turn_context = self.session.new_default_turn().await;
+            }
             // This history-only API runs without run_turn, so it owns its initial step.
             let step_context = self
                 .session
@@ -789,13 +831,13 @@ impl CodexThread {
 
     /// Returns the active turn's reviewer, including live updates, or the thread default.
     pub async fn approvals_reviewer_for_turn(&self, turn_id: &str) -> ApprovalsReviewer {
-        if let Some((turn, settings, _)) = self
+        if let Some((turn, inputs, _)) = self
             .session
             .active_turn_context_and_strict_auto_review()
             .await
             && turn.sub_id == turn_id
         {
-            settings.approvals_reviewer()
+            inputs.settings.approvals_reviewer()
         } else {
             self.config_snapshot().await.approvals_reviewer
         }

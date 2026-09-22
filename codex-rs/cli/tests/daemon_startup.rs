@@ -46,7 +46,7 @@ async fn daemon_startup(command: &str) -> Result<()> {
     fs::write(
         home.path().join("config.toml"),
         format!(
-            "model = \"gpt-5.6-terra\"\nfeatures.daemon_auto_start = true\n\
+            "model = \"gpt-5.6-terra\"\n\
          features.bedrock_setup_wizard = true\ncli_auth_credentials_store = \"file\"\n\
          suppress_unstable_features_warning = true\nanalytics.enabled = false\n\
          windows.sandbox = \"unelevated\"\n\
@@ -116,14 +116,14 @@ async fn daemon_startup(command: &str) -> Result<()> {
         };
         let expected = if command == "start" {
             // The draft header is visible before the session's command composer is ready.
-            steps.push_back(("gpt-5.6-terra", b"/status\r"));
-            "app-server-control.sock"
+            steps.push_back(("GPT-5.6-Terra", b"/status\r"));
+            "Server:Localbackgroundserver"
         } else if bedrock_onboarding {
             "UseAmazonBedrock"
         } else {
             args.extend([command.into(), "--strict-config".into()]);
             steps.push_back(("Nosessionsyet", b"\x1b"));
-            steps.push_back(("gpt-5.6-terra", b"\x14"));
+            steps.push_back(("GPT-5.6-Terra", b"\x14"));
             "Runningwithoutthesharedbackgroundserver:--strict-config"
         };
         let spawned = codex_utils_pty::spawn_pty_process(
@@ -177,7 +177,6 @@ async fn daemon_startup(command: &str) -> Result<()> {
                     output.clear();
                 } else if steps.is_empty() && text.contains(expected) {
                     if command == "start" {
-                        ensure!(text.contains("unix://"));
                         ensure!(home.path().join("app-server-daemon/daemon.pid").exists());
                     } else if let Some(existing_daemon) = &existing_daemon {
                         ensure!(fs::read(&pid_file)? == *existing_daemon);

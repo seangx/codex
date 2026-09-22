@@ -23,9 +23,10 @@ Buffer {
         x: 1, y: 3, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
         x: 0, y: 4, fg: Rgb(63, 181, 116), bg: Reset, underline: Reset, modifier: NONE,
         x: 0, y: 5, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
-        x: 2, y: 5, fg: Reset, bg: Reset, underline: Reset, modifier: DIM,
+        x: 2, y: 5, fg: Rgb(110, 112, 108), bg: Reset, underline: Reset, modifier: BOLD,
+        x: 3, y: 5, fg: Rgb(118, 119, 117), bg: Reset, underline: Reset, modifier: NONE,
         x: 17, y: 5, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
-        x: 29, y: 5, fg: Reset, bg: Reset, underline: Reset, modifier: DIM,
+        x: 29, y: 5, fg: Rgb(118, 119, 117), bg: Reset, underline: Reset, modifier: NONE,
         x: 46, y: 5, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
     ]
 }

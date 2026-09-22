@@ -1,0 +1,5 @@
+---
+source: tui/src/chatwidget/tests/exec_flow.rs
+expression: "chat.transcript.active_cell.as_ref().unwrap().compact_hyperlink_lines(24).iter().map(|line|\nline.line.to_string()).collect::<Vec<_>>().join(\"\\n\")"
+---
+• Read 4 files, searche…

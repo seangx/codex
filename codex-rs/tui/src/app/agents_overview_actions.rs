@@ -91,9 +91,9 @@ async fn run_lifecycle_modal<T>(
                 match event {
                     tui::TuiEvent::Key(_)
                     | tui::TuiEvent::Paste(_)
+                    | tui::TuiEvent::FocusLost
                     | tui::TuiEvent::Mouse(_)
-                    | tui::TuiEvent::MouseScroll(_)
-                    | tui::TuiEvent::FocusLost => {}
+                    | tui::TuiEvent::MouseScroll(_) => {}
                     tui::TuiEvent::Draw | tui::TuiEvent::Resize(_) | tui::TuiEvent::Resume | tui::TuiEvent::FocusGained => {
                         tui.draw(u16::MAX, |frame| {
                             progress.render(frame.area(), frame.buffer_mut());
@@ -161,7 +161,7 @@ impl App {
                     ..Default::default()
                 },
             ],
-            ..Default::default()
+            ..SelectionViewParams::picker()
         });
     }
 
@@ -317,7 +317,7 @@ impl App {
                     dismiss_on_select: true,
                     ..Default::default()
                 }],
-                ..Default::default()
+                ..SelectionViewParams::picker()
             });
         }
 

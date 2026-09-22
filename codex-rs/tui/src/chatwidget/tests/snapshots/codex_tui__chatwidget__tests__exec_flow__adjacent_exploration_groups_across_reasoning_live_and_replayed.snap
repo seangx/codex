@@ -1,0 +1,60 @@
+---
+source: tui/src/chatwidget/tests/exec_flow.rs
+expression: "renders[0]"
+---
+Compact:
+• Read 2 files, listed 1 path, ran 1 shell command
+
+• Checking one more file.
+
+• Read 1 file
+
+Expanded:
+$ ls missing
+list output
+✗ (1) • 5ms
+
+• Inspecting the page
+
+• Checking its contents
+
+$ cat index.html
+read output
+✓ • 5ms
+
+$ echo boundary
+run output
+✓ • 5ms
+
+$ cat later.txt
+later output
+✓ • 5ms
+
+• Checking one more file.
+
+$ cat final.txt
+after-message output
+✓ • 5ms
+
+Raw:
+$ ls missing
+list output
+✗ (1) • 5ms
+
+$ cat index.html
+read output
+✓ • 5ms
+
+$ echo boundary
+run output
+✓ • 5ms
+
+$ cat later.txt
+later output
+✓ • 5ms
+
+Checking one more file.
+
+$ cat final.txt
+after-message output
+✓ • 5ms

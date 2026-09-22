@@ -3,6 +3,7 @@
 use super::*;
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::BottomPaneParams;
+use crate::bottom_pane::RestrictedInputMode;
 use crate::bottom_pane::chat_composer_history::HistoryEntry;
 use crate::render::renderable::Renderable;
 use crate::slash_command::SlashCommand;
@@ -25,6 +26,7 @@ fn pane() -> BottomPane {
         placeholder_text: "Ask Codex to do anything".into(),
         disable_paste_burst: true,
         animations_enabled: true,
+        effects: Default::default(),
         skills: None,
     })
 }
@@ -42,7 +44,7 @@ fn palette<T>(render: impl FnOnce() -> T) -> T {
 fn enabled() -> Tui {
     Tui {
         animations: true,
-        whimsy: true,
+        effects: Default::default(),
         ..Tui::default()
     }
 }
@@ -54,20 +56,19 @@ fn draw(composer: &ChatComposer, width: u16, now: Instant) -> (Buffer, Rect) {
         width,
         composer.desired_height(width),
     );
-    let [padding, _, textarea, _] =
-        composer.layout_areas_with_textarea_right_reserve(area, /*textarea_right_reserve*/ 0);
+    let layout = composer.layout_with_options(area, Default::default());
     let phase = composer.sparkle.phase.replace(Phase::Unarmed);
     let mut buffer = Buffer::empty(area);
     composer.render(area, &mut buffer);
     composer.sparkle.phase.set(phase);
     composer.render_sparkle_at(
-        padding,
-        textarea,
+        layout.composer,
+        layout.textarea,
         composer.cursor_pos(area),
         now,
         &mut buffer,
     );
-    (buffer, textarea)
+    (buffer, layout.textarea)
 }
 
 fn text(buffer: &Buffer) -> String {
@@ -196,7 +197,7 @@ fn sparkle_fades_without_adding_dots_and_finishes_by_fifteen_seconds() {
         let contrast = |cell: &ratatui::buffer::Cell| match (
             cell.fg,
             match cell.bg {
-                Color::Reset => Color::Rgb(36, 27, 53),
+                Color::Reset => crate::terminal_palette::rgb_color((36, 27, 53)),
                 background => background,
             },
         ) {
@@ -479,31 +480,37 @@ fn disconnected_sparkle_edits_are_tracked_between_renders() {
                 let initial = draw(&pane.composer, /*width*/ 80, now).0;
                 assert_eq!(dots(&initial).is_empty(), model == "gpt-5.5");
                 for key in [KeyCode::Null, KeyCode::Enter, KeyCode::Tab] {
-                    pane.handle_disconnected_key(KeyEvent::new(key, KeyModifiers::NONE));
+                    pane.handle_restricted_key(
+                        KeyEvent::new(key, KeyModifiers::NONE),
+                        RestrictedInputMode::Disconnected,
+                    );
                 }
-                pane.handle_disconnected_key(KeyEvent::new_with_kind(
-                    KeyCode::Char('x'),
-                    KeyModifiers::NONE,
-                    crossterm::event::KeyEventKind::Release,
-                ));
+                pane.handle_restricted_key(
+                    KeyEvent::new_with_kind(
+                        KeyCode::Char('x'),
+                        KeyModifiers::NONE,
+                        crossterm::event::KeyEventKind::Release,
+                    ),
+                    RestrictedInputMode::Disconnected,
+                );
                 assert_eq!(pane.composer.sparkle.draft.get(), SparkleDraft::Untouched);
                 assert_eq!(
                     dots(&draw(&pane.composer, /*width*/ 80, now).0),
                     dots(&initial)
                 );
                 for ch in input.chars() {
-                    pane.handle_disconnected_key(KeyEvent::new(
-                        KeyCode::Char(ch),
-                        KeyModifiers::NONE,
-                    ));
+                    pane.handle_restricted_key(
+                        KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+                        RestrictedInputMode::Disconnected,
+                    );
                 }
                 assert_eq!(pane.composer.current_text(), input, "{scenario}");
                 assert_eq!(pane.composer.sparkle.draft.get(), draft, "{scenario}");
                 for _ in input.chars() {
-                    pane.handle_disconnected_key(KeyEvent::new(
-                        KeyCode::Backspace,
-                        KeyModifiers::NONE,
-                    ));
+                    pane.handle_restricted_key(
+                        KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+                        RestrictedInputMode::Disconnected,
+                    );
                 }
                 assert_eq!(pane.composer.current_text(), "");
                 pane.select_sparkle_model("gpt-6-astra", &enabled());
@@ -1058,7 +1065,10 @@ fn focus_startup_work_and_configuration_do_not_extend_a_started_deadline() {
 
         for settings in [
             Tui {
-                whimsy: false,
+                effects: codex_config::types::TuiEffects {
+                    starfield: false,
+                    ..Default::default()
+                },
                 ..enabled()
             },
             Tui {

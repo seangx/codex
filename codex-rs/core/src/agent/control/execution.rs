@@ -1,4 +1,8 @@
-use super::AgentControl;
+//! Tracks local running capacity and releases reservations through the shared guard.
+//! The local permit owns the running count; root and MAv1 turns remain unrestricted.
+
+use super::LocalAgentControl;
+use crate::agent::types::AgentExecutionGuard;
 use crate::codex_thread::CodexThread;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrorDetails;
@@ -18,11 +22,11 @@ pub(super) struct AgentExecutionLimiter {
     max_threads: OnceLock<usize>,
 }
 
-pub(crate) struct AgentExecutionGuard {
+struct LocalExecutionPermit {
     limiter: Arc<AgentExecutionLimiter>,
 }
 
-impl Drop for AgentExecutionGuard {
+impl Drop for LocalExecutionPermit {
     fn drop(&mut self) {
         let active = self
             .limiter
@@ -36,7 +40,7 @@ impl Drop for AgentExecutionGuard {
     }
 }
 
-impl AgentControl {
+impl LocalAgentControl {
     pub(crate) async fn ensure_execution_capacity_for_turn_start(
         &self,
         thread: &CodexThread,
@@ -104,7 +108,7 @@ impl AgentExecutionLimiter {
 
     fn guard(self: Arc<Self>) -> AgentExecutionGuard {
         self.active.fetch_add(1, Ordering::AcqRel);
-        AgentExecutionGuard { limiter: self }
+        AgentExecutionGuard::new(LocalExecutionPermit { limiter: self })
     }
 }
 

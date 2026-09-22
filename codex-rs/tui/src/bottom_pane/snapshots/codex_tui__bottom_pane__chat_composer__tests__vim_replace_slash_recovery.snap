@@ -2,12 +2,12 @@
 source: tui/src/bottom_pane/chat_composer.rs
 expression: terminal.backend()
 ---
+"› /diff  show git diff (including untracked files)                                                  "
 "────────────────────────────────────────────────────────────────────────────────────────────────────"
 "▌ /dide tail                                                                                        "
 "▌                                                                                                   "
 "▌                                                                                                   "
 "▌                                                                                                   "
 "▌                                                                                                   "
-"▌                                                                                                   "
 "────────────────────────────────────────────────────────────────────────────────────────────────────"
-"  /diff  show git diff (including untracked files)                                                  "
+"                                                                  100% context left | Vim: Replace  "

@@ -1,0 +1,16 @@
+---
+source: tui/src/chatwidget/tests/dynamic_activity_tests.rs
+expression: "format!(\"{buffer:?}\")"
+---
+Buffer {
+    area: Rect { x: 0, y: 0, width: 64, height: 1 },
+    content: [
+        "• Called test.lookup 2 times                                    ",
+    ],
+    styles: [
+        x: 0, y: 0, fg: Red, bg: Reset, underline: Reset, modifier: BOLD,
+        x: 1, y: 0, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 2, y: 0, fg: LightYellow, bg: Reset, underline: Reset, modifier: NONE,
+        x: 28, y: 0, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+    ]
+}

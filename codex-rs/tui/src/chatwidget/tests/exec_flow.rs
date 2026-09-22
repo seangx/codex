@@ -266,7 +266,7 @@ async fn compact_command_activity_preserves_overlapping_reads_after_success() {
     end_exec(&mut chat, first, "first\n", "", /*exit_code*/ 0);
     end_exec(&mut chat, second, "second\n", "", /*exit_code*/ 0);
     assert!(drain_insert_history(&mut rx).is_empty());
-    assert!(active_blob(&chat).contains("Ran 3 shell commands"));
+    assert!(active_blob(&chat).contains("Read 2 files, ran 1 shell command"));
 }
 
 #[tokio::test]
@@ -361,13 +361,225 @@ async fn compact_command_activity_keeps_overlapping_commands_active_after_failur
     assert!(drain_insert_history(&mut rx).is_empty());
     end_exec(&mut chat, followup, "followup\n", "", /*exit_code*/ 0);
 
-    let cells = drain_insert_history(&mut rx);
-    assert_eq!(cells.len(), 1);
-    let history = lines_to_single_string(&cells[0]);
-    assert!(
-        history.contains("Read 2 files, listed 1 path"),
-        "unexpected compact failure summary: {history:?}"
+    assert!(drain_insert_history(&mut rx).is_empty());
+    assert!(active_blob(&chat).contains("Read 2 files, listed 1 path"));
+
+    let later = begin_exec(&mut chat, "call-after-failure", "cat later.txt");
+    end_exec(&mut chat, later, "later\n", "", /*exit_code*/ 0);
+    assert!(active_blob(&chat).contains("Read 3 files, listed 1 path"));
+}
+
+#[tokio::test]
+async fn exploration_nonzero_exits_remain_visible_beside_successful_reads() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    for (id, command, exit_code) in [
+        ("read", "cat first.txt", 0),
+        ("missing", "cat missing.txt", 1),
+        ("later", "cat later.txt", 0),
+        ("search", "rg absent .", 1),
+        ("error", "rg text missing.txt", 2),
+        ("compound", "cat existing.txt && rg absent .", 1),
+    ] {
+        let item = begin_exec(&mut chat, id, command);
+        end_exec(&mut chat, item, "", "", exit_code);
+    }
+    insta::assert_snapshot!(active_blob(&chat));
+    insta::assert_snapshot!(
+        "compact_exploration_with_failures",
+        chat.transcript
+            .active_cell
+            .as_ref()
+            .unwrap()
+            .compact_hyperlink_lines(/*width*/ 24)
+            .iter()
+            .map(|line| line.line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
     );
+    let active = chat
+        .transcript
+        .active_cell
+        .as_ref()
+        .expect("completed exploration group remains active");
+    let exploration = active
+        .as_any()
+        .downcast_ref::<ToolActivityGroupCell>()
+        .expect("exploration is wrapped in the compact tool group")
+        .exec_for_call("read")
+        .expect("exploration group retains the first read");
+    let statuses = exploration
+        .display_lines(/*width*/ 80)
+        .into_iter()
+        .flat_map(|line| line.spans)
+        .filter(|span| {
+            span.content.starts_with(" (exit") || span.content.starts_with(" (command exit")
+        })
+        .map(|span| (span.content.into_owned(), span.style.fg))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        statuses,
+        vec![
+            (" (exit 1)".to_string(), Some(ratatui::style::Color::Red)),
+            (" (exit 1)".to_string(), None),
+            (" (exit 2)".to_string(), Some(ratatui::style::Color::Red)),
+            (" (command exit 1)".to_string(), None),
+        ]
+    );
+    let detailed = lines_to_single_string(&active.transcript_lines(/*width*/ 80));
+    for command in [
+        "$ cat missing.txt",
+        "$ rg absent .",
+        "$ rg text missing.txt",
+        "$ cat existing.txt && rg absent .",
+    ] {
+        assert!(
+            detailed.contains(command),
+            "missing {command:?}: {detailed}"
+        );
+    }
+    assert_eq!(detailed.matches("✗ (1)").count(), 3, "{detailed}");
+    assert_eq!(detailed.matches("✗ (2)").count(), 1, "{detailed}");
+}
+
+#[tokio::test]
+async fn exploration_reasoning_during_followup_command_stays_ordered() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let first = begin_exec(&mut chat, "first", "ls");
+    end_exec(&mut chat, first, "file.txt\n", "", /*exit_code*/ 0);
+    chat.on_agent_reasoning_delta("Read the file next.".to_string());
+    chat.on_agent_reasoning_final();
+    let second = begin_exec(&mut chat, "second", "cat file.txt");
+    chat.on_agent_reasoning_delta("Waiting for the file.".to_string());
+    chat.on_agent_reasoning_final();
+    assert!(drain_insert_history(&mut rx).is_empty());
+    end_exec(&mut chat, second, "contents\n", "", /*exit_code*/ 0);
+    let transcript = chat.active_cell_transcript_lines(/*width*/ 80).unwrap();
+    insta::assert_snapshot!(lines_to_single_string(&transcript));
+}
+
+#[tokio::test]
+async fn adjacent_exploration_groups_across_reasoning_live_and_replayed() {
+    let mut renders = Vec::new();
+    for replay in [false, true] {
+        let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+        chat.on_task_started();
+        for (id, script, exit_code) in [
+            ("list", "ls missing", 1),
+            ("read", "cat index.html", 0),
+            ("run", "echo boundary", 0),
+            ("later", "cat later.txt", 0),
+            ("after-message", "cat final.txt", 0),
+        ] {
+            let command = vec!["bash".to_string(), "-lc".to_string(), script.to_string()];
+            let mut item = AppServerThreadItem::CommandExecution {
+                model_context: None,
+                id: id.to_string(),
+                command: codex_shell_command::parse_command::shlex_join(&command),
+                cwd: chat.config.cwd.clone().into(),
+                process_id: None,
+                plugin_id: None,
+                script_path: None,
+                source: ExecCommandSource::UnifiedExecStartup,
+                status: AppServerCommandExecutionStatus::InProgress,
+                command_actions: codex_shell_command::parse_command::parse_command(&command)
+                    .into_iter()
+                    .map(|parsed| {
+                        AppServerCommandAction::from_core_with_cwd(parsed, &chat.config.cwd)
+                    })
+                    .collect(),
+                aggregated_output: Some(format!("{id} output\n")),
+                exit_code: Some(exit_code),
+                duration_ms: Some(5),
+            };
+            if !replay {
+                handle_exec_begin(&mut chat, item.clone());
+            }
+            if let AppServerThreadItem::CommandExecution { status, .. } = &mut item {
+                *status = if exit_code == 0 {
+                    AppServerCommandExecutionStatus::Completed
+                } else {
+                    AppServerCommandExecutionStatus::Failed
+                };
+            }
+            if replay {
+                chat.replay_thread_item(item, "turn-1".to_string(), ReplayKind::ThreadSnapshot);
+            } else {
+                handle_exec_end(&mut chat, item);
+            }
+            if id == "list" {
+                for summary in ["Inspecting the page", "Checking its contents"] {
+                    if replay {
+                        chat.replay_thread_item(
+                            AppServerThreadItem::Reasoning {
+                                id: summary.to_string(),
+                                summary: vec![summary.to_string()],
+                                content: Vec::new(),
+                            },
+                            "turn-1".to_string(),
+                            ReplayKind::ThreadSnapshot,
+                        );
+                    } else {
+                        chat.on_agent_reasoning_delta(summary.to_string());
+                        chat.on_agent_reasoning_final();
+                    }
+                }
+            }
+            if id == "later" {
+                complete_assistant_message(
+                    &mut chat,
+                    "message",
+                    "Checking one more file.",
+                    Some(MessagePhase::Commentary),
+                );
+            }
+        }
+        chat.flush_active_cell();
+        let cells = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|event| match event {
+                AppEvent::InsertHistoryCell(cell) => Some(cell),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(cells.len(), 3);
+        let expanded = cells
+            .iter()
+            .flat_map(|cell| cell.transcript_lines(/*width*/ 80))
+            .collect::<Vec<_>>();
+        let expanded = lines_to_single_string(&expanded);
+        let mut remainder = expanded.as_str();
+        for expected in [
+            "$ ls missing",
+            "list output",
+            "Inspecting the page",
+            "Checking its contents",
+            "$ cat index.html",
+            "$ echo boundary",
+            "$ cat later.txt",
+            "Checking one more file.",
+            "$ cat final.txt",
+        ] {
+            let index = remainder.find(expected).unwrap_or_else(|| {
+                panic!("missing ordered transcript text {expected:?}: {expanded}")
+            });
+            remainder = &remainder[index + expected.len()..];
+        }
+        let mut render = String::new();
+        for mode in ["Compact", "Expanded", "Raw"] {
+            render.push_str(&format!("{mode}:\n"));
+            for cell in &cells {
+                let lines = match mode {
+                    "Compact" => cell.display_lines(/*width*/ 80),
+                    "Expanded" => cell.transcript_lines(/*width*/ 80),
+                    _ => cell.raw_lines(),
+                };
+                render.push_str(&lines_to_single_string(&lines));
+                render.push('\n');
+            }
+        }
+        renders.push(render);
+    }
+    assert_eq!(renders[0], renders[1]);
+    insta::assert_snapshot!(renders[0]);
 }
 
 #[tokio::test]
@@ -1152,7 +1364,7 @@ async fn unified_exec_wait_after_final_agent_message_snapshot() {
     complete_assistant_message(&mut chat, "msg-1", "Final response.", /*phase*/ None);
     handle_turn_completed(&mut chat, "turn-1", /*duration_ms*/ None);
 
-    let cells = drain_insert_history_normalized(&mut rx);
+    let cells = drain_insert_history_transcript_normalized(&mut rx);
     let combined = cells
         .iter()
         .map(|lines| lines_to_single_string(lines))
@@ -1176,7 +1388,7 @@ async fn unified_exec_wait_before_streamed_agent_message_snapshot() {
     handle_agent_message_delta(&mut chat, "Streaming response.");
     handle_turn_completed(&mut chat, "turn-wait-1", /*duration_ms*/ None);
 
-    let cells = drain_insert_history_normalized(&mut rx);
+    let cells = drain_insert_history_transcript_normalized(&mut rx);
     let combined = cells
         .iter()
         .map(|lines| lines_to_single_string(lines))
@@ -1293,11 +1505,31 @@ async fn unified_exec_waiting_multiple_empty_snapshots() {
 
     handle_turn_completed(&mut chat, "turn-wait-3", /*duration_ms*/ None);
 
-    let cells = drain_insert_history_normalized(&mut rx);
-    let combined = cells
+    let cells = std::iter::from_fn(|| rx.try_recv().ok())
+        .filter_map(|event| match event {
+            AppEvent::InsertHistoryCell(cell) => Some(cell),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let compact = cells
         .iter()
-        .map(|lines| lines_to_single_string(lines))
+        .map(|cell| {
+            normalize_completion_timestamps(
+                cell.as_ref(),
+                lines_to_single_string(&cell.display_lines(/*width*/ 80)),
+            )
+        })
         .collect::<String>();
+    let transcript = cells
+        .iter()
+        .map(|cell| {
+            normalize_completion_timestamps(
+                cell.as_ref(),
+                lines_to_single_string(&cell.transcript_lines(/*width*/ 80)),
+            )
+        })
+        .collect::<String>();
+    let combined = format!("Chat:\n{compact}\nTranscript:\n{transcript}");
     assert_chatwidget_snapshot!("unified_exec_waiting_multiple_empty_after", combined);
 }
 
@@ -1330,7 +1562,7 @@ async fn unified_exec_empty_then_non_empty_snapshot() {
     terminal_interaction(&mut chat, "call-wait-2a", "proc-2", "");
     terminal_interaction(&mut chat, "call-wait-2b", "proc-2", "ls\n");
 
-    let cells = drain_insert_history(&mut rx);
+    let cells = drain_insert_history_transcript(&mut rx);
     let combined = cells
         .iter()
         .map(|lines| lines_to_single_string(lines))
@@ -1356,7 +1588,7 @@ async fn unified_exec_non_empty_then_empty_snapshots() {
         .expect("status indicator should be visible");
     assert_eq!(status.header(), "Waiting for background terminal");
     assert_eq!(status.details(), Some("just fix"));
-    let pre_cells = drain_insert_history(&mut rx);
+    let pre_cells = drain_insert_history_transcript(&mut rx);
     let active_combined = pre_cells
         .iter()
         .map(|lines| lines_to_single_string(lines))
@@ -1365,7 +1597,7 @@ async fn unified_exec_non_empty_then_empty_snapshots() {
 
     handle_turn_completed(&mut chat, "turn-1", /*duration_ms*/ None);
 
-    let post_cells = drain_insert_history_normalized(&mut rx);
+    let post_cells = drain_insert_history_transcript_normalized(&mut rx);
     let mut combined = pre_cells
         .iter()
         .map(|lines| lines_to_single_string(lines))
@@ -1588,6 +1820,7 @@ async fn bang_shell_enter_while_task_running_submits_run_user_shell_command() {
         Ok(Op::RunUserShellCommand { command }) => assert_eq!(command, "echo hi"),
         other => panic!("expected RunUserShellCommand op, got {other:?}"),
     }
+    assert_matches!(rx.try_recv(), Ok(AppEvent::FollowTranscript));
     assert_matches!(
         rx.try_recv(),
         Ok(AppEvent::AppendMessageHistoryEntry { text, .. }) if text == "!echo hi"

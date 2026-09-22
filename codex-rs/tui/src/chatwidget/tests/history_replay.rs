@@ -1,3 +1,4 @@
+use super::helpers::drain_insert_history_transcript;
 use super::*;
 use crate::app_event::HistoryLookupResponse;
 use codex_app_server_protocol::ImageReference;
@@ -114,7 +115,7 @@ async fn replayed_failed_turns_preserve_overload_warnings_between_retries() {
         ReplayKind::ResumeInitialMessages,
     );
 
-    let rendered = drain_insert_history(&mut rx)
+    let rendered = drain_insert_history_transcript(&mut rx)
         .into_iter()
         .map(|lines| lines_to_single_string(&lines))
         .collect::<String>();
@@ -1278,26 +1279,27 @@ async fn replayed_reasoning_item_shows_raw_reasoning_when_enabled() {
 }
 
 #[tokio::test]
-async fn replayed_in_progress_mcp_tool_call_stays_active() {
+async fn replayed_mcp_tool_call_stays_active_until_completion() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let _ = drain_insert_history(&mut rx);
 
+    let mut item = AppServerThreadItem::McpToolCall {
+        id: "mcp-1".to_string(),
+        server: "copilot-bridge".to_string(),
+        tool: "copilot".to_string(),
+        status: codex_app_server_protocol::McpToolCallStatus::InProgress,
+        arguments: json!({"action": "wait"}),
+        app_context: None,
+        mcp_app_resource_uri: None,
+        mcp_app_ui: None,
+        plugin_id: None,
+        read_only_hint: None,
+        result: None,
+        error: None,
+        duration_ms: None,
+    };
     chat.replay_thread_item(
-        AppServerThreadItem::McpToolCall {
-            id: "mcp-1".to_string(),
-            server: "copilot-bridge".to_string(),
-            tool: "copilot".to_string(),
-            status: codex_app_server_protocol::McpToolCallStatus::InProgress,
-            arguments: json!({"action": "wait"}),
-            app_context: None,
-            mcp_app_resource_uri: None,
-            mcp_app_ui: None,
-            plugin_id: None,
-            read_only_hint: None,
-            result: None,
-            error: None,
-            duration_ms: None,
-        },
+        item.clone(),
         "turn-1".to_string(),
         ReplayKind::ThreadSnapshot,
     );
@@ -1307,6 +1309,26 @@ async fn replayed_in_progress_mcp_tool_call_stays_active() {
     assert!(active.contains("copilot-bridge.copilot"));
     assert!(!active.contains("\"action\""));
     assert!(!active.contains("MCP tool call completed without a result"));
+
+    if let AppServerThreadItem::McpToolCall { status, .. } = &mut item {
+        *status = codex_app_server_protocol::McpToolCallStatus::Completed;
+    }
+    chat.on_mcp_tool_call_completed(item);
+    assert!(chat.transcript.active_cell.is_none());
+    let completed = std::iter::from_fn(|| rx.try_recv().ok())
+        .filter_map(|event| match event {
+            AppEvent::InsertHistoryCell(cell) => Some(cell),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(completed.len(), 1);
+    let compact = lines_to_single_string(&completed[0].display_lines(/*width*/ 80));
+    assert_eq!(compact.trim_end(), "• Called copilot-bridge.copilot");
+    let transcript = lines_to_single_string(&completed[0].transcript_lines(/*width*/ 80));
+    assert!(
+        transcript.contains("MCP tool call completed without a result"),
+        "{transcript}"
+    );
 }
 
 #[tokio::test]
@@ -1514,7 +1536,7 @@ async fn consecutive_tool_types_share_one_compact_group_until_agent_text() {
 }
 
 #[tokio::test]
-async fn dynamic_exec_tool_is_compacted_and_keeps_full_transcript() {
+async fn dynamic_exec_late_completion_updates_committed_compact_group() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let _ = drain_insert_history(&mut rx);
     let arguments = serde_json::json!(
@@ -1540,6 +1562,16 @@ async fn dynamic_exec_tool_is_compacted_and_keeps_full_transcript() {
         }),
         /*replay_kind*/ None,
     );
+    assert!(chat.transcript.dynamic_calls.contains_key("dynamic-exec-1"));
+    chat.flush_active_cell();
+    let retained = loop {
+        match rx.try_recv() {
+            Ok(AppEvent::InsertHistoryCell(cell)) => break cell,
+            Ok(_) => continue,
+            Err(error) => panic!("expected committed dynamic tool group: {error}"),
+        }
+    };
+
     chat.handle_server_notification(
         ServerNotification::ItemCompleted(ItemCompletedNotification {
             thread_id: "thread-1".to_string(),
@@ -1563,21 +1595,69 @@ async fn dynamic_exec_tool_is_compacted_and_keeps_full_transcript() {
         /*replay_kind*/ None,
     );
 
+    assert!(chat.transcript.dynamic_calls.is_empty());
     assert!(drain_insert_history(&mut rx).is_empty());
-    let active = chat
-        .transcript
-        .active_cell
-        .as_ref()
-        .expect("dynamic tool group should remain active");
-    let compact = lines_to_single_string(&active.display_lines(120));
+    let compact = lines_to_single_string(&retained.display_lines(120));
     assert_eq!(compact.trim_end(), "• Ran 3 shell commands");
     assert!(!compact.contains("large nested command output"));
     insta::assert_snapshot!("dynamic_exec_tool_compact_summary", compact);
     let raw = lines_to_single_string(
-        &active.display_lines_for_mode(/*width*/ 120, HistoryRenderMode::Raw),
+        &retained.display_lines_for_mode(/*width*/ 120, HistoryRenderMode::Raw),
     );
     assert!(raw.contains("tools.exec_command"), "{raw}");
     assert!(raw.contains("large nested command output"), "{raw}");
+}
+
+#[tokio::test]
+async fn turn_completion_interrupts_and_flushes_active_dynamic_group() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let _ = drain_insert_history(&mut rx);
+    chat.handle_server_notification(
+        ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            started_at_ms: 0,
+            item: AppServerThreadItem::DynamicToolCall {
+                id: "dynamic-exec-1".to_string(),
+                namespace: Some("functions".to_string()),
+                tool: "exec".to_string(),
+                arguments: serde_json::json!(
+                    "const result = await tools.exec_command({cmd: \"sleep 30\"});"
+                ),
+                status: codex_app_server_protocol::DynamicToolCallStatus::InProgress,
+                content_items: None,
+                success: None,
+                duration_ms: None,
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+    assert!(chat.transcript.dynamic_calls.contains_key("dynamic-exec-1"));
+
+    chat.on_task_complete(
+        /*last_agent_message*/ None, /*completion*/ None, /*from_replay*/ false,
+    );
+
+    assert!(chat.transcript.dynamic_calls.is_empty());
+    assert!(chat.transcript.active_cell.is_none());
+    let retained = loop {
+        match rx.try_recv() {
+            Ok(AppEvent::InsertHistoryCell(cell)) => break cell,
+            Ok(_) => continue,
+            Err(error) => panic!("expected finalized dynamic tool group: {error}"),
+        }
+    };
+    let compact = lines_to_single_string(&retained.display_lines(/*width*/ 120));
+    assert_eq!(compact.trim_end(), "• Ran 1 shell command");
+    let transcript = lines_to_single_string(&retained.transcript_lines(/*width*/ 120));
+    assert!(
+        transcript.contains("Interrupted functions.exec"),
+        "{transcript}"
+    );
+    assert!(
+        transcript.contains("Interrupted before this tool returned a result."),
+        "{transcript}"
+    );
 }
 
 #[tokio::test]
@@ -1655,6 +1735,42 @@ async fn dynamic_exec_groups_nested_user_shell_events_without_double_counting() 
     assert!(raw.contains("$ ps aux"), "{raw}");
     assert!(raw.contains("nested process output"), "{raw}");
     assert!(raw.contains("wrapper output"), "{raw}");
+}
+
+#[tokio::test]
+async fn live_reasoning_stays_inside_compact_grouped_commands() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let _ = drain_insert_history(&mut rx);
+
+    let first = begin_exec(&mut chat, "read-1", "cat first.rs");
+    end_exec(&mut chat, first, "first output\n", "", /*exit_code*/ 0);
+    chat.on_reasoning_item_started("reasoning-1".to_string());
+    chat.on_agent_reasoning_delta("Inspecting the next file".to_string());
+    chat.on_agent_reasoning_final();
+    let second = begin_exec(&mut chat, "read-2", "cat second.rs");
+    end_exec(
+        &mut chat,
+        second,
+        "second output\n",
+        "",
+        /*exit_code*/ 0,
+    );
+
+    assert!(drain_insert_history(&mut rx).is_empty());
+    let active = chat
+        .transcript
+        .active_cell
+        .as_ref()
+        .expect("grouped commands should remain active");
+    let compact = lines_to_single_string(&active.display_lines(/*width*/ 120));
+    assert_eq!(compact.trim_end(), "• Read 2 files");
+    let transcript = lines_to_single_string(&active.transcript_lines(/*width*/ 120));
+    let first = transcript.find("$ cat first.rs").expect("first command");
+    let reasoning = transcript
+        .find("Inspecting the next file")
+        .expect("intervening reasoning");
+    let second = transcript.find("$ cat second.rs").expect("second command");
+    assert!(first < reasoning && reasoning < second, "{transcript}");
 }
 
 #[tokio::test]

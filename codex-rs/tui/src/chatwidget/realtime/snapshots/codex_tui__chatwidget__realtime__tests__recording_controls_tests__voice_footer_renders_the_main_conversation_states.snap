@@ -1,12 +1,10 @@
 ---
 source: tui/src/chatwidget/realtime/recording_controls_tests.rs
-assertion_line: 411
 expression: "states.join(\"\\n\\n\")"
 ---
 connecting:
 ────────────────────────────────────────────────────────────────────────────────
 ▌voice ◌ connecting                                                 /voice stop
-▌  mic ▁▁▁▁▁▁  codex ▁▁▁▁▁▁
 ▌
 ▌ Ask Codex to do anything
 ────────────────────────────────────────────────────────────────────────────────

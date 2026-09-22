@@ -26,7 +26,7 @@ fn image_history_budget_counts_inline_payloads_but_not_file_references() -> anyh
         &history,
         &SessionSource::Exec
     ));
-    let mut items = history.into_raw_items();
+    let mut items = history.raw_items().cloned().collect::<Vec<_>>();
     items.push(serde_json::from_value(json!({
         "type":"image_generation_call", "id":"generated", "status":"completed", "result":image
     }))?);
@@ -72,7 +72,7 @@ async fn compaction_snapshot_archives_inline_images_and_preserves_file_reference
     let archived =
         prepare_history_for_compaction(history.clone(), home.path().to_path_buf(), &session_source)
             .await?;
-    assert_eq!(history.into_raw_items(), items);
+    assert_eq!(history.raw_items().cloned().collect::<Vec<_>>(), items);
     let reference = archive_image(home.path(), image)?;
     let replacement = reference.body();
     let mut expected = serde_json::to_value(items)?;
@@ -84,7 +84,7 @@ async fn compaction_snapshot_archives_inline_images_and_preserves_file_reference
         expected[index]["output"][0] = json!({"type":"input_text", "text":replacement});
     }
     assert_eq!(
-        serde_json::to_value(archived.clone().into_raw_items())?,
+        serde_json::to_value(archived.raw_items().collect::<Vec<_>>())?,
         expected
     );
     assert_eq!(

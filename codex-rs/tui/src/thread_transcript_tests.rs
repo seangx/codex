@@ -4,6 +4,7 @@ use codex_app_server_protocol::CommandExecutionSource;
 use codex_app_server_protocol::CommandExecutionStatus;
 use codex_utils_path_uri::LegacyAppPathString;
 use pretty_assertions::assert_eq;
+use ratatui::text::Line;
 
 fn command(id: &str, source: CommandExecutionSource, status: CommandExecutionStatus) -> ThreadItem {
     let exit_code = match status {

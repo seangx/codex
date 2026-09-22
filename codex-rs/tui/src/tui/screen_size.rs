@@ -76,6 +76,13 @@ impl Tui {
         self.screen_size.deferred_size = Some(size);
     }
 
+    /// Reserve the next draw's geometry so live layouts use the same width as their frame.
+    pub(crate) fn prepare_draw_size(&mut self) -> io::Result<Size> {
+        let size = self.take_event_screen_size()?;
+        self.screen_size.pending_draw_size = Some(size);
+        Ok(size)
+    }
+
     pub(super) fn take_event_screen_size(&mut self) -> io::Result<Size> {
         if let Some(size) = self.screen_size.pending_draw_size.take() {
             return Ok(size);

@@ -4,12 +4,15 @@
 //! list/search commands. The chat widget relies on stable `call_id` matching to route progress and
 //! end events into the right cell, and it treats "call id not found" as a real signal (for
 //! example, an orphan end that should render as a separate history entry).
+//! Transcript-only reasoning stays inside exploration groups so it does not split their
+//! compact display, while the expanded transcript retains its position between commands.
 
 use std::borrow::Cow;
 use std::time::Duration;
 use std::time::Instant;
 
 use super::live_output::LiveCommandOutput;
+use crate::history_cell::ActivityGroup;
 use codex_app_server_protocol::CommandExecutionSource as ExecCommandSource;
 use codex_protocol::parse_command::ParsedCommand;
 use itertools::Either;
@@ -76,14 +79,14 @@ pub(crate) struct ExecCall {
 
 #[derive(Debug)]
 pub(crate) struct ExecCell {
-    pub(crate) calls: Vec<ExecCall>,
+    pub(crate) group: ActivityGroup<ExecCall>,
     animations_enabled: bool,
 }
 
 impl ExecCell {
     pub(crate) fn new(call: ExecCall, animations_enabled: bool) -> Self {
         Self {
-            calls: vec![call],
+            group: ActivityGroup::new(vec![call]),
             animations_enabled,
         }
     }
@@ -106,24 +109,27 @@ impl ExecCell {
             duration: None,
             interaction_input,
         };
-        if (self.calls.len() >= MAX_GROUPED_COMMANDS && !self.is_active())
+        if (self.group.calls.len() >= MAX_GROUPED_COMMANDS && !self.is_active())
             || (!Self::is_groupable_source(call.source) && !self.is_active())
-            || (self.has_failed_call() && !self.is_active())
+            || (self.has_failed_call()
+                && !self.is_active()
+                && !(self.is_exploring_cell() && Self::is_exploring_call(&call)))
         {
             return false;
         }
 
         let continues_exploration = Self::is_exploring_call(&call)
             && (self.is_exploring_cell()
-                || self.calls.last().is_some_and(|existing| {
+                || self.group.calls.last().is_some_and(|existing| {
                     existing.duration.is_none() && Self::is_exploring_call(existing)
                 }))
             && (self.is_active()
                 || self
+                    .group
                     .calls
                     .iter()
                     .all(|existing| Self::is_groupable_source(existing.source)));
-        let continues_compact_group = self.calls.iter().all(|existing| {
+        let continues_compact_group = self.group.calls.iter().all(|existing| {
             Self::is_groupable_source(existing.source)
                 && existing.duration.is_some()
                 && existing
@@ -132,11 +138,44 @@ impl ExecCell {
                     .is_some_and(|output| output.exit_code == 0)
         });
         if continues_exploration || continues_compact_group {
-            self.calls.push(call);
+            self.group.calls.push(call);
             true
         } else {
             false
         }
+    }
+
+    /// Historical grouping uses the same compatibility and failure boundary as live calls.
+    pub(crate) fn append_completed(&mut self, mut newer: Self) -> Result<(), Self> {
+        let continues_exploration = self.is_exploring_cell() && newer.is_exploring_cell();
+        let continues_compact_group =
+            self.group
+                .calls
+                .iter()
+                .chain(&newer.group.calls)
+                .all(|call| {
+                    Self::is_groupable_source(call.source)
+                        && call.duration.is_some()
+                        && call
+                            .output
+                            .as_ref()
+                            .is_some_and(|output| output.exit_code == 0)
+                });
+        if self.should_flush() || !(continues_exploration || continues_compact_group) {
+            return Err(newer);
+        }
+        newer.group.details.prepend(
+            std::mem::take(&mut self.group.details),
+            self.group.calls.len(),
+        );
+        self.group.details = newer.group.details;
+        self.group.calls.append(&mut newer.group.calls);
+        Ok(())
+    }
+
+    /// Preserve live clocks and pending output when a validated older page extends exploration.
+    pub(crate) fn prepend(&mut self, older: Self) {
+        self.group.prepend(older.group);
     }
 
     /// Marks the most recently matching call as finished and returns whether a call was found.
@@ -150,7 +189,13 @@ impl ExecCell {
         output: CommandOutput,
         duration: Duration,
     ) -> bool {
-        let Some(call) = self.calls.iter_mut().rev().find(|c| c.call_id == call_id) else {
+        let Some(call) = self
+            .group
+            .calls
+            .iter_mut()
+            .rev()
+            .find(|c| c.call_id == call_id)
+        else {
             return false;
         };
         call.output = Some(output);
@@ -160,21 +205,22 @@ impl ExecCell {
     }
 
     pub(crate) fn should_flush(&self) -> bool {
-        if self.calls.iter().any(|call| {
+        if self.group.calls.iter().any(|call| {
             !Self::is_groupable_source(call.source)
-                || call
-                    .output
-                    .as_ref()
-                    .is_some_and(|output| output.exit_code != 0)
+                || (!self.is_exploring_cell()
+                    && call
+                        .output
+                        .as_ref()
+                        .is_some_and(|output| output.exit_code != 0))
         }) {
             return !self.is_active();
         }
 
-        if self.calls.len() >= MAX_GROUPED_COMMANDS {
+        if self.group.calls.len() >= MAX_GROUPED_COMMANDS {
             return !self.is_active();
         }
 
-        if self.calls.iter().all(|call| {
+        if self.group.calls.iter().all(|call| {
             Self::is_groupable_source(call.source)
                 && call.duration.is_some()
                 && call
@@ -185,11 +231,12 @@ impl ExecCell {
             return false;
         }
 
-        !self.is_exploring_cell() && self.calls.iter().all(|c| c.duration.is_some())
+        // Exploration stays open for adjacent calls, including after a failed read/list/search.
+        !self.is_exploring_cell() && self.group.calls.iter().all(|c| c.duration.is_some())
     }
 
     pub(crate) fn mark_failed(&mut self) {
-        for call in self.calls.iter_mut() {
+        for call in self.group.calls.iter_mut() {
             if call.duration.is_none() {
                 let elapsed = call
                     .start_time
@@ -205,15 +252,15 @@ impl ExecCell {
     }
 
     pub(crate) fn is_exploring_cell(&self) -> bool {
-        self.calls.iter().all(Self::is_exploring_call)
+        self.group.calls.iter().all(Self::is_exploring_call)
     }
 
     pub(crate) fn is_active(&self) -> bool {
-        self.calls.iter().any(|c| c.duration.is_none())
+        self.group.calls.iter().any(|c| c.duration.is_none())
     }
 
     pub(crate) fn has_failed_call(&self) -> bool {
-        self.calls.iter().any(|call| {
+        self.group.calls.iter().any(|call| {
             call.duration.is_some()
                 && call
                     .output
@@ -223,7 +270,8 @@ impl ExecCell {
     }
 
     pub(crate) fn active_start_time(&self) -> Option<Instant> {
-        self.calls
+        self.group
+            .calls
             .iter()
             .find(|c| c.duration.is_none())
             .and_then(|c| c.start_time)
@@ -238,14 +286,20 @@ impl ExecCell {
     }
 
     pub(crate) fn iter_calls(&self) -> impl Iterator<Item = &ExecCall> {
-        self.calls.iter()
+        self.group.calls.iter()
     }
 
     pub(crate) fn append_output(&mut self, call_id: &str, chunk: &str) -> bool {
         if chunk.is_empty() {
             return false;
         }
-        let Some(call) = self.calls.iter_mut().rev().find(|c| c.call_id == call_id) else {
+        let Some(call) = self
+            .group
+            .calls
+            .iter_mut()
+            .rev()
+            .find(|c| c.call_id == call_id)
+        else {
             return false;
         };
         let output = call.output.get_or_insert_with(CommandOutput::default);

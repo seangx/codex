@@ -12,9 +12,10 @@ use codex_protocol::permissions::NetworkSandboxPolicy;
 use pretty_assertions::assert_eq;
 
 #[tokio::test]
-async fn submitting_user_turn_returns_from_embedded_transcript_to_latest() -> Result<()> {
+async fn submitting_user_turn_returns_from_owned_transcript_to_latest() -> Result<()> {
     let (mut app, mut app_event_rx, mut op_rx) = make_test_app_with_channels().await;
     let mut tui = crate::tui::test_support::make_test_tui()?;
+    tui.set_owned_screen(/*owned*/ true)?;
     let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
     let thread_id = ThreadId::from_string("123e4567-e89b-12d3-a456-426614174000")?;
     app.active_thread_id = Some(thread_id);
@@ -25,6 +26,9 @@ async fn submitting_user_turn_returns_from_embedded_transcript_to_latest() -> Re
     app.transcript_cells = (0..30)
         .map(|i| plain_line_cell(format!("history-{i}")))
         .collect();
+    let size = Size::new(/*width*/ 80, /*height*/ 12);
+    tui.terminal.resize(size)?;
+    app.render_owned_transcript(&mut tui, size)?;
     app.handle_mouse_scroll(
         &mut tui,
         crate::tui::MouseScrollEvent {
@@ -37,11 +41,7 @@ async fn submitting_user_turn_returns_from_embedded_transcript_to_latest() -> Re
             ticks: 1,
         },
     )?;
-    assert!(
-        app.overlay
-            .as_ref()
-            .is_some_and(Overlay::is_embedded_transcript)
-    );
+    assert!(!app.transcript_view.is_following());
 
     app.chat_widget
         .restore_user_message_to_composer(UserMessage::from("hello"));
@@ -58,6 +58,7 @@ async fn submitting_user_turn_returns_from_embedded_transcript_to_latest() -> Re
 
     assert!(matches!(control, AppRunControl::Continue));
     assert!(app.overlay.is_none());
+    assert!(app.transcript_view.is_following());
 
     app_server.shutdown().await?;
     Ok(())

@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use super::AppServerSession;
 use crate::history_cell::HistoryRenderMode;
 use crate::legacy_core::config::Config;
+use crate::local_settings::LocalSettings;
 use crate::resize_reflow_cap::resize_reflow_max_rows;
 use crate::thread_transcript::RawReasoningVisibility;
 use crate::thread_transcript::thread_items_to_transcript_cells;
@@ -27,7 +28,7 @@ use color_eyre::eyre::WrapErr;
 
 pub(crate) const INITIAL_HISTORY_TURN_LIMIT: u32 = 5;
 const INITIAL_HISTORY_ROW_LIMIT: usize = 20;
-const INITIAL_HISTORY_ITEM_SCAN_LIMIT: usize = 128;
+pub(super) const INITIAL_HISTORY_ITEM_SCAN_LIMIT: usize = 128;
 // Thread items can contain multi-megabyte inline media, so keep initial transport pages small.
 pub(super) const INITIAL_HISTORY_ITEM_PAGE_LIMIT: u32 = 16;
 pub(crate) const HISTORY_ITEM_PAGE_LIMIT: u32 = 100;
@@ -38,6 +39,75 @@ pub(crate) enum HistoryHydrationScope<'a> {
     Initial,
     Complete,
     ThroughTurn(&'a str),
+}
+
+/// Limits initial hydration independently from the number of items retained by later paging.
+struct HistoryLoadBudget {
+    rows: Option<usize>,
+    items: Option<usize>,
+    page_limit: u32,
+}
+
+impl HistoryLoadBudget {
+    fn new(
+        scope: HistoryHydrationScope<'_>,
+        config: Option<&Config>,
+        local_settings: Option<&crate::local_settings::LocalSettings>,
+        terminal_height: u16,
+    ) -> Self {
+        let transcript_mode = local_settings
+            .map(|settings| settings.transcript_mode)
+            .or_else(|| config.map(|config| LocalSettings::from(config).transcript_mode));
+        if scope == HistoryHydrationScope::Initial
+            && transcript_mode.is_some_and(crate::transcript_mode::TranscriptMode::is_owned)
+        {
+            // A few screenfuls cover the first viewport and nearby reading without coupling
+            // owned history to terminal scrollback settings, including unlimited scrollback.
+            return Self {
+                rows: Some(usize::from(terminal_height.max(/*other*/ 1)) * 3),
+                items: Some(INITIAL_HISTORY_ITEM_SCAN_LIMIT),
+                page_limit: INITIAL_HISTORY_ITEM_PAGE_LIMIT,
+            };
+        }
+        let configured_rows = local_settings
+            .and_then(|settings| resize_reflow_max_rows(settings.terminal_resize_reflow()));
+        match scope {
+            HistoryHydrationScope::Initial => Self {
+                rows: Some(
+                    configured_rows
+                        .unwrap_or(/*default*/ 1)
+                        .min(INITIAL_HISTORY_ROW_LIMIT),
+                ),
+                items: Some(INITIAL_HISTORY_ITEM_SCAN_LIMIT),
+                page_limit: INITIAL_HISTORY_ITEM_PAGE_LIMIT,
+            },
+            HistoryHydrationScope::Complete | HistoryHydrationScope::ThroughTurn(_) => Self {
+                rows: configured_rows,
+                items: None,
+                page_limit: HISTORY_ITEM_PAGE_LIMIT,
+            },
+        }
+    }
+
+    fn next_page_size(&self, rendered_rows: usize, scanned_items: usize) -> Option<u32> {
+        let remaining_rows = self.rows.map(|budget| budget.saturating_sub(rendered_rows));
+        let remaining_items = self
+            .items
+            .map(|budget| budget.saturating_sub(scanned_items));
+        if remaining_rows == Some(0) || remaining_items == Some(0) {
+            return None;
+        }
+        let limit = remaining_items
+            .unwrap_or(self.page_limit as usize)
+            .min(self.page_limit as usize);
+        // After the first page, hidden items must not reduce requests to one item.
+        let limit = if scanned_items != 0 {
+            limit
+        } else {
+            limit.min(remaining_rows.unwrap_or(limit))
+        };
+        Some(limit as u32)
+    }
 }
 
 pub(crate) fn thread_items_page_params(
@@ -106,8 +176,8 @@ impl AppServerSession {
                     ..ThreadHistoryPagination::default()
                 },
             );
-        } else {
-            self.cancel_older_history_page(thread_id);
+        } else if let Some(page) = self.history_pagination.get_mut(&thread_id) {
+            page.loading_older = false;
         }
         Ok(response)
     }
@@ -128,8 +198,17 @@ impl AppServerSession {
         Some(cursor)
     }
 
-    pub(crate) fn cancel_older_history_page(&mut self, thread_id: ThreadId) {
-        if let Some(page) = self.history_pagination.get_mut(&thread_id) {
+    /// Match a completion to the page still pending for this thread, before interpreting its result.
+    pub(crate) fn is_older_history_page_pending(&self, thread_id: ThreadId, cursor: &str) -> bool {
+        self.history_pagination.get(&thread_id).is_some_and(|page| {
+            page.loading_older && page.next_item_cursor.as_deref() == Some(cursor)
+        })
+    }
+
+    pub(crate) fn cancel_older_history_page(&mut self, thread_id: ThreadId, cursor: &str) {
+        if let Some(page) = self.history_pagination.get_mut(&thread_id)
+            && page.next_item_cursor.as_deref() == Some(cursor)
+        {
             page.loading_older = false;
         }
     }
@@ -141,12 +220,12 @@ impl AppServerSession {
         page: ThreadItemsListResponse,
         turns: &mut Vec<Turn>,
     ) -> Result<Vec<ThreadItem>> {
+        if !self.is_older_history_page_pending(thread_id, cursor) {
+            return Ok(Vec::new());
+        }
         let Some(mut state) = self.history_pagination.get(&thread_id).cloned() else {
             return Ok(Vec::new());
         };
-        if !state.loading_older || state.next_item_cursor.as_deref() != Some(cursor) {
-            return Ok(Vec::new());
-        }
         let items = self
             .merge_thread_item_page(thread_id, page, &mut state, turns)
             .await?;
@@ -185,6 +264,7 @@ impl AppServerSession {
         &mut self,
         thread_id: ThreadId,
         cursor: Option<String>,
+        limit: u32,
     ) -> Result<ThreadTurnsListResponse> {
         let request_id = self.next_request_id();
         self.client
@@ -193,7 +273,7 @@ impl AppServerSession {
                 params: ThreadTurnsListParams {
                     thread_id: thread_id.to_string(),
                     cursor,
-                    limit: Some(INITIAL_HISTORY_TURN_LIMIT),
+                    limit: Some(limit),
                     sort_direction: Some(SortDirection::Desc),
                     items_view: Some(TurnItemsView::NotLoaded),
                 },
@@ -214,20 +294,32 @@ impl AppServerSession {
             page.next_cursor,
             &mut state.seen_item_cursors,
         );
+        let mut missing_turn_ids = page
+            .data
+            .iter()
+            .filter(|entry| !turns.iter().any(|turn| turn.id == entry.turn_id))
+            .map(|entry| entry.turn_id.clone())
+            .collect::<HashSet<_>>();
         let mut items = Vec::new();
         for entry in page.data {
             while !turns.iter().any(|turn| turn.id == entry.turn_id) {
                 let Some(cursor) = state.next_turn_cursor.take() else {
                     break;
                 };
+                // Fetch only the remaining item-backed turns so metadata does not run ahead
+                // of this page. Empty turns between them may require another bounded request.
+                let limit = missing_turn_ids.len().min(HISTORY_ITEM_PAGE_LIMIT as usize) as u32;
                 let page = self
-                    .thread_turns_page(thread_id, Some(cursor.clone()))
+                    .thread_turns_page(thread_id, Some(cursor.clone()), limit)
                     .await?;
                 state.next_turn_cursor = advancing_cursor(
                     Some(&cursor),
                     page.next_cursor,
                     &mut state.seen_turn_cursors,
                 );
+                for turn in &page.data {
+                    missing_turn_ids.remove(&turn.id);
+                }
                 turns.splice(0..0, page.data.into_iter().rev());
             }
             if let Some(turn) = turns.iter_mut().find(|turn| turn.id == entry.turn_id)
@@ -294,7 +386,9 @@ impl AppServerSession {
             return Ok(());
         }
 
-        let page = self.thread_turns_page(thread_id, turn_cursor).await?;
+        let page = self
+            .thread_turns_page(thread_id, turn_cursor, INITIAL_HISTORY_TURN_LIMIT)
+            .await?;
         thread.turns = page.data.into_iter().rev().collect();
         let mut state = ThreadHistoryPagination {
             history_mode: ThreadHistoryMode::Paginated,
@@ -302,47 +396,12 @@ impl AppServerSession {
             next_item_cursor: item_cursor,
             ..ThreadHistoryPagination::default()
         };
-        let width = crossterm::terminal::size()
-            .map(|(width, _)| width.max(/*other*/ 1))
-            .unwrap_or(/*default*/ 80);
-        let configured_row_budget = local_settings
-            .and_then(|settings| resize_reflow_max_rows(settings.terminal_resize_reflow()));
-        let row_budget = match scope {
-            HistoryHydrationScope::Initial => Some(
-                configured_row_budget
-                    .unwrap_or(/*default*/ 1)
-                    .min(INITIAL_HISTORY_ROW_LIMIT),
-            ),
-            HistoryHydrationScope::Complete | HistoryHydrationScope::ThroughTurn(_) => {
-                configured_row_budget
-            }
-        };
-        let item_budget = match scope {
-            HistoryHydrationScope::Initial => Some(INITIAL_HISTORY_ITEM_SCAN_LIMIT),
-            HistoryHydrationScope::Complete | HistoryHydrationScope::ThroughTurn(_) => None,
-        };
-        let page_limit = match scope {
-            HistoryHydrationScope::Initial => INITIAL_HISTORY_ITEM_PAGE_LIMIT,
-            HistoryHydrationScope::Complete | HistoryHydrationScope::ThroughTurn(_) => {
-                HISTORY_ITEM_PAGE_LIMIT
-            }
-        };
+        let (width, height) = crossterm::terminal::size().unwrap_or(/*default*/ (80, 24));
+        let width = width.max(/*other*/ 1);
+        let budget = HistoryLoadBudget::new(scope, config, local_settings, height);
         let mut scanned_items = 0;
         let mut rendered_rows = 0;
-        loop {
-            let remaining_rows = row_budget.map(|budget| budget.saturating_sub(rendered_rows));
-            let remaining_items = item_budget.map(|budget| budget.saturating_sub(scanned_items));
-            if remaining_rows == Some(0) || remaining_items == Some(0) {
-                break;
-            }
-            let limit = remaining_items
-                .unwrap_or(page_limit as usize)
-                .min(page_limit as usize);
-            let limit = if rendered_rows == 0 && scanned_items != 0 {
-                limit
-            } else {
-                limit.min(remaining_rows.unwrap_or(limit))
-            } as u32;
+        while let Some(limit) = budget.next_page_size(rendered_rows, scanned_items) {
             let page = self
                 .thread_items_page(
                     thread_id,

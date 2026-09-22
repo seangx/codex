@@ -4,6 +4,7 @@
 //! exec-cell grouping and unified exec wait state.
 
 use super::*;
+use crate::exec_cell::CommandOutput;
 
 impl ChatWidget {
     pub(super) fn flush_unified_exec_wait_streak(&mut self) {
@@ -11,8 +12,9 @@ impl ChatWidget {
             return;
         };
         let cell = history_cell::new_unified_exec_interaction(wait.command_display, String::new());
-        self.app_event_tx
-            .send(AppEvent::InsertHistoryCell(Box::new(cell)));
+        if let Err(cell) = self.absorb_activity_detail(Box::new(cell)) {
+            self.app_event_tx.send(AppEvent::InsertHistoryCell(cell));
+        }
         self.restore_reasoning_status_header();
     }
 
@@ -313,7 +315,7 @@ impl ChatWidget {
                 parsed_cmd,
                 source,
                 /*interaction_input*/ None,
-                self.local_settings.tui.animations,
+                self.local_settings.tui.animations && self.local_settings.tui.effects.progress,
             )));
             self.bump_active_cell_revision();
         } else {
@@ -413,21 +415,17 @@ impl ChatWidget {
         let is_unified_exec_interaction =
             matches!(source, ExecCommandSource::UnifiedExecInteraction);
         let is_user_shell = source == ExecCommandSource::UserShell;
-        // Unified exec skips unknown start events, so group their successful completions here.
+        // Completion-only replay has no begin event to join adjacent exploration. Extend only
+        // a finished, compatible group; an unrelated running group must retain orphan routing.
         if !was_running
-            && source == ExecCommandSource::UnifiedExecStartup
             && let Some(cell) = self
                 .transcript
                 .active_cell
                 .as_mut()
                 .and_then(|cell| cell.as_any_mut().downcast_mut::<ExecCell>())
             && !cell.is_active()
-            && cell.iter_calls().all(|call| {
-                matches!(
-                    call.source,
-                    ExecCommandSource::Agent | ExecCommandSource::UnifiedExecStartup
-                )
-            })
+            && !cell.should_flush()
+            && !cell.iter_calls().any(|call| call.call_id == id)
         {
             cell.add_call(
                 id.clone(),
@@ -438,46 +436,37 @@ impl ChatWidget {
             );
         }
         let end_target = match self.transcript.active_cell.as_ref() {
-            Some(cell) if cell.as_any().is::<ExecCell>() => {
-                let exec_cell = cell
-                    .as_any()
-                    .downcast_ref::<ExecCell>()
-                    .expect("checked ExecCell type");
-                if exec_cell.iter_calls().any(|call| call.call_id == id) {
-                    ExecEndTarget::DirectTracked
-                } else if exec_cell.is_active() {
+            Some(cell) => {
+                if let Some(exec_cell) = cell.as_any().downcast_ref::<ExecCell>() {
+                    if exec_cell.iter_calls().any(|call| call.call_id == id) {
+                        ExecEndTarget::DirectTracked
+                    } else if exec_cell.is_active() {
+                        ExecEndTarget::OrphanHistoryWhileDirectExec
+                    } else {
+                        ExecEndTarget::NewCell
+                    }
+                } else if let Some(group) = cell.as_any().downcast_ref::<ToolActivityGroupCell>() {
+                    if group.exec_for_call(&id).is_some() {
+                        ExecEndTarget::GroupTracked
+                    } else if group.is_active() && source != ExecCommandSource::UnifiedExecStartup {
+                        ExecEndTarget::OrphanHistoryWhileDirectExec
+                    } else {
+                        ExecEndTarget::AppendToGroup
+                    }
+                } else if cell.as_any().is::<McpToolCallCell>()
+                    || cell
+                        .as_any()
+                        .downcast_ref::<history_cell::ComputerActivityCell>()
+                        .is_some_and(history_cell::ComputerActivityCell::is_active)
+                {
                     ExecEndTarget::OrphanHistoryWhileDirectExec
                 } else {
                     ExecEndTarget::NewCell
                 }
             }
-            Some(cell) if cell.as_any().is::<ToolActivityGroupCell>() => {
-                let group = cell
-                    .as_any()
-                    .downcast_ref::<ToolActivityGroupCell>()
-                    .expect("checked ToolActivityGroupCell type");
-                if group.exec_for_call(&id).is_some() {
-                    ExecEndTarget::GroupTracked
-                } else if group.is_active() && source != ExecCommandSource::UnifiedExecStartup {
-                    ExecEndTarget::OrphanHistoryWhileDirectExec
-                } else {
-                    ExecEndTarget::AppendToGroup
-                }
-            }
-            Some(cell)
-                if cell.as_any().is::<McpToolCallCell>()
-                    || cell
-                        .as_any()
-                        .downcast_ref::<history_cell::ComputerActivityCell>()
-                        .is_some_and(history_cell::ComputerActivityCell::is_active) =>
-            {
-                ExecEndTarget::OrphanHistoryWhileDirectExec
-            }
-            Some(_) | None => ExecEndTarget::NewCell,
+            None => ExecEndTarget::NewCell,
         };
 
-        // Unified exec interaction rows intentionally hide command output text in the exec cell and
-        // instead render the interaction-specific content elsewhere in the UI.
         let output = if is_unified_exec_interaction {
             CommandOutput::new(exit_code, String::new())
         } else {
@@ -539,7 +528,7 @@ impl ChatWidget {
                     parsed,
                     source,
                     /*interaction_input*/ None,
-                    self.local_settings.tui.animations,
+                    self.local_settings.tui.animations && self.local_settings.tui.effects.progress,
                 );
                 let completed = orphan.complete_call(&id, output, duration);
                 debug_assert!(completed, "new orphan exec cell should contain {id}");
@@ -554,7 +543,7 @@ impl ChatWidget {
                     parsed,
                     source,
                     /*interaction_input*/ None,
-                    self.local_settings.tui.animations,
+                    self.local_settings.tui.animations && self.local_settings.tui.effects.progress,
                 );
                 let completed = cell.complete_call(&id, output, duration);
                 debug_assert!(completed, "new grouped exec cell should contain {id}");
@@ -567,14 +556,13 @@ impl ChatWidget {
                 }
             }
             ExecEndTarget::NewCell => {
-                self.flush_active_cell();
                 let mut cell = new_active_exec_command(
                     id.clone(),
                     command,
                     parsed,
                     source,
                     /*interaction_input*/ None,
-                    self.local_settings.tui.animations,
+                    self.local_settings.tui.animations && self.local_settings.tui.effects.progress,
                 );
                 let completed = cell.complete_call(&id, output, duration);
                 debug_assert!(completed, "new exec cell should contain {id}");

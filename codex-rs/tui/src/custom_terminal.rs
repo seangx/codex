@@ -30,6 +30,7 @@ use crossterm::cursor::RestorePosition;
 use crossterm::cursor::SavePosition;
 use crossterm::cursor::SetCursorStyle;
 use crossterm::queue;
+use crossterm::style::Colored;
 use crossterm::style::Colors;
 use crossterm::style::Print;
 use crossterm::style::SetAttribute;
@@ -932,6 +933,8 @@ fn draw<I>(writer: &mut impl Write, commands: I) -> io::Result<()>
 where
     I: Iterator<Item = DrawCommand>,
 {
+    // Disabled crossterm colors emit an empty SGR that also resets non-color attributes.
+    let color_enabled = !Colored::ansi_color_disabled_memoized();
     let mut fg = Color::Reset;
     let mut bg = Color::Reset;
     let mut modifier = Modifier::empty();
@@ -966,7 +969,7 @@ where
                     diff.queue(writer)?;
                     modifier = cell.modifier;
                 }
-                if cell.fg != fg || cell.bg != bg {
+                if color_enabled && (cell.fg != fg || cell.bg != bg) {
                     queue!(
                         writer,
                         SetColors(Colors::new(
@@ -1269,63 +1272,45 @@ mod tests {
         use crossterm::event::MouseEvent;
         use crossterm::event::MouseEventKind;
 
-        enum Transition {
-            Immediate,
-            Deferred,
-        }
+        let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+        let size = tui.terminal.last_known_screen_size;
+        let inline = Rect::new(/*x*/ 0, /*y*/ 3, size.width, /*height*/ 6);
+        tui.terminal.set_viewport_area(inline);
+        crate::insert_history::insert_history_lines(
+            &mut tui.terminal,
+            vec![Line::from("history text")],
+        )
+        .expect("insert history");
+        let inline = tui.terminal.viewport_area;
+        let before = tui.terminal.selection_buffer();
 
-        for transition in [Transition::Immediate, Transition::Deferred] {
-            let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
-            let size = tui.terminal.last_known_screen_size;
-            let inline = Rect::new(/*x*/ 0, /*y*/ 3, size.width, /*height*/ 6);
-            tui.terminal.set_viewport_area(inline);
-            crate::insert_history::insert_history_lines(
-                &mut tui.terminal,
-                vec![Line::from("history text")],
-            )
-            .expect("insert history");
-            let inline = tui.terminal.viewport_area;
-            let before = tui.terminal.selection_buffer();
-
-            match transition {
-                Transition::Immediate => tui.enter_alt_screen().expect("enter alternate screen"),
-                Transition::Deferred => {
-                    tui.enter_alt_screen_on_next_draw();
-                    tui.draw(size.height, |frame| {
-                        Paragraph::new("History browser").render(frame.area(), frame.buffer_mut());
-                    })
-                    .expect("draw deferred alternate screen");
-                }
-            }
-            // A second overlay entry must not replace the saved main-screen metadata.
-            tui.enter_alt_screen().expect("reenter alternate screen");
-            tui.terminal.clear_visible_screen().expect("clear overlay");
-            tui.leave_alt_screen().expect("restore main screen");
-            let after = tui.terminal.selection_buffer();
-            for y in 0..inline.top() {
-                for x in 0..size.width {
-                    assert_eq!(after[(x, y)], before[(x, y)]);
-                }
-            }
-
-            let mouse = |kind, column| MouseEvent {
-                kind,
-                column,
-                row: inline.top() - 1,
-                modifiers: KeyModifiers::NONE,
-            };
-            tui.handle_mouse_selection_event(mouse(MouseEventKind::Down(MouseButton::Left), 0));
-            assert_eq!(
-                tui.handle_mouse_selection_event(mouse(MouseEventKind::Up(MouseButton::Left), 6)),
-                MouseSelectionAction::Copy("history".to_string()),
-            );
-            let restored_row: String = (0..size.width)
-                .map(|x| after[(x, inline.top() - 1)].symbol())
-                .collect();
-            insta::allow_duplicates! {
-                assert_snapshot!(restored_row.trim_end(), @"history text");
+        tui.enter_alt_screen().expect("enter alternate screen");
+        // A second overlay entry must not replace the saved main-screen metadata.
+        tui.enter_alt_screen().expect("reenter alternate screen");
+        tui.terminal.clear_visible_screen().expect("clear overlay");
+        tui.leave_alt_screen().expect("restore main screen");
+        let after = tui.terminal.selection_buffer();
+        for y in 0..inline.top() {
+            for x in 0..size.width {
+                assert_eq!(after[(x, y)], before[(x, y)]);
             }
         }
+
+        let mouse = |kind, column| MouseEvent {
+            kind,
+            column,
+            row: inline.top() - 1,
+            modifiers: KeyModifiers::NONE,
+        };
+        tui.handle_mouse_selection_event(mouse(MouseEventKind::Down(MouseButton::Left), 0));
+        assert_eq!(
+            tui.handle_mouse_selection_event(mouse(MouseEventKind::Up(MouseButton::Left), 6)),
+            MouseSelectionAction::Copy("history".to_string()),
+        );
+        let restored_row: String = (0..size.width)
+            .map(|x| after[(x, inline.top() - 1)].symbol())
+            .collect();
+        insta::assert_snapshot!(restored_row.trim_end(), @"history text");
     }
 
     #[tokio::test]

@@ -1,0 +1,5 @@
+---
+source: tui/src/chatwidget/tests/exec_flow.rs
+expression: active_blob(&chat)
+---
+• Read 4 files, searched for 3 patterns

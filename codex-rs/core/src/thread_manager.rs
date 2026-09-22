@@ -1,7 +1,8 @@
 mod managed;
+mod shared_instructions;
 
 use crate::CodexAppsToolsCache;
-use crate::agent::AgentControl;
+use crate::agent::LocalAgentControl;
 use crate::agents_md_manager::SessionInstructions;
 use crate::attestation::AttestationProvider;
 use crate::codex_thread::CodexThread;
@@ -24,6 +25,7 @@ use crate::tasks::interrupted_turn_history_marker;
 use crate::thread_startup_metadata::ThreadStartupMetadata;
 use codex_agent_graph_store::AgentGraphStore;
 use codex_agent_graph_store::LocalAgentGraphStore;
+use codex_agent_message_board_extension::LocalAgentMessageBoard;
 use codex_analytics::AnalyticsEventsClient;
 use codex_app_server_protocol::ThreadHistoryBuilder;
 use codex_app_server_protocol::TurnStatus;
@@ -240,7 +242,7 @@ pub struct ThreadManager {
 pub struct InternalSessionParent {
     pub(crate) thread_id: ThreadId,
     pub(crate) auth_manager: Arc<AuthManager>,
-    pub(crate) agent_control: AgentControl,
+    pub(crate) agent_control: LocalAgentControl,
     pub(crate) originator: String,
     pub(crate) inherited_instructions: Option<SessionInstructions>,
 }
@@ -312,7 +314,7 @@ struct ThreadSpawnRequest {
     startup: Option<Arc<crate::session::startup::SessionStartup>>,
     options: StartThreadOptions,
     auth_manager: Arc<AuthManager>,
-    agent_control: AgentControl,
+    agent_control: LocalAgentControl,
     parent_thread_id: Option<ThreadId>,
     parent_originator: Option<String>,
     forked_from_thread_id: Option<ThreadId>,
@@ -327,7 +329,7 @@ impl ThreadSpawnRequest {
     fn new(
         options: StartThreadOptions,
         auth_manager: Arc<AuthManager>,
-        agent_control: AgentControl,
+        agent_control: LocalAgentControl,
     ) -> Self {
         Self {
             startup: None,
@@ -379,7 +381,7 @@ fn effective_originator_value(
 pub(crate) struct ResumeThreadWithHistoryOptions {
     pub(crate) config: Config,
     pub(crate) initial_history: InitialHistory,
-    pub(crate) agent_control: AgentControl,
+    pub(crate) agent_control: LocalAgentControl,
     pub(crate) session_source: SessionSource,
     pub(crate) parent_thread_id: Option<ThreadId>,
     pub(crate) environment_selections: Option<Vec<TurnEnvironmentSelection>>,
@@ -390,10 +392,11 @@ pub(crate) struct ResumeThreadWithHistoryOptions {
 }
 
 /// Shared, `Arc`-owned state for [`ThreadManager`]. This `Arc` is required to have a single
-/// `Arc` reference that can be downgraded to by `AgentControl` while preventing every single
+/// `Arc` reference that can be downgraded to by `LocalAgentControl` while preventing every single
 /// function to require an `Arc<&Self>`.
 pub(crate) struct ThreadManagerState {
     threads: Arc<RwLock<HashMap<ThreadId, Arc<CodexThread>>>>,
+    shared_thread_instructions: shared_instructions::SharedThreadInstructionsProviders,
     thread_created_tx: broadcast::Sender<ThreadId>,
     thread_id_generator: ThreadIdGenerator,
     auth_manager: Arc<AuthManager>,
@@ -447,10 +450,23 @@ pub fn thread_store_from_config(
                 .features
                 .enabled(Feature::BackgroundPaginatedRolloutMigration);
             let has_state_db = state_db.is_some();
-            let store = Arc::new(LocalThreadStore::new(
-                LocalThreadStoreConfig::from_config(config),
-                state_db,
-            ));
+            let sqlite = config.sqlite_config().clone();
+            let store = Arc::new(
+                LocalThreadStore::new(LocalThreadStoreConfig::from_config(config), state_db)
+                    .with_thread_data_cleanup(move |thread_ids| {
+                        let sqlite = sqlite.clone();
+                        Box::pin(async move {
+                            let boards = thread_ids.into_iter().map(Into::into).collect::<Vec<_>>();
+                            LocalAgentMessageBoard::delete_boards(&sqlite, &boards)
+                                .await
+                                .map_err(|err| ThreadStoreError::Internal {
+                                    message: format!(
+                                        "failed to delete agent message boards: {err}"
+                                    ),
+                                })
+                        })
+                    }),
+            );
             if has_state_db && background_migration_enabled {
                 let startup_store = Arc::clone(&store);
                 let codex_home = config.codex_home.to_path_buf();
@@ -542,6 +558,7 @@ impl ThreadManager {
         Self {
             state: Arc::new(ThreadManagerState {
                 threads: Arc::new(RwLock::new(HashMap::new())),
+                shared_thread_instructions: Default::default(),
                 thread_created_tx,
                 thread_id_generator: default_thread_id_generator(),
                 models_manager,
@@ -690,6 +707,7 @@ impl ThreadManager {
         Self {
             state: Arc::new(ThreadManagerState {
                 threads: Arc::new(RwLock::new(HashMap::new())),
+                shared_thread_instructions: Default::default(),
                 thread_created_tx,
                 thread_id_generator: default_thread_id_generator(),
                 models_manager: create_model_provider(provider, Some(auth_manager.clone()))
@@ -1531,16 +1549,16 @@ impl ThreadManager {
         Box::pin(self.state.spawn_thread(request)).await
     }
 
-    pub(crate) fn agent_control(&self) -> AgentControl {
-        AgentControl::new(
+    pub(crate) fn agent_control(&self) -> LocalAgentControl {
+        LocalAgentControl::new(
             Arc::downgrade(&self.state),
             self.state.thread_id_generator.clone(),
             /*rollout_budget*/ None,
         )
     }
 
-    fn agent_control_for_config(&self, config: &Config) -> AgentControl {
-        AgentControl::new(
+    fn agent_control_for_config(&self, config: &Config) -> LocalAgentControl {
+        LocalAgentControl::new(
             Arc::downgrade(&self.state),
             self.state.thread_id_generator.clone(),
             config.rollout_budget.clone(),
@@ -1566,6 +1584,15 @@ impl ThreadManager {
 }
 
 impl ThreadManagerState {
+    pub(crate) fn shared_thread_instructions_provider(
+        &self,
+        root_thread_id: ThreadId,
+        provider: Option<Arc<dyn ThreadInstructionsProvider>>,
+    ) -> Option<Arc<dyn ThreadInstructionsProvider>> {
+        self.shared_thread_instructions
+            .for_root(root_thread_id, provider)
+    }
+
     pub(crate) fn agent_graph_store(&self) -> Option<Arc<dyn AgentGraphStore>> {
         self.agent_graph_store.clone()
     }
@@ -1733,7 +1760,8 @@ impl ThreadManagerState {
     ///
     /// Fresh roots, cold resumes, and root forks retain the global and any supplied
     /// thread provider. The session's AgentsMdManager loads them at startup and
-    /// subsequent context captures. Subagents inherit only applied parent snapshots.
+    /// subsequent context captures. Subagents inherit applied parent snapshots and
+    /// any thread provider that explicitly opts into sharing with descendants.
     /// A root fork without a provider preserves the live source's thread snapshot,
     /// never its task-bound provider. Hosts must supply a provider for offline forks.
     /// Warm resumes retain the existing session and do not call this function.
@@ -1832,7 +1860,7 @@ impl ThreadManagerState {
     pub(crate) async fn spawn_new_thread(
         &self,
         config: Config,
-        agent_control: AgentControl,
+        agent_control: LocalAgentControl,
     ) -> CodexResult<NewThread> {
         Box::pin(self.spawn_new_thread_with_source(
             config,
@@ -1854,7 +1882,7 @@ impl ThreadManagerState {
     pub(crate) async fn spawn_new_thread_with_source(
         &self,
         config: Config,
-        agent_control: AgentControl,
+        agent_control: LocalAgentControl,
         session_source: SessionSource,
         history_mode: Option<ThreadHistoryMode>,
         parent_thread_id: Option<ThreadId>,
@@ -1933,7 +1961,7 @@ impl ThreadManagerState {
         config: Config,
         initial_history: InitialHistory,
         history_mode: Option<ThreadHistoryMode>,
-        agent_control: AgentControl,
+        agent_control: LocalAgentControl,
         session_source: SessionSource,
         thread_source: Option<ThreadSource>,
         parent_thread_id: Option<ThreadId>,

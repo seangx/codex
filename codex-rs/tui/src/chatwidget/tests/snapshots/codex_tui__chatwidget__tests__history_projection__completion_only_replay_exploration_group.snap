@@ -1,0 +1,17 @@
+---
+source: tui/src/chatwidget/tests/history_projection.rs
+expression: "format!(\"compact:\\n{}\\ndetailed:\\n{}\",\nlines_to_single_string(&exploration.display_lines(40)),\nlines_to_single_string(&exploration.transcript_lines(40)),)"
+---
+compact:
+• Read 2 files
+
+detailed:
+$ cat one.rs
+fn main() {}
+✓ • 5ms
+
+• Checking the implementation
+
+$ cat two.rs
+fn main() {}
+✓ • 5ms

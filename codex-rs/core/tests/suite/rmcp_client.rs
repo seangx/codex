@@ -670,7 +670,8 @@ async fn text_only_mcp_content_uses_content_items() -> anyhow::Result<()> {
     })
     .await;
 
-    let output = final_mock.single_request().function_call_output(call_id);
+    let request = final_mock.single_request();
+    let output = request.function_call_output(call_id);
     let header = output["output"][0]["text"]
         .as_str()
         .expect("first content item should contain the wall-time header");
@@ -687,6 +688,22 @@ async fn text_only_mcp_content_uses_content_items() -> anyhow::Result<()> {
                 "text": "content item fixture result",
             },
         ])
+    );
+
+    let first_turn_id = request.body_json()["client_metadata"]["turn_id"].clone();
+    assert!(first_turn_id.is_string());
+    assert_eq!(
+        serde_json::to_value(codex_core::test_support::mcp_attribution_snapshot(
+            &fixture.codex
+        ))?,
+        json!({
+            "status": "complete",
+            "sources": [{
+                "server_name": "rmcp",
+                "tool_name": "image_scenario",
+                "first_turn_id": first_turn_id,
+            }],
+        })
     );
 
     server.verify().await;
@@ -834,10 +851,6 @@ async fn environment_mcp_policy_filters_runtime_config_and_model_tools(
                 shell_environment_policy: Default::default(),
                 windows_sandbox_level: WindowsSandboxLevel::from_config(&fixture.config),
                 windows_sandbox_type: fixture.config.permissions.windows_sandbox_type,
-                windows_sandbox_private_desktop: fixture
-                    .config
-                    .permissions
-                    .windows_sandbox_private_desktop,
                 use_legacy_landlock: fixture.config.features.use_legacy_landlock(),
                 exec_policy: None,
                 mcp_policy: Some(mcp_policy),
@@ -955,7 +968,6 @@ async fn future_environment_mcp_policy_applies_on_the_next_turn() -> anyhow::Res
         shell_environment_policy: Default::default(),
         windows_sandbox_level: WindowsSandboxLevel::from_config(&fixture.config),
         windows_sandbox_type: fixture.config.permissions.windows_sandbox_type,
-        windows_sandbox_private_desktop: fixture.config.permissions.windows_sandbox_private_desktop,
         use_legacy_landlock: fixture.config.features.use_legacy_landlock(),
         exec_policy: None,
         mcp_policy: Some(EnvironmentMcpPolicy {
@@ -2051,10 +2063,6 @@ async fn stdio_mcp_tool_call_includes_sandbox_state_meta(
                     shell_environment_policy: Default::default(),
                     windows_sandbox_level: WindowsSandboxLevel::from_config(&fixture.config),
                     windows_sandbox_type: fixture.config.permissions.windows_sandbox_type,
-                    windows_sandbox_private_desktop: fixture
-                        .config
-                        .permissions
-                        .windows_sandbox_private_desktop,
                     use_legacy_landlock: fixture.config.features.use_legacy_landlock(),
                     exec_policy: None,
                     mcp_policy: None,
@@ -3008,6 +3016,7 @@ async fn stdio_image_responses_are_sanitized_for_text_only_model() -> anyhow::Re
                 supports_search_tool: false,
                 supports_experimental_context: false,
                 use_responses_lite: false,
+                supports_reasoning_effort_updates: false,
                 guardian: None,
                 node_repl_auto_review_required: false,
                 node_repl_disabled: false,

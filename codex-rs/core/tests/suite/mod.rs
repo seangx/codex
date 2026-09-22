@@ -53,6 +53,7 @@ mod client_websockets;
 mod cloud_config;
 mod code_mode;
 mod code_mode_elicitation;
+mod code_mode_model_messages;
 mod codex_apps_protocol;
 mod codex_delegate;
 mod collaboration_instructions;
@@ -80,10 +81,14 @@ mod guardian_cached_score;
 mod guardian_checkpoint_migration;
 // Uses the same command-approval harness as guardian_review below.
 mod canonical_plugin_connectors;
+mod gateway_auth;
 #[cfg(not(target_os = "windows"))]
 mod guardian_context_budget;
 mod guardian_history;
 mod guardian_mcp_elicitation;
+#[cfg(not(target_os = "windows"))]
+#[path = "guardian_persistence_tests.rs"]
+mod guardian_persistence;
 mod guardian_retained_context;
 mod guardian_retry;
 #[cfg(not(target_os = "windows"))]
@@ -152,6 +157,7 @@ mod realtime_conversation;
 mod realtime_initial_items;
 mod realtime_misalignment;
 mod realtime_sideband_endpoint;
+mod realtime_system_proxy;
 mod reasoning_effort_override;
 mod remote_env;
 mod remote_models;
@@ -214,6 +220,8 @@ mod user_notification;
 mod user_shell_cmd;
 mod view_image;
 mod web_search;
+#[path = "web_search_system_proxy_tests.rs"]
+mod web_search_system_proxy;
 mod websocket_fallback;
 mod window_headers;
 #[cfg(target_os = "windows")]

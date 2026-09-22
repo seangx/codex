@@ -92,6 +92,7 @@ fn terminal_draw_repaints_the_cursor_anchor_only_when_its_style_needs_restoring(
 
 #[test]
 fn terminal_draw_repairs_styled_anchor_on_cursor_only_frames() {
+    let colors_enabled = !Colored::ansi_color_disabled_memoized();
     let mut terminal =
         Terminal::with_options(CaptureBackend::new(/*width*/ 12, /*height*/ 2)).expect("terminal");
     let area = Rect::new(
@@ -124,7 +125,12 @@ fn terminal_draw_repairs_styled_anchor_on_cursor_only_frames() {
         assert_eq!(parser.screen().cursor_position(), (1, x));
         for column in 0..area.width {
             let cell = parser.screen().cell(1, column).expect("viewport cell");
-            assert_eq!(cell.bgcolor(), vt100::Color::Rgb(80, 80, 80));
+            let expected_background = if colors_enabled {
+                vt100::Color::Rgb(80, 80, 80)
+            } else {
+                vt100::Color::Default
+            };
+            assert_eq!(cell.bgcolor(), expected_background);
             assert!(
                 cell.bold(),
                 "lost anchor or trailing-cell modifier at {column}"
@@ -132,7 +138,9 @@ fn terminal_draw_repairs_styled_anchor_on_cursor_only_frames() {
         }
         frames.push(terminal.backend().output().escape_debug().to_string());
     }
-    assert_snapshot!("cursor_style_styled_frames", frames.join("\n"));
+    if colors_enabled {
+        assert_snapshot!("cursor_style_styled_frames", frames.join("\n"));
+    }
 }
 
 #[test]
@@ -144,7 +152,9 @@ fn terminal_draw_repairs_owned_wide_hyperlink_after_skipped_glyphs() {
     );
     terminal.set_viewport_area(area);
     let mut frames = Vec::new();
-    for _ in 0..2 {
+    let mut parser =
+        vt100::Parser::new(/*rows*/ 1, /*cols*/ 8, /*scrollback_len*/ 0);
+    for index in 0..2 {
         terminal.backend_mut().output.clear();
         terminal
             .draw(|frame| {
@@ -158,9 +168,28 @@ fn terminal_draw_repairs_owned_wide_hyperlink_after_skipped_glyphs() {
                 frame.set_cursor_position((5, 0));
             })
             .expect("draw");
+        let output = terminal.backend().output();
+        let open = "\x1b]8;;https://example.com";
+        if index == 0 {
+            let (_, after_open) = output.split_once(open).expect("hyperlink open");
+            let (_, after_glyph) = after_open.split_once('界').expect("wide hyperlink glyph");
+            assert!(after_glyph.contains("\x1b]8;;"), "hyperlink close missing");
+        } else {
+            // An unchanged cursor style must not repaint the repair anchor.
+            assert!(!output.contains(open));
+            assert!(!output.contains('界'));
+        }
+        parser.process(output.as_bytes());
+        assert_eq!(
+            parser.screen().cell(0, 3).expect("wide anchor").contents(),
+            "界"
+        );
+        assert_eq!(parser.screen().cursor_position(), (0, 5));
         frames.push(terminal.backend().output().escape_debug().to_string());
     }
-    assert_snapshot!("cursor_style_owned_wide_frames", frames.join("\n"));
+    if !Colored::ansi_color_disabled_memoized() {
+        assert_snapshot!("cursor_style_owned_wide_frames", frames.join("\n"));
+    }
 }
 
 #[test]
@@ -191,11 +220,18 @@ fn terminal_draw_repairs_single_column_without_scrolling() {
     }
     parser.screen_mut().set_scrollback(/*rows*/ 1);
     assert_eq!(parser.screen().scrollback(), 0);
-    assert_snapshot!("cursor_style_single_column_frames", frames.join("\n"));
+    if !Colored::ansi_color_disabled_memoized() {
+        assert_snapshot!("cursor_style_single_column_frames", frames.join("\n"));
+    }
 }
 
 #[test]
 fn terminal_draw_omits_cursor_style_without_an_owned_glyph() {
+    let reset_colors = if Colored::ansi_color_disabled_memoized() {
+        "\x1b[m\x1b[m"
+    } else {
+        "\x1b[39m\x1b[49m"
+    };
     let mut terminal =
         Terminal::with_options(CaptureBackend::new(/*width*/ 2, /*height*/ 1)).expect("terminal");
     for width in [0, 2] {
@@ -219,7 +255,7 @@ fn terminal_draw_omits_cursor_style_without_an_owned_glyph() {
             .expect("draw");
         assert_eq!(
             terminal.backend().output(),
-            "\x1b[39m\x1b[49m\x1b[0m\x1b[1;2H\x1b[?25h"
+            format!("{reset_colors}\x1b[0m\x1b[1;2H\x1b[?25h")
         );
     }
     terminal.set_viewport_area(Rect::default());
@@ -227,6 +263,6 @@ fn terminal_draw_omits_cursor_style_without_an_owned_glyph() {
     terminal.draw(|_| {}).expect("hide cursor");
     assert_eq!(
         terminal.backend().output(),
-        "\x1b[39m\x1b[49m\x1b[0m\x1b[?25l"
+        format!("{reset_colors}\x1b[0m\x1b[?25l")
     );
 }

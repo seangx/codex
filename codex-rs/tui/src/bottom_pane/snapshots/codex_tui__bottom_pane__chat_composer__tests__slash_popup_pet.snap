@@ -1,10 +1,9 @@
 ---
 source: tui/src/bottom_pane/chat_composer.rs
-assertion_line: 9178
 expression: terminal.backend()
 ---
+"› /pets  choose or hide the terminal pet                    "
 "────────────────────────────────────────────────────────────"
 "▌ /pet                                                      "
-"▌                                                           "
 "────────────────────────────────────────────────────────────"
-"  /pets  choose or hide the terminal pet                    "
+"                                         100% context left  "

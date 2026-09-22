@@ -2,10 +2,7 @@
 
 use super::*;
 use crate::exec_cell::ExecCell;
-use codex_app_server_protocol::DynamicToolCallOutputContentItem;
-use codex_app_server_protocol::DynamicToolCallStatus;
 use codex_protocol::parse_command::ParsedCommand;
-use serde_json::Value as JsonValue;
 
 const TOOL_SUMMARY_ORANGE: Color = Color::LightYellow;
 
@@ -69,7 +66,7 @@ impl ToolActivityGroupCell {
     ) -> Option<&mut DynamicToolCallCell> {
         self.cells.iter_mut().rev().find_map(|cell| {
             let tool = cell.as_any_mut().downcast_mut::<DynamicToolCallCell>()?;
-            (tool.call_id == call_id).then_some(tool)
+            (tool.call_id() == call_id).then_some(tool)
         })
     }
 
@@ -77,7 +74,7 @@ impl ToolActivityGroupCell {
         self.cells.iter().any(|cell| {
             cell.as_any()
                 .downcast_ref::<DynamicToolCallCell>()
-                .is_some_and(|tool| tool.tool == "exec" && tool.is_active())
+                .is_some_and(|tool| tool.is_exec() && tool.is_active())
         })
     }
 
@@ -121,8 +118,7 @@ impl ToolActivityGroupCell {
             } else if let Some(search) = cell.as_any_mut().downcast_mut::<WebSearchCell>() {
                 search.complete();
             } else if let Some(tool) = cell.as_any_mut().downcast_mut::<DynamicToolCallCell>() {
-                tool.status = DynamicToolCallStatus::Failed;
-                tool.success = Some(false);
+                tool.mark_interrupted();
             }
         }
     }
@@ -217,122 +213,6 @@ impl HistoryCell for ToolActivityGroupCell {
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct DynamicToolCallCell {
-    call_id: String,
-    display_name: String,
-    tool: String,
-    arguments: JsonValue,
-    status: DynamicToolCallStatus,
-    content_items: Vec<DynamicToolCallOutputContentItem>,
-    success: Option<bool>,
-}
-
-impl DynamicToolCallCell {
-    pub(crate) fn new(
-        call_id: String,
-        namespace: Option<String>,
-        tool: String,
-        arguments: JsonValue,
-    ) -> Self {
-        let display_name = namespace
-            .filter(|namespace| !namespace.is_empty())
-            .map_or_else(|| tool.clone(), |namespace| format!("{namespace}.{tool}"));
-        Self {
-            call_id,
-            display_name,
-            tool,
-            arguments,
-            status: DynamicToolCallStatus::InProgress,
-            content_items: Vec::new(),
-            success: None,
-        }
-    }
-
-    pub(crate) fn complete(
-        &mut self,
-        status: DynamicToolCallStatus,
-        content_items: Option<Vec<DynamicToolCallOutputContentItem>>,
-        success: Option<bool>,
-    ) {
-        self.status = status;
-        self.content_items = content_items.unwrap_or_default();
-        self.success = success;
-    }
-
-    fn is_active(&self) -> bool {
-        matches!(self.status, DynamicToolCallStatus::InProgress)
-    }
-
-    fn failed(&self) -> bool {
-        matches!(self.status, DynamicToolCallStatus::Failed) || self.success == Some(false)
-    }
-
-    fn nested_shell_command_count(&self) -> usize {
-        if self.tool != "exec" {
-            return 0;
-        }
-        let input = self
-            .arguments
-            .as_str()
-            .map(str::to_owned)
-            .unwrap_or_else(|| self.arguments.to_string());
-        input.matches("tools.exec_command").count()
-    }
-}
-
-impl HistoryCell for DynamicToolCallCell {
-    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
-        let mut line = Line::from(vec![
-            if self.failed() {
-                "•".red().bold()
-            } else {
-                "•".dim()
-            },
-            " ".into(),
-            if self.is_active() {
-                "Calling".bold()
-            } else {
-                "Called".bold()
-            },
-            " ".into(),
-            self.display_name.clone().cyan(),
-        ]);
-        if line.width() > usize::from(width) {
-            line = Line::from(truncate_text(
-                &line
-                    .spans
-                    .iter()
-                    .map(|span| span.content.as_ref())
-                    .collect::<String>(),
-                usize::from(width),
-            ));
-        }
-        vec![line]
-    }
-
-    fn raw_lines(&self) -> Vec<Line<'static>> {
-        let mut lines = vec![Line::from(format!(
-            "Called {}({})",
-            self.display_name, self.arguments
-        ))];
-        for item in &self.content_items {
-            match item {
-                DynamicToolCallOutputContentItem::InputText { text } => {
-                    lines.extend(raw_lines_from_source(text));
-                }
-                DynamicToolCallOutputContentItem::InputImage { .. } => {
-                    lines.push(Line::from("[image output]"));
-                }
-                DynamicToolCallOutputContentItem::InputAudio { .. } => {
-                    lines.push(Line::from("[audio output]"));
-                }
-            }
-        }
-        lines
-    }
-}
-
 #[derive(Debug, Default)]
 struct ToolActivitySummary {
     reads: usize,
@@ -350,16 +230,23 @@ impl ToolActivitySummary {
     fn add_exec(&mut self, exec: &ExecCell) {
         self.active |= exec.is_active();
         self.failed |= exec.has_failed_call();
-        if !exec.is_exploring_cell() {
-            self.shell_commands += exec.iter_calls().count();
-            return;
-        }
-        for parsed in exec.iter_calls().flat_map(|call| &call.parsed) {
-            match parsed {
-                ParsedCommand::Read { .. } => self.reads += 1,
-                ParsedCommand::ListFiles { .. } => self.lists += 1,
-                ParsedCommand::Search { .. } => self.searches += 1,
-                ParsedCommand::Unknown { .. } => self.shell_commands += 1,
+        for call in exec.iter_calls() {
+            if call.parsed.is_empty()
+                || call
+                    .parsed
+                    .iter()
+                    .any(|parsed| matches!(parsed, ParsedCommand::Unknown { .. }))
+            {
+                self.shell_commands += 1;
+                continue;
+            }
+            for parsed in &call.parsed {
+                match parsed {
+                    ParsedCommand::Read { .. } => self.reads += 1,
+                    ParsedCommand::ListFiles { .. } => self.lists += 1,
+                    ParsedCommand::Search { .. } => self.searches += 1,
+                    ParsedCommand::Unknown { .. } => unreachable!("handled above"),
+                }
             }
         }
     }
@@ -367,14 +254,14 @@ impl ToolActivitySummary {
     fn add_dynamic_tool(&mut self, tool: &DynamicToolCallCell, count_nested_shell: bool) {
         self.active |= tool.is_active();
         self.failed |= tool.failed();
-        if tool.tool == "exec" && !count_nested_shell {
+        let (display_name, nested_shell_commands) = tool.compact_summary();
+        if tool.is_exec() && !count_nested_shell {
             return;
         }
-        let shell_commands = tool.nested_shell_command_count();
-        if shell_commands > 0 {
-            self.shell_commands += shell_commands;
+        if nested_shell_commands > 0 {
+            self.shell_commands += nested_shell_commands;
         } else {
-            self.dynamic_calls.push(tool.display_name.clone());
+            self.dynamic_calls.push(display_name);
         }
     }
 
@@ -476,6 +363,7 @@ mod tests {
     use super::*;
     use crate::exec_cell::new_active_exec_command;
     use codex_app_server_protocol::CommandExecutionSource as ExecCommandSource;
+    use codex_app_server_protocol::ThreadItem;
     use pretty_assertions::assert_eq;
 
     fn line_text(line: &Line<'static>) -> String {
@@ -552,25 +440,39 @@ mod tests {
 
     #[test]
     fn dynamic_exec_counts_nested_shell_commands_in_summary() {
-        let mut group = ToolActivityGroupCell::new(DynamicToolCallCell::new(
-            "dynamic-1".to_string(),
-            Some("functions".to_string()),
-            "exec".to_string(),
-            serde_json::json!(
-                "const results = await Promise.all([tools.exec_command({}), \
-                 tools.exec_command({})]);"
-            ),
-        ));
+        let arguments = serde_json::json!(
+            "const results = await Promise.all([tools.exec_command({}), \
+             tools.exec_command({})]);"
+        );
+        let item = |status, content_items, success| ThreadItem::DynamicToolCall {
+            id: "dynamic-1".to_string(),
+            namespace: Some("functions".to_string()),
+            tool: "exec".to_string(),
+            arguments: arguments.clone(),
+            status,
+            content_items,
+            success,
+            duration_ms: None,
+        };
+        let tool = DynamicToolCallCell::from_item(item(
+            codex_app_server_protocol::DynamicToolCallStatus::InProgress,
+            None,
+            None,
+        ))
+        .expect("dynamic tool item");
+        let mut group = ToolActivityGroupCell::new(tool);
         let tool = group
             .dynamic_for_call_mut("dynamic-1")
             .expect("dynamic tool should exist");
-        tool.complete(
-            DynamicToolCallStatus::Completed,
-            Some(vec![DynamicToolCallOutputContentItem::InputText {
-                text: "large command output".to_string(),
-            }]),
+        assert!(tool.update_from_item(item(
+            codex_app_server_protocol::DynamicToolCallStatus::Completed,
+            Some(vec![
+                codex_app_server_protocol::DynamicToolCallOutputContentItem::InputText {
+                    text: "large command output".to_string(),
+                },
+            ]),
             Some(true),
-        );
+        )));
 
         let lines = group.display_lines(120);
         assert_eq!(line_text(&lines[0]), "• Ran 2 shell commands");

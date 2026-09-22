@@ -2,6 +2,11 @@ use super::residency::is_v2_resident_session_source;
 use super::*;
 use crate::agent::child_config::build_agent_resume_config;
 use crate::agent::role::apply_role_to_config;
+use crate::agent::types::AgentMetadata;
+use crate::agent::types::LiveAgent;
+use crate::agent::types::SpawnAgentForkMode;
+use crate::agent::types::SpawnAgentOptions;
+use crate::agents_md_manager::SessionInstructions;
 use crate::codex_thread::CodexThread;
 use crate::config::PermissionProfileSnapshot;
 use crate::context::ContextualUserFragment;
@@ -172,7 +177,7 @@ async fn load_agent_model_context(
     }
 }
 
-impl AgentControl {
+impl LocalAgentControl {
     /// Restore persisted V2 agent identities without reopening their runtimes.
     pub(crate) async fn restore_v2_agent_metadata(
         &self,
@@ -401,7 +406,7 @@ impl AgentControl {
                     "cannot resume multi-agent v2 child {thread_id} with the current parent settings"
                 ))
             })?;
-            Some((parent, turn.environments.clone()))
+            Some((parent, turn.initial_environments.clone()))
         } else {
             None
         };
@@ -572,7 +577,12 @@ impl AgentControl {
         {
             Some(parent.session.inherited_instructions().await)
         } else {
-            None
+            self.shared_thread_instructions_provider
+                .get()
+                .map(|provider| SessionInstructions {
+                    thread_provider: Some(Arc::clone(provider)),
+                    ..Default::default()
+                })
         };
         // Reserving a slot can evict an idle nested parent. Capture its instructions
         // alongside its authority so the child does not depend on a later live lookup.
@@ -689,7 +699,7 @@ impl AgentControl {
         };
         let notification_source = session_source.clone();
 
-        // The same `AgentControl` is sent to spawn the thread.
+        // The same `LocalAgentControl` is sent to spawn the thread.
         let new_thread = match (session_source, options.fork_mode.as_ref(), inheritance) {
             (Some(session_source), Some(_), inheritance) => {
                 Box::pin(self.spawn_forked_thread(
@@ -967,8 +977,10 @@ impl AgentControl {
                     .inherited_user_message = true;
             }
             if let Some(metadata) = &mut envelope.metadata
-                && metadata.sender_user_messages.take().is_some()
+                && (metadata.sender_user_messages.take().is_some()
+                    || !matches!(&envelope.item, ResponseItem::Message { role, .. } if role == "user"))
             {
+                // Assistant and tool positions belong to the parent counter, not the child.
                 metadata.user_input_order = None;
             }
             let response_item = &mut envelope.item;
