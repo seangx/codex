@@ -397,6 +397,8 @@ pub enum Feature {
     WindowsSandboxElevated,
     /// Attempt elevated Windows sandbox provisioning through the installed service.
     WindowsSandboxService,
+    /// Prefer the local native Windows sandbox when available, retaining legacy fallback.
+    PreferMxc,
     /// Legacy remote models flag kept for backward compatibility.
     RemoteModels,
     /// Removed legacy git commit attribution guidance flag.
@@ -1255,6 +1257,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: false,
     },
     FeatureSpec {
+        id: Feature::PreferMxc,
+        key: "prefer_mxc",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
         id: Feature::RemoteModels,
         key: "remote_models",
         stage: Stage::Removed,
@@ -1627,8 +1635,8 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::GuardianThreadContext,
         key: "guardianv2.thread_context",
-        stage: Stage::UnderDevelopment,
-        default_enabled: false,
+        stage: Stage::Stable,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::GuardianReuseParentCompaction,

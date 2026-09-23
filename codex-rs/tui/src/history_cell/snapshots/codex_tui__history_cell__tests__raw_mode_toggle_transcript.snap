@@ -8,8 +8,8 @@ rich before:
 ▌ Please format this
 ▌ for copying
 
-• - first item
-  - second item
+• • first item
+  • second item
 
    Col     Value
   ━━━━━━  ━━━━━━━
@@ -40,8 +40,8 @@ rich after:
 ▌ Please format this
 ▌ for copying
 
-• - first item
-  - second item
+• • first item
+  • second item
 
    Col     Value
   ━━━━━━  ━━━━━━━

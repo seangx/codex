@@ -63,12 +63,12 @@ impl LocalAgentControl {
         if !is_execution_limited(multi_agent_version, session_source) {
             return Ok(());
         }
-        let max_threads = self.agent_execution_limiter.max_threads();
-        let active = self.agent_execution_limiter.active_count();
+        let max_threads = self.runtime.agent_execution_limiter.max_threads();
+        let active = self.runtime.agent_execution_limiter.active_count();
         if active < max_threads {
             Ok(())
         } else {
-            let (resident, pending) = self.v2_residency.counts();
+            let (resident, pending) = self.runtime.residency.counts();
             warn!(
                 limit_kind = "execution",
                 active,
@@ -89,7 +89,7 @@ impl LocalAgentControl {
         session_source: &SessionSource,
     ) -> Option<AgentExecutionGuard> {
         is_execution_limited(multi_agent_version, session_source)
-            .then(|| Arc::clone(&self.agent_execution_limiter).guard())
+            .then(|| Arc::clone(&self.runtime.agent_execution_limiter).guard())
     }
 }
 

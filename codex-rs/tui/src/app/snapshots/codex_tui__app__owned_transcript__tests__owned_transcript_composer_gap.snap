@@ -1,5 +1,6 @@
 ---
 source: tui/src/app/owned_transcript_tests.rs
+assertion_line: 418
 expression: "snapshots.join(\"\\n\\n\")"
 ---
 Latest
@@ -63,4 +64,3 @@ Detailed
 ▌ preserved draft
 ────────────────────────────────────────────────────────────────────────────────
   gpt-test default · /tmp/project
-  esc latest

@@ -516,7 +516,7 @@ const USER_SHELL_COMMAND_HELP_TITLE: &str = "Prefix a command with ! to run it l
 const USER_SHELL_COMMAND_HELP_HINT: &str = "Example: !ls";
 const ASK_FOR_APPROVAL_LABEL: &str = "Ask for approval";
 const APPROVE_FOR_ME_LABEL: &str = "Approve for me";
-const AUTO_REVIEW_DESCRIPTION: &str = "Only ask for actions detected as potentially unsafe.";
+const AUTO_REVIEW_DESCRIPTION: &str = "Only ask for actions detected as potentially unsafe";
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_STATUS_LINE_ITEMS: [&str; 3] = ["model-with-reasoning", "current-dir", "thread-name"];
 
@@ -630,6 +630,7 @@ pub(crate) struct ChatWidget {
     codex_rate_limit_reached_type: Option<RateLimitReachedType>,
     codex_spend_control_reached: Option<bool>,
     rate_limit_warnings: RateLimitWarningState,
+    clock_format: crate::clock_format::ClockFormat,
     usage_notice_state: usage_notice::UsageNoticeState,
     backend_banner_state: backend_banners::BackendBannerState,
     automatic_model_switch_state: backend_banners::AutomaticModelSwitchState,
@@ -1116,7 +1117,8 @@ impl ChatWidget {
                 SelectionItem {
                     name: "Yes, enable".to_string(),
                     description: Some(
-                        "Save on the server for new threads. This thread is unchanged.".to_string(),
+                        "Save on the server for new threads without changing this thread"
+                            .to_string(),
                     ),
                     actions: vec![Box::new(move |tx| {
                         tx.send(AppEvent::EnableFeatureForNewThreads(feature));
@@ -1126,7 +1128,7 @@ impl ChatWidget {
                 },
                 SelectionItem {
                     name: "Not now".to_string(),
-                    description: Some(format!("Keep {name} disabled.")),
+                    description: Some(format!("Keep {name} disabled")),
                     dismiss_on_select: true,
                     ..Default::default()
                 },

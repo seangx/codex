@@ -165,17 +165,22 @@ impl WsStream {
     }
 
     async fn request(
-        &self,
+        &mut self,
         make_command: impl FnOnce(oneshot::Sender<Result<(), WsError>>) -> WsCommand,
     ) -> Result<(), WsError> {
         let (tx_result, rx_result) = oneshot::channel();
-        if self.tx_command.send(make_command(tx_result)).await.is_err() {
-            return Err(WsError::ConnectionClosed);
+        if self.tx_command.send(make_command(tx_result)).await.is_ok()
+            && let Ok(result) = rx_result.await
+        {
+            return result;
         }
-        rx_result.await.unwrap_or(Err(WsError::ConnectionClosed))
+        while let Some(message) = self.rx_message.recv().await {
+            message?;
+        }
+        Err(WsError::ConnectionClosed)
     }
 
-    async fn send(&self, message: Message) -> Result<(), WsError> {
+    async fn send(&mut self, message: Message) -> Result<(), WsError> {
         self.request(|tx_result| WsCommand::Send { message, tx_result })
             .await
     }
@@ -507,9 +512,7 @@ impl ResponsesWebsocketClient {
             .ok()
             .flatten()
             .transpose()
-            .map_err(|err| {
-                ApiError::Stream(format!("failed to read websocket probe event: {err}"))
-            })?
+            .map_err(map_ws_stream_error)?
             .and_then(immediate_close_from_message);
 
         Ok(ResponsesWebsocketProbe {
@@ -634,7 +637,17 @@ fn websocket_config() -> WebSocketConfig {
     config
 }
 
+fn map_ws_stream_error(error: WsError) -> ApiError {
+    match codex_websocket_client::network_policy_denial(&error) {
+        Some(denied) => ApiError::Transport(TransportError::Policy(denied)),
+        None => ApiError::Stream(error.to_string()),
+    }
+}
+
 fn map_ws_error(err: WsError, url: &Url) -> ApiError {
+    if let Some(denied) = codex_websocket_client::network_policy_denial(&err) {
+        return ApiError::Transport(TransportError::Policy(denied));
+    }
     match err {
         WsError::Http(response) => {
             let status = response.status();
@@ -791,7 +804,7 @@ async fn run_websocket_response_stream(
                 if let WsError::Io(io_error) = &err {
                     diagnostics.os_error = io_error.raw_os_error();
                 }
-                return Err(ApiError::Stream(err.to_string()));
+                return Err(map_ws_stream_error(err));
             }
             Ok(None) => {
                 diagnostics.outcome = "stream_eof";
@@ -982,7 +995,7 @@ fn safety_buffering_for_event(
 }
 
 async fn send_websocket_request(
-    ws_stream: &WsStream,
+    ws_stream: &mut WsStream,
     request_text: String,
     idle_timeout: Duration,
     telemetry: Option<&Arc<dyn WebsocketTelemetry>>,
@@ -1004,7 +1017,7 @@ async fn send_websocket_request(
             if let WsError::Io(io_error) = &err {
                 diagnostics.os_error = io_error.raw_os_error();
             }
-            ApiError::Stream(format!("failed to send websocket request: {err}"))
+            map_ws_stream_error(err)
         })
     });
     diagnostics.observe_send(request_start.elapsed(), result.is_ok());

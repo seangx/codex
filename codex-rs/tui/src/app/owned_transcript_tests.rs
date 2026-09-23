@@ -74,14 +74,89 @@ pub(super) fn buffer_text(buffer: &Buffer) -> String {
 }
 
 #[tokio::test]
+async fn external_writer_escape_returns_to_command_center_without_editing() -> Result<()> {
+    for (detailed, scrolled, offline) in [
+        (false, false, false),
+        (false, true, false),
+        (true, false, false),
+        (false, false, true),
+    ] {
+        let mut app = crate::app::test_support::make_test_app().await;
+        attach_thread(&mut app, ThreadId::new());
+        app.transcript_cells = vec![user_cell("First prompt"), user_cell("Second prompt")];
+        app.app_server_target = AppServerTarget::Remote {
+            endpoint: crate::resolve_remote_addr("ws://127.0.0.1:4500")?,
+        };
+        app.chat_widget.show_external_writer_thread();
+        if offline {
+            assert!(app.begin_reconnect());
+        }
+        let mut app_server =
+            Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
+        let mut tui = crate::tui::test_support::make_test_tui()?;
+        tui.set_owned_screen(/*owned*/ true)?;
+        if detailed {
+            app.open_transcript_overlay(&mut tui);
+        }
+        if scrolled {
+            app.transcript_view
+                .jump_to_entry(&app.transcript_cells, /*index*/ 0);
+        }
+
+        app.handle_tui_event(
+            &mut tui,
+            &mut app_server,
+            TuiEvent::Key(KeyCode::Esc.into()),
+        )
+        .await?;
+
+        assert!(app.chat_widget.has_active_view());
+        assert_eq!(
+            (
+                app.backtrack.primed,
+                app.backtrack.overlay_preview_active,
+                app.chat_widget.composer_text_with_pending(),
+            ),
+            (false, false, String::new()),
+        );
+        if offline {
+            assert!(app.agents_overview.request_id.is_none());
+            assert!(app.reconnect.presentation == reconnect::ReconnectPresentation::Overview);
+            insta::assert_snapshot!(
+                "external_writer_escape_offline_command_center",
+                crate::chatwidget::tests::helpers::normalize_agent_center_snapshot(
+                    crate::chatwidget::tests::helpers::render_bottom_popup(
+                        &app.chat_widget,
+                        /*width*/ 96,
+                    )
+                )
+            );
+        } else if !detailed && !scrolled {
+            insta::assert_snapshot!(
+                "external_writer_escape_command_center",
+                crate::chatwidget::tests::helpers::normalize_agent_center_snapshot(
+                    crate::chatwidget::tests::helpers::render_bottom_popup(
+                        &app.chat_widget,
+                        /*width*/ 96,
+                    )
+                )
+            );
+        }
+        tui.set_owned_screen(/*owned*/ false)?;
+        app_server.shutdown().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn list_spacing_completion_preserves_the_scrolled_reader() -> Result<()> {
     let mut app = crate::app::test_support::make_test_app().await;
     app.transcript_cells = vec![Arc::new(history_cell::AgentMessageCell::new(
         vec![
-            "- First item wraps onto".into(),
+            "• First item wraps onto".into(),
             "  a second row".into(),
-            "- b".into(),
-            "- c".into(),
+            "• b".into(),
+            "• c".into(),
         ],
         /*is_first_line*/ true,
     ))];
@@ -99,7 +174,7 @@ async fn list_spacing_completion_preserves_the_scrolled_reader() -> Result<()> {
         .scroll(&app.transcript_cells, /*rows*/ 3);
     app.transcript_view
         .render(area, &mut before, &app.transcript_cells);
-    assert!(buffer_text(&before).contains("- c"));
+    assert!(buffer_text(&before).contains("• c"));
     app.handle_consolidate_agent_message(
         &mut tui,
         "- First item wraps onto a second row\n- b\n- c".into(),
@@ -181,6 +256,74 @@ async fn older_page_loading_uses_the_status_row_without_moving_content_or_cursor
     }
     insta::assert_snapshot!("owned_history_loading_footer", snapshots.join("\n\n"));
     tui.set_owned_screen(/*owned*/ false)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn recap_spacing_belongs_to_the_transcript_tail() -> Result<()> {
+    let mut snapshots = Vec::new();
+    for (width, height, next_action) in [
+        (80, 10, None),
+        (80, 12, Some("Review the changes.")),
+        (32, 12, Some("Review the changes.")),
+        (80, 7, Some("Review the changes.")),
+        (32, 6, Some("Review the changes.")),
+    ] {
+        let mut app = crate::app::test_support::make_test_app().await;
+        attach_thread(&mut app, ThreadId::new());
+        app.local_settings.tui.show_tooltips = true;
+        app.local_settings.tui.animations = false;
+        app.transcript_cells = vec![
+            Arc::new(crate::history_cell::PlainHistoryCell::new(
+                (1..=20)
+                    .map(|row| format!("History {row}").into())
+                    .collect(),
+            )),
+            Arc::new(
+                crate::history_cell::ThreadRecapHistoryCell::new("The draft is ready.".into())
+                    .with_next_action(next_action.map(str::to_owned)),
+            ),
+        ];
+        crate::app::test_support::select_catalog_tip(
+            &mut app,
+            /*width*/ 80,
+            "Tip: Use /mcp to list configured MCP tools.",
+        );
+        let mut tui = crate::tui::test_support::make_test_tui()?;
+        tui.set_owned_screen(/*owned*/ true)?;
+        let size = Size::new(width, height);
+        tui.terminal.resize(size)?;
+        let mut snapshot = |app: &mut App, label: &str| -> Result<()> {
+            app.render_owned_transcript(&mut tui, size)?;
+            let buffer = crate::custom_terminal::test_support::last_rendered_buffer(&tui.terminal);
+            snapshots.push(format!(
+                "{width}x{height}, {label}\n{}",
+                buffer_text(buffer)
+            ));
+            Ok(())
+        };
+        snapshot(&mut app, "Recap at tail")?;
+        app.transcript_cells
+            .push(Arc::new(crate::history_cell::AgentMessageCell::new(
+                vec!["Follow-up response.".into()],
+                /*is_first_line*/ true,
+            )));
+        snapshot(&mut app, "Message after recap")?;
+        app.transcript_cells.pop();
+        crate::chatwidget::tests::helpers::set_active_cell(
+            &mut app.chat_widget,
+            Box::new(crate::history_cell::AgentMessageCell::new(
+                vec!["Streaming response.".into()],
+                /*is_first_line*/ true,
+            )),
+        );
+        snapshot(&mut app, "Live message after recap")?;
+        tui.set_owned_screen(/*owned*/ false)?;
+    }
+    insta::assert_snapshot!(
+        "recap_tail_spacing",
+        normalize_snapshot_paths(snapshots.join("\n\n"))
+    );
     Ok(())
 }
 
