@@ -53,7 +53,33 @@ if [ "$official_version" = "0.0.0" ]; then
 fi
 
 short_sha=$(git -C "$repo_root" rev-parse --short=10 HEAD)
-build_version="$official_version+debug.$short_sha"
+# Source builds can be newer than the installed official release. Model discovery
+# sends the numeric package version to the backend, so preserve the compatibility
+# floor declared by this checkout instead of advertising an older client's version.
+base_version=$(python3 - "$official_version" "$repo_root/codex-rs/models-manager/models.json" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+
+def version_tuple(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", value):
+        raise SystemExit(f"invalid model catalog client version: {value!r}")
+    return tuple(map(int, value.split(".")))
+
+
+catalog = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+versions = [version_tuple(sys.argv[1])]
+versions.extend(
+    version_tuple(model["minimal_client_version"])
+    for model in catalog["models"]
+    if model.get("minimal_client_version") is not None
+)
+print(".".join(map(str, max(versions))))
+PY
+)
+build_version="$base_version+debug.$short_sha"
 
 if [ "${1:-}" = "--print-version" ]; then
   printf '%s\n' "$build_version"
