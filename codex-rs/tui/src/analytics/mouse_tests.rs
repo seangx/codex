@@ -169,3 +169,33 @@ fn wheel_scrolls_only_the_painted_body_within_its_bounds() {
     press(&mut view, KeyCode::Esc);
     assert_eq!(view.scroll_offset(), reading);
 }
+
+#[tokio::test]
+async fn coalesced_wheel_events_reach_the_usage_body() {
+    let mut view = fixture::view(models::AccountKind::Consumer);
+    view.follow_selection = false;
+    screen(&mut view, /*width*/ 58, /*height*/ 12);
+    let body = view.body_area;
+    let tab = view.tab_hits[0].1;
+    let mut tui = crate::tui::test_support::make_test_tui().unwrap();
+    for (kind, ticks, area, expected) in [
+        (MouseEventKind::ScrollDown, 2, tab, 0),
+        (MouseEventKind::ScrollDown, 2, body, 6.min(view.max_scroll)),
+        (MouseEventKind::ScrollUp, u16::MAX, body, 0),
+    ] {
+        view.handle_event(
+            &mut tui,
+            TuiEvent::MouseScroll(crate::tui::MouseScrollEvent {
+                mouse: MouseEvent {
+                    kind,
+                    column: area.x,
+                    row: area.y,
+                    modifiers: KeyModifiers::NONE,
+                },
+                ticks,
+            }),
+        )
+        .unwrap();
+        assert_eq!(view.scroll_offset(), expected);
+    }
+}

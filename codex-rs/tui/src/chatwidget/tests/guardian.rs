@@ -1,4 +1,5 @@
 use super::helpers::drain_insert_history_transcript;
+use super::helpers::normalize_status_indicator_clock;
 use super::*;
 use pretty_assertions::assert_eq;
 
@@ -320,7 +321,9 @@ async fn guardian_denied_exec_renders_warning_and_denied_request() {
 
     assert_chatwidget_snapshot!(
         "guardian_denied_exec_renders_warning_and_denied_request",
-        normalize_snapshot_paths(term.backend().vt100().screen().contents())
+        normalize_status_indicator_clock(&normalize_snapshot_paths(
+            term.backend().vt100().screen().contents()
+        ))
     );
 }
 
@@ -376,7 +379,9 @@ async fn guardian_approved_exec_is_hidden_from_history() {
 
     assert_chatwidget_snapshot!(
         "guardian_approved_exec_is_hidden_from_history",
-        normalize_snapshot_paths(term.backend().vt100().screen().contents())
+        normalize_status_indicator_clock(&normalize_snapshot_paths(
+            term.backend().vt100().screen().contents()
+        ))
     );
 }
 
@@ -462,7 +467,9 @@ async fn guardian_approved_request_permissions_clears_status_without_history() {
 
     assert_chatwidget_snapshot!(
         "guardian_approved_request_permissions_clears_status_without_history",
-        normalize_snapshot_paths(term.backend().vt100().screen().contents())
+        normalize_status_indicator_clock(&normalize_snapshot_paths(
+            term.backend().vt100().screen().contents()
+        ))
     );
 }
 
@@ -536,7 +543,9 @@ async fn guardian_timed_out_exec_renders_warning_and_timed_out_request() {
 
     assert_chatwidget_snapshot!(
         "guardian_timed_out_exec_renders_warning_and_timed_out_request",
-        normalize_snapshot_paths(term.backend().vt100().screen().contents())
+        normalize_status_indicator_clock(&normalize_snapshot_paths(
+            term.backend().vt100().screen().contents()
+        ))
     );
 }
 
@@ -655,7 +664,9 @@ async fn app_server_guardian_review_denied_renders_denied_request_snapshot() {
 
     assert_chatwidget_snapshot!(
         "app_server_guardian_review_denied_renders_denied_request",
-        normalize_snapshot_paths(term.backend().vt100().screen().contents())
+        normalize_status_indicator_clock(&normalize_snapshot_paths(
+            term.backend().vt100().screen().contents()
+        ))
     );
 }
 
@@ -736,7 +747,9 @@ async fn app_server_guardian_review_timed_out_renders_timed_out_request_snapshot
 
     assert_chatwidget_snapshot!(
         "app_server_guardian_review_timed_out_renders_timed_out_request",
-        normalize_snapshot_paths(term.backend().vt100().screen().contents())
+        normalize_status_indicator_clock(&normalize_snapshot_paths(
+            term.backend().vt100().screen().contents()
+        ))
     );
 }
 

@@ -2,4 +2,4 @@
 source: tui/src/chatwidget/tests/exec_flow.rs
 expression: active_blob(&chat)
 ---
-• Read 3 files, listed 1 path
+• Read 2 files, listed 1 path

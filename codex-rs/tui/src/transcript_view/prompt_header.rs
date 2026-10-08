@@ -6,6 +6,7 @@ use super::*;
 use crate::history_cell::UserHistoryCell;
 use crate::history_cell::sanitize_user_text;
 use crate::line_truncation::truncate_line_with_ellipsis_if_overflow;
+use ratatui::text::Span;
 
 /// Remember only a header canceled at a turn boundary, not a missing preceding prompt.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -46,8 +47,15 @@ pub(super) fn line(
         message
     };
     Some(truncate_line_with_ellipsis_if_overflow(
-        Line::from(message).style(crate::style::history_prompt_style()),
-        usize::from(width),
+        Line::from(vec![
+            if prompt.spoken {
+                "› ".red().bold()
+            } else {
+                Span::from("▌ ").style(crate::style::user_message_accent_style())
+            },
+            message.into(),
+        ]),
+        usize::from(width.saturating_sub(1)),
     ))
 }
 

@@ -1,5 +1,6 @@
 ---
 source: tui/src/bottom_pane/mcp_server_elicitation.rs
+assertion_line: 2303
 expression: snapshot
 ---
 
@@ -10,4 +11,4 @@ expression: snapshot
   ────────────────────────────────────────────────────────────────────────────
   ▌ Type your answer
   ────────────────────────────────────────────────────────────────────────────
-  ctrl+x enter to submit | esc to cancel
+  ⌃x enter to submit | esc to cancel

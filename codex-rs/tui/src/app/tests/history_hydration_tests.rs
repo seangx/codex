@@ -55,6 +55,7 @@ async fn history_fixture(
     for (index, count) in item_counts.iter().enumerate() {
         let turn_id = format!("turn-{index}");
         let mut events = vec![EventMsg::TurnStarted(TurnStartedEvent {
+            turn_attribution: None,
             turn_id: turn_id.clone(),
             root_turn_id: None,
             trace_id: None,
@@ -79,6 +80,7 @@ async fn history_fixture(
             }));
         }
         events.push(EventMsg::TurnComplete(TurnCompleteEvent {
+            root_turn_id: None,
             turn_id,
             last_agent_message: None,
             error: None,
@@ -240,89 +242,128 @@ async fn history_hydration_metadata_tracks_missing_turns_and_stale_completions_k
 }
 
 #[tokio::test]
-async fn history_hydration_archived_retry_uses_first_attempt_runtime_settings() -> Result<()> {
-    for action in [
+async fn history_hydration_archived_retry_uses_first_attempt_runtime_settings_resume_terminal()
+-> Result<()> {
+    run_archived_retry_runtime_settings_case(
         SessionStartAction::Resume(
             crate::app_server_session::ResumeModelSettings::RestoreFromThread,
+            crate::resume_permissions::ResumePermissions::default(),
         ),
+        TranscriptMode::Terminal,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn history_hydration_archived_retry_uses_first_attempt_runtime_settings_resume_owned()
+-> Result<()> {
+    run_archived_retry_runtime_settings_case(
+        SessionStartAction::Resume(
+            crate::app_server_session::ResumeModelSettings::RestoreFromThread,
+            crate::resume_permissions::ResumePermissions::default(),
+        ),
+        TranscriptMode::Owned,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn history_hydration_archived_retry_uses_first_attempt_runtime_settings_fork_terminal()
+-> Result<()> {
+    run_archived_retry_runtime_settings_case(
         SessionStartAction::Fork(crate::app_server_session::ForkPermissionMode::InheritSaved),
-    ] {
-        for mode in [TranscriptMode::Terminal, TranscriptMode::Owned] {
-            let (mut app, codex_home, mut target) = history_fixture(&[500]).await?;
-            app.config.tui_fullscreen_transcript = !mode.is_owned();
-            app.config.tui_alternate_screen = codex_config::types::AltScreenMode::Always;
-            app.config.terminal_resize_reflow.max_rows = TerminalResizeReflowMaxRows::Limit(1);
-            app.local_settings = crate::local_settings::LocalSettings::from(&app.config);
-            app.local_settings.transcript_mode = mode;
-            let active_path = target.path.take().unwrap();
-            let archived = codex_home.path().join("archived_sessions");
-            std::fs::create_dir_all(&archived)?;
-            let path = archived.join(active_path.file_name().unwrap());
-            std::fs::rename(active_path, &path)?;
-            target.path = Some(path);
-            let (mut server, requests, proxy) = start_recording_app_server(
-                &app.config,
-                /*blocked_thread_list*/ None,
-                /*failed_thread_name*/ None,
-            )
-            .await?;
-            let initial = match action {
-                SessionStartAction::Resume(settings) => {
-                    server
-                        .resume_thread(
-                            &app.local_settings,
-                            app.config.clone(),
-                            target.thread_id,
-                            settings,
-                        )
-                        .await
-                }
-                SessionStartAction::Fork(permission) => {
-                    server
-                        .fork_thread_with_permission_mode(
-                            &app.local_settings,
-                            app.config.clone(),
-                            target.thread_id,
-                            permission,
-                        )
-                        .await
-                }
-            };
-            assert!(initial.is_err());
-            let outcome = complete_session_start(
-                &mut server,
-                SessionStartConfig {
-                    config: &app.config,
-                    local_settings: &app.local_settings,
-                },
-                &AppServerTarget::Embedded,
-                &target,
-                action,
-                initial,
-                async || Ok(crate::unarchive_prompt::UnarchiveChoice::Unarchive),
-            )
-            .await?;
-            let SessionStartOutcome::Started(started) = outcome else {
-                panic!("retry starts session")
-            };
-            let count = started
-                .turns
-                .iter()
-                .map(|turn| turn.items.len())
-                .sum::<usize>();
-            if mode.is_owned() {
-                assert!(count > 1, "owned retry must use viewport budget");
-            } else {
-                assert_eq!(count, 1);
-            }
-            assert!(server.has_older_history(started.session.thread_id));
-            let item_requests = recorded_params(&requests, "thread/items/list");
-            let initial_limit = item_requests[0]["limit"].as_u64().unwrap();
-            assert_eq!(initial_limit == 1, !mode.is_owned());
-            assert_eq!(recorded_params(&requests, "thread/unarchive").len(), 1);
-            server.shutdown().await?;
-            proxy.await??;
+        TranscriptMode::Terminal,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn history_hydration_archived_retry_uses_first_attempt_runtime_settings_fork_owned()
+-> Result<()> {
+    run_archived_retry_runtime_settings_case(
+        SessionStartAction::Fork(crate::app_server_session::ForkPermissionMode::InheritSaved),
+        TranscriptMode::Owned,
+    )
+    .await
+}
+
+async fn run_archived_retry_runtime_settings_case(
+    action: SessionStartAction,
+    mode: TranscriptMode,
+) -> Result<()> {
+    let (mut app, codex_home, mut target) = history_fixture(&[500]).await?;
+    app.config.tui_fullscreen_transcript = !mode.is_owned();
+    app.config.tui_alternate_screen = codex_config::types::AltScreenMode::Always;
+    app.config.terminal_resize_reflow.max_rows = TerminalResizeReflowMaxRows::Limit(1);
+    app.local_settings = crate::local_settings::LocalSettings::from(&app.config);
+    app.local_settings.transcript_mode = mode;
+    let active_path = target.path.take().unwrap();
+    let archived = codex_home.path().join("archived_sessions");
+    std::fs::create_dir_all(&archived)?;
+    let path = archived.join(active_path.file_name().unwrap());
+    std::fs::rename(active_path, &path)?;
+    target.path = Some(path);
+    let (mut server, requests, proxy) = start_recording_app_server(
+        &app.config,
+        /*blocked_thread_list*/ None,
+        /*failed_thread_name*/ None,
+    )
+    .await?;
+    let initial = match action {
+        SessionStartAction::Resume(settings, _) => {
+            server
+                .resume_thread(
+                    &app.local_settings,
+                    app.config.clone(),
+                    target.thread_id,
+                    settings,
+                )
+                .await
         }
+        SessionStartAction::Fork(permission) => {
+            server
+                .fork_thread_with_permission_mode(
+                    &app.local_settings,
+                    app.config.clone(),
+                    target.thread_id,
+                    permission,
+                )
+                .await
+        }
+    };
+    assert!(initial.is_err());
+    let outcome = complete_session_start(
+        &mut server,
+        SessionStartConfig {
+            config: &app.config,
+            local_settings: &app.local_settings,
+        },
+        &AppServerTarget::Embedded,
+        &target,
+        action,
+        initial,
+        async || Ok(crate::unarchive_prompt::UnarchiveChoice::Unarchive),
+    )
+    .await?;
+    let SessionStartOutcome::Started(started) = outcome else {
+        panic!("retry starts session")
+    };
+    let count = started
+        .turns
+        .iter()
+        .map(|turn| turn.items.len())
+        .sum::<usize>();
+    if mode.is_owned() {
+        assert!(count > 1, "owned retry must use viewport budget");
+    } else {
+        assert_eq!(count, 1);
     }
+    assert!(server.has_older_history(started.session.thread_id));
+    let item_requests = recorded_params(&requests, "thread/items/list");
+    let initial_limit = item_requests[0]["limit"].as_u64().unwrap();
+    assert_eq!(initial_limit == 1, !mode.is_owned());
+    assert_eq!(recorded_params(&requests, "thread/unarchive").len(), 1);
+    server.shutdown().await?;
+    proxy.await??;
     Ok(())
 }

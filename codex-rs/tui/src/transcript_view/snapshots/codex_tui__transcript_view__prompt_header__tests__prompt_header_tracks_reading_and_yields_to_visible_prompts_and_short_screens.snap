@@ -1,23 +1,24 @@
 ---
 source: tui/src/transcript_view/prompt_header_tests.rs
+assertion_line: 77
 expression: "snapshots.join(\"\\n\\n\")"
 ---
 Latest
-Second café question
+▌ Second café question
 seven
 eight
 nine
 ten
 
 Earlier answer
-First question
+▌ First question
 one
 two
 three
 four
 
 After prepend
-First question
+▌ First question
 one
 two
 three

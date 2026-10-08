@@ -1,5 +1,0 @@
----
-source: tui/src/chatwidget/tests/exec_flow.rs
-expression: active_blob(&chat)
----
-• Read 2 files, listed 1 path

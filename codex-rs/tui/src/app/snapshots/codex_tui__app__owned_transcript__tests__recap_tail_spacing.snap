@@ -1,6 +1,6 @@
 ---
 source: tui/src/app/owned_transcript_tests.rs
-assertion_line: 323
+assertion_line: 320
 expression: "normalize_snapshot_paths(snapshots.join(\"\\n\\n\"))"
 ---
 80x10, Recap at tail
@@ -8,7 +8,7 @@ History 20
 
   ↳ Recap: The draft is ready.
 
-                                    Tip: Use /mcp to list configured MCP tools.
+
 ────────────────────────────────────────────────────────────────────────────────
 ▌ Ask Codex to do anything
 ────────────────────────────────────────────────────────────────────────────────
@@ -20,7 +20,7 @@ History 20
   ↳ Recap: The draft is ready.
 
 • Follow-up response.
-                                    Tip: Use /mcp to list configured MCP tools.
+
 ────────────────────────────────────────────────────────────────────────────────
 ▌ Ask Codex to do anything
 ────────────────────────────────────────────────────────────────────────────────
@@ -32,7 +32,7 @@ History 20
   ↳ Recap: The draft is ready.
 
 • Streaming response.
-                                    Tip: Use /mcp to list configured MCP tools.
+
 ────────────────────────────────────────────────────────────────────────────────
 ▌ Ask Codex to do anything
 ────────────────────────────────────────────────────────────────────────────────
@@ -46,7 +46,7 @@ History 20
   ↳ Recap: The draft is ready.
            Next: Review the changes.
 
-                                    Tip: Use /mcp to list configured MCP tools.
+
 ────────────────────────────────────────────────────────────────────────────────
 ▌ Ask Codex to do anything
 ────────────────────────────────────────────────────────────────────────────────
@@ -60,7 +60,7 @@ History 20
            Next: Review the changes.
 
 • Follow-up response.
-                                    Tip: Use /mcp to list configured MCP tools.
+
 ────────────────────────────────────────────────────────────────────────────────
 ▌ Ask Codex to do anything
 ────────────────────────────────────────────────────────────────────────────────
@@ -74,7 +74,7 @@ History 20
            Next: Review the changes.
 
 • Streaming response.
-                                    Tip: Use /mcp to list configured MCP tools.
+
 ────────────────────────────────────────────────────────────────────────────────
 ▌ Ask Codex to do anything
 ────────────────────────────────────────────────────────────────────────────────
@@ -125,7 +125,7 @@ History 20
 
 80x7, Recap at tail
            Next: Review the changes.
-                                    Tip: Use /mcp to list configured MCP tools.
+
 ────────────────────────────────────────────────────────────────────────────────
 ▌ Ask Codex to do anything
 ────────────────────────────────────────────────────────────────────────────────
@@ -134,7 +134,7 @@ History 20
 
 80x7, Message after recap
 • Follow-up response.
-                                    Tip: Use /mcp to list configured MCP tools.
+
 ────────────────────────────────────────────────────────────────────────────────
 ▌ Ask Codex to do anything
 ────────────────────────────────────────────────────────────────────────────────
@@ -143,7 +143,7 @@ History 20
 
 80x7, Live message after recap
 • Streaming response.
-                                    Tip: Use /mcp to list configured MCP tools.
+
 ────────────────────────────────────────────────────────────────────────────────
 ▌ Ask Codex to do anything
 ────────────────────────────────────────────────────────────────────────────────

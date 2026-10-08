@@ -130,6 +130,7 @@ async fn exchange(
         input_items: 1,
     };
     let (tx_event, _rx_event) = mpsc::channel(16);
+    let (_tx_interrupt, rx_interrupt) = oneshot::channel();
     let result = run_websocket_response_stream(
         &mut stream,
         tx_event,
@@ -138,6 +139,7 @@ async fn exchange(
         /*telemetry*/ None,
         /*turn_state*/ None,
         &context,
+        rx_interrupt,
     )
     .await;
     let logs = capture.0.lock().unwrap().clone();
@@ -368,6 +370,7 @@ async fn idle_server_close_is_logged_after_completed_request_without_another_req
             input_items: 1,
         };
         let (tx_event, _rx_event) = mpsc::channel(/*buffer*/ 16);
+        let (_tx_interrupt, rx_interrupt) = oneshot::channel();
         run_websocket_response_stream(
             &mut stream,
             tx_event,
@@ -376,6 +379,7 @@ async fn idle_server_close_is_logged_after_completed_request_without_another_req
             /*telemetry*/ None,
             /*turn_state*/ None,
             &context,
+            rx_interrupt,
         )
         .await
         .expect("response should complete before the idle close");

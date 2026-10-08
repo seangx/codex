@@ -133,69 +133,96 @@ async fn unavailable_thread_routes_local_and_recovery_commands() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn unavailable_thread_new_and_clear_start_a_writable_session() -> Result<()> {
-    for (command, activity) in ["/new", "/clear"]
-        .into_iter()
-        .flat_map(|command| ["idle", "review", "mcp"].map(|activity| (command, activity)))
-    {
-        let (mut app, mut events, _) = make_test_app_with_channels().await;
-        let id = ThreadId::new();
-        app.active_thread_id = Some(id);
-        app.primary_thread_id = Some(id);
-        app.app_server_target = AppServerTarget::Remote {
-            endpoint: crate::resolve_remote_addr("ws://127.0.0.1:1")?,
-        };
-        app.chat_widget
-            .handle_thread_session(test_thread_session(id, app.config.cwd.to_path_buf()));
-        app.ensure_thread_channel(id).mark_replay_only();
-        match activity {
-            "review" => app.chat_widget.replay_thread_turns(
-                vec![test_turn(
-                    "review",
-                    TurnStatus::InProgress,
-                    vec![ThreadItem::EnteredReviewMode {
-                        id: "review-start".into(),
-                        review: "changes against main".into(),
-                    }],
-                )],
-                ReplayKind::ResumeInitialMessages,
-            ),
-            "mcp" => app.chat_widget.handle_server_notification(
-                ServerNotification::McpServerStatusUpdated(McpServerStatusUpdatedNotification {
-                    thread_id: Some(id.to_string()),
-                    name: "slow".into(),
-                    status: McpServerStartupState::Starting,
-                    error: None,
-                    failure_reason: None,
-                }),
-                /*replay_kind*/ None,
-            ),
-            _ => {}
-        }
-        app.chat_widget.pause_unavailable_thread();
-        app.chat_widget
-            .set_local_worktree_operations(/*enabled*/ false);
-        let mut session = start_config_write_test_app_server(&app).await?;
-        let mut tui = crate::tui::test_support::make_test_tui()?;
-        while events.try_recv().is_ok() {}
-        app.chat_widget
-            .restore_user_message_to_composer(command.into());
-        app.handle_tui_event(&mut tui, &mut session, TuiEvent::Key(KeyCode::Enter.into()))
-            .await?;
-        while let Ok(event) = events.try_recv() {
-            if matches!(
-                event,
-                AppEvent::NewSession { .. } | AppEvent::ClearUi { .. }
-            ) {
-                app.handle_event(&mut tui, &mut session, event).await?;
-                break;
-            }
-        }
-        let new_id = app.chat_widget.thread_id().expect("new thread");
-        assert_ne!(new_id, id, "{command}");
-        assert!(!app.thread_unavailable(new_id), "{command}");
-        session.shutdown().await?;
+async fn check_unavailable_thread_command_starts_a_writable_session(
+    command: &'static str,
+    activity: &'static str,
+) -> Result<()> {
+    let (mut app, mut events, _) = make_test_app_with_channels().await;
+    let id = ThreadId::new();
+    app.active_thread_id = Some(id);
+    app.primary_thread_id = Some(id);
+    app.app_server_target = AppServerTarget::Remote {
+        endpoint: crate::resolve_remote_addr("ws://127.0.0.1:1")?,
+    };
+    app.chat_widget
+        .handle_thread_session(test_thread_session(id, app.config.cwd.to_path_buf()));
+    app.ensure_thread_channel(id).mark_replay_only();
+    match activity {
+        "review" => app.chat_widget.replay_thread_turns(
+            vec![test_turn(
+                "review",
+                TurnStatus::InProgress,
+                vec![ThreadItem::EnteredReviewMode {
+                    id: "review-start".into(),
+                    review: "changes against main".into(),
+                }],
+            )],
+            ReplayKind::ResumeInitialMessages,
+        ),
+        "mcp" => app.chat_widget.handle_server_notification(
+            ServerNotification::McpServerStatusUpdated(McpServerStatusUpdatedNotification {
+                thread_id: Some(id.to_string()),
+                name: "slow".into(),
+                status: McpServerStartupState::Starting,
+                error: None,
+                failure_reason: None,
+            }),
+            /*replay_kind*/ None,
+        ),
+        _ => {}
     }
+    app.chat_widget.pause_unavailable_thread();
+    app.chat_widget
+        .set_local_worktree_operations(/*enabled*/ false);
+    let mut session = start_config_write_test_app_server(&app).await?;
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    while events.try_recv().is_ok() {}
+    app.chat_widget
+        .restore_user_message_to_composer(command.into());
+    app.handle_tui_event(&mut tui, &mut session, TuiEvent::Key(KeyCode::Enter.into()))
+        .await?;
+    while let Ok(event) = events.try_recv() {
+        if matches!(
+            event,
+            AppEvent::NewSession { .. } | AppEvent::ClearUi { .. }
+        ) {
+            app.handle_event(&mut tui, &mut session, event).await?;
+            break;
+        }
+    }
+    let new_id = app.chat_widget.thread_id().expect("new thread");
+    assert_ne!(new_id, id, "{command}");
+    assert!(!app.thread_unavailable(new_id), "{command}");
+    session.shutdown().await?;
     Ok(())
+}
+
+#[tokio::test]
+async fn unavailable_thread_new_starts_a_writable_idle_session() -> Result<()> {
+    check_unavailable_thread_command_starts_a_writable_session("/new", "idle").await
+}
+
+#[tokio::test]
+async fn unavailable_thread_new_starts_a_writable_review_session() -> Result<()> {
+    check_unavailable_thread_command_starts_a_writable_session("/new", "review").await
+}
+
+#[tokio::test]
+async fn unavailable_thread_new_starts_a_writable_mcp_session() -> Result<()> {
+    check_unavailable_thread_command_starts_a_writable_session("/new", "mcp").await
+}
+
+#[tokio::test]
+async fn unavailable_thread_clear_starts_a_writable_idle_session() -> Result<()> {
+    check_unavailable_thread_command_starts_a_writable_session("/clear", "idle").await
+}
+
+#[tokio::test]
+async fn unavailable_thread_clear_starts_a_writable_review_session() -> Result<()> {
+    check_unavailable_thread_command_starts_a_writable_session("/clear", "review").await
+}
+
+#[tokio::test]
+async fn unavailable_thread_clear_starts_a_writable_mcp_session() -> Result<()> {
+    check_unavailable_thread_command_starts_a_writable_session("/clear", "mcp").await
 }

@@ -87,6 +87,28 @@ async fn agent_picker_collapses_unloaded_history_behind_more() {
 }
 
 #[tokio::test]
+async fn agent_picker_excludes_hidden_threads_from_live_and_history_views() {
+    use crate::app::agent_navigation::AgentPickerThreadVisibility;
+
+    let mut app = make_test_app().await;
+    app.agent_navigation.clear();
+    for is_closed in [false, true] {
+        let thread_id = ThreadId::new();
+        app.agent_navigation.upsert(
+            thread_id,
+            Some("hidden".to_string()),
+            /*agent_role*/ None,
+            is_closed,
+        );
+        app.agent_navigation
+            .set_picker_thread_visibility(thread_id, AgentPickerThreadVisibility::Hidden);
+    }
+    let live = app.agent_picker_selection_view_params(/*selected*/ None);
+    let history = app.agent_history_selection_view_params(/*selected*/ None);
+    assert_eq!((live.items.len(), history.items.len()), (0, 0));
+}
+
+#[tokio::test]
 async fn agent_picker_more_opens_history_without_dismissing_parent() {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     app.agent_navigation.clear();

@@ -133,15 +133,22 @@ async fn background_voice_closes_with_its_owner_not_the_visible_thread() -> Resu
     Ok(())
 }
 
-#[tokio::test]
-async fn lifecycle_actions_stop_parked_voice_before_removing_owner() -> Result<()> {
+async fn check_lifecycle_action_stops_parked_voice_before_removing_owner(
+    case_index: usize,
+) -> Result<()> {
     use crate::app_event::AgentsOverviewAction;
-    for (action, slash_command) in [
+    for (current_case, (action, slash_command)) in [
         (AgentsOverviewAction::Archive, false),
         (AgentsOverviewAction::Delete, false),
         (AgentsOverviewAction::Archive, true),
         (AgentsOverviewAction::Delete, true),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if current_case != case_index {
+            continue;
+        }
         let (mut app, _, _) = make_test_app_with_channels().await;
         let (mut server, requests, proxy) = start_recording_remote_app_server(&app.config).await?;
         let started = server.start_thread(&app.config).await?;
@@ -210,6 +217,26 @@ async fn lifecycle_actions_stop_parked_voice_before_removing_owner() -> Result<(
         proxy.await??;
     }
     Ok(())
+}
+
+#[tokio::test]
+async fn lifecycle_archive_stops_parked_voice_before_removing_owner() -> Result<()> {
+    check_lifecycle_action_stops_parked_voice_before_removing_owner(/*case_index*/ 0).await
+}
+
+#[tokio::test]
+async fn lifecycle_delete_stops_parked_voice_before_removing_owner() -> Result<()> {
+    check_lifecycle_action_stops_parked_voice_before_removing_owner(/*case_index*/ 1).await
+}
+
+#[tokio::test]
+async fn slash_archive_stops_parked_voice_before_removing_owner() -> Result<()> {
+    check_lifecycle_action_stops_parked_voice_before_removing_owner(/*case_index*/ 2).await
+}
+
+#[tokio::test]
+async fn slash_delete_stops_parked_voice_before_removing_owner() -> Result<()> {
+    check_lifecycle_action_stops_parked_voice_before_removing_owner(/*case_index*/ 3).await
 }
 
 #[tokio::test]

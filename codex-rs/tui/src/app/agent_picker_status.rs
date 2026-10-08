@@ -54,7 +54,7 @@ impl App {
         let mut initial_selected_idx = selected;
         let mut items = Vec::new();
         let mut history_count = 0;
-        for (thread_id, entry) in self.agent_navigation.ordered_threads() {
+        for (thread_id, entry) in self.agent_navigation.visible_threads() {
             let status = self.agent_picker_status(thread_id, entry);
             if status == AgentPickerStatus::NotLoaded {
                 history_count += 1;
@@ -95,7 +95,7 @@ impl App {
     ) -> SelectionViewParams {
         let items = self
             .agent_navigation
-            .ordered_threads()
+            .visible_threads()
             .into_iter()
             .filter_map(|(thread_id, entry)| {
                 let status = self.agent_picker_status(thread_id, entry);

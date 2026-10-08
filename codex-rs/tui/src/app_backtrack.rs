@@ -132,9 +132,13 @@ impl App {
             _ => return Ok(()),
         };
         if let Some(Overlay::Transcript(overlay)) = &mut self.overlay {
-            overlay.scroll(rows);
+            overlay.scroll_mouse_wheel(rows);
+        } else if let Some(overlay) = &mut self.overlay {
+            overlay.handle_event(tui, TuiEvent::MouseScroll(event))?;
+            return Ok(());
         } else if tui.is_owned_screen() {
-            self.transcript_view.scroll(&self.transcript_cells, rows);
+            self.transcript_view
+                .scroll_mouse_wheel(&self.transcript_cells, rows);
         } else {
             return Ok(());
         }
@@ -223,6 +227,9 @@ impl App {
         self.overlay = Some(Overlay::new_transcript(
             self.transcript_cells.clone(),
             self.keymap.pager.clone(),
+            self.local_settings
+                .copy_on_select(&codex_terminal_detection::terminal_info()),
+            self.local_settings.tui.mouse_scroll_speed.unwrap_or(1.0),
         ));
         if self.scrollback_has_older_history
             && let Some(Overlay::Transcript(overlay)) = self.overlay.as_mut()
@@ -423,6 +430,9 @@ impl App {
             let chat_widget = &self.chat_widget;
             let detailed = t.is_detailed();
             let size = tui.prepare_draw_size()?;
+            t.sync_search_live_tail(size.width.max(/*other*/ 1), active_key, |width| {
+                chat_widget.active_cell_transcript_hyperlink_lines(width)
+            });
             t.sync_live_tail(size.width.max(/*other*/ 1), active_key, |width| {
                 if detailed {
                     chat_widget.active_cell_transcript_hyperlink_lines(width)
@@ -777,6 +787,7 @@ mod tests {
     fn turn(turn_id: &str, status: TurnStatus, user_messages: usize) -> Turn {
         Turn {
             id: turn_id.to_string(),
+            root_turn_id: None,
             items: (0..user_messages)
                 .map(|index| ThreadItem::UserMessage {
                     id: format!("user-{index}"),

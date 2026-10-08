@@ -1,5 +1,6 @@
 ---
 source: tui/src/thread_transcript/tools_tests.rs
+assertion_line: 100
 expression: rendered
 ---
 Command: compact

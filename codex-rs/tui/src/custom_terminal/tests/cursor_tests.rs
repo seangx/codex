@@ -228,7 +228,7 @@ fn terminal_draw_repairs_single_column_without_scrolling() {
 #[test]
 fn terminal_draw_omits_cursor_style_without_an_owned_glyph() {
     let reset_colors = if Colored::ansi_color_disabled_memoized() {
-        "\x1b[m\x1b[m"
+        ""
     } else {
         "\x1b[39m\x1b[49m"
     };

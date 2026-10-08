@@ -5,4 +5,4 @@ expression: "crate::chatwidget::tests::helpers::normalize_snapshot_paths(crate::
 ────────────────────────────────────────
 ▌ Ask Codex to do anything
 ────────────────────────────────────────
-  GPT-5.4 default · /tmp/pr… Plan mode
+  GPT-5.5 default · /tmp/pr… Plan mode

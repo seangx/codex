@@ -160,7 +160,7 @@ async fn remote_compact_image_budget_handles_new_tool_images_mid_turn() -> Resul
     let thread = test
         .thread_manager
         .start_thread(StartThreadOptions {
-            environments: Some(vec![test.executor_environment().selection().clone()]),
+            environments: Some(vec![test.executor_environment().request()]),
             dynamic_tools: vec![DynamicToolSpec::Function(DynamicToolFunctionSpec {
                 name: "frames".into(),
                 description: "Capture frames".into(),

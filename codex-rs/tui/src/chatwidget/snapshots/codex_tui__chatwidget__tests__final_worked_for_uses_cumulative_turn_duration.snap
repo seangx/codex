@@ -1,9 +1,9 @@
 ---
 source: tui/src/chatwidget/tests/exec_flow.rs
-expression: normalize_completion_timestamps(& (combined))
+expression: combined
 ---
 • Ran 1 shell command
 
 • Final response.
 
-  Worked for [duration] · [completion time]
+  Worked for [duration] • [completion time]

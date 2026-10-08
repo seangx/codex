@@ -1,13 +1,25 @@
 ---
 source: tui/src/app/tests.rs
-assertion_line: 2136
-expression: "render_bottom_popup(&app.chat_widget, 80)"
+assertion_line: 2286
+expression: "format!(\"Archived:\\n{archived_picker}\\nUnarchived:\\n{}\",\nrender_bottom_popup(&app.chat_widget,\n80))"
 ---
+Archived:
   Subagents
-  Select an agent to watch. ⌥+← previous, ⌥+→ next.
+  Select an agent to watch. ⌥← previous, ⌥→ next.
 
 
 › 1. [idle]        Main [default] (current)  00000000-0000-0000-0000-
                                              000000000123
+
+  enter select · esc back
+Unarchived:
+  Subagents
+  Select an agent to watch. ⌥← previous, ⌥→ next.
+
+
+› 1. [idle]        Main [default] (current)  00000000-0000-0000-0000-
+                                             000000000123
+  2. [idle]        Missed archive [worker]   00000000-0000-0000-0000-
+                                             000000000456
 
   enter select · esc back

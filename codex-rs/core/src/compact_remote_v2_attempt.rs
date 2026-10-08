@@ -1,3 +1,6 @@
+use crate::context::UserGoalUpdate;
+use codex_protocol::ResponseItemId;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use super::RemoteCompactionV2Output;
@@ -13,10 +16,10 @@ use crate::session::step_context::StepContext;
 use codex_history::CodexHarnessMetadata;
 use codex_history::ResponseItemEnvelope;
 use codex_protocol::error::Result as CodexResult;
+use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::TokenUsage;
 use codex_rollout_trace::CompactionTraceContext;
-use std::collections::HashSet;
 use tracing::info;
 
 // The Responses API accepts at most 16,384 top-level input items.
@@ -24,6 +27,7 @@ const RESPONSES_INPUT_ITEM_LIMIT: usize = 16_384;
 const COMPACTION_TRIGGER_INPUT_ITEM_COUNT: usize = 1;
 
 pub(super) struct RemoteCompactV2Attempt {
+    pub(super) input_goal_ids: HashSet<ResponseItemId>,
     pub(super) trace_input_history: Option<Vec<ResponseItem>>,
     pub(super) prompt_input: Vec<ResponseItem>,
     pub(super) prompt_input_metadata: Vec<Option<CodexHarnessMetadata>>,
@@ -49,7 +53,19 @@ pub(super) async fn run_remote_compact_v2_attempt(
         &turn_context.session_source,
     )
     .await?;
-    let base_instructions = sess.get_prompt_base_instructions().await;
+    let input_goal_ids = UserGoalUpdate::message_ids(history.raw_items());
+    let tools_in_history = step_context.settings.model_info.use_responses_lite
+        && history
+            .raw_items()
+            .any(|item| matches!(item, ResponseItem::AdditionalTools { .. }));
+    let base_instructions = if tools_in_history {
+        BaseInstructions {
+            text: String::new(),
+            provenance: None,
+        }
+    } else {
+        sess.get_prompt_base_instructions().await
+    };
     let (rewritten_outputs, estimated_deleted_tokens) =
         trim_function_call_history_to_fit_context_window(
             &mut history,
@@ -128,7 +144,11 @@ pub(super) async fn run_remote_compact_v2_attempt(
     input.push(ResponseItem::CompactionTrigger {});
     let prompt = Prompt {
         input,
-        tools: tool_router.model_visible_specs(),
+        tools: if tools_in_history {
+            Arc::default()
+        } else {
+            tool_router.model_visible_specs()
+        },
         parallel_tool_calls: true,
         base_instructions,
         output_schema: None,
@@ -176,6 +196,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
         .map(|envelope| (envelope.item, envelope.metadata))
         .unzip();
     Ok(RemoteCompactV2Attempt {
+        input_goal_ids,
         trace_input_history,
         prompt_input,
         prompt_input_metadata,

@@ -113,69 +113,77 @@ async fn luna_reserve_recovery_survives_task_reconstruction() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn luna_reserve_entry_dispatches_an_already_queued_turn_with_accepted_settings() -> Result<()>
-{
-    for mode in [ModeKind::Default, ModeKind::Plan] {
-        let (mut app, mut events, _ops) = make_test_app_with_channels().await;
-        let (mut server, requests, proxy) =
-            backend_banner_fallback_tests::start_fallback_thread(&mut app).await?;
-        configure_reserve_catalog(&mut app);
+async fn check_luna_reserve_entry_dispatches_queued_turn_with_accepted_settings(
+    mode: ModeKind,
+) -> Result<()> {
+    let (mut app, mut events, _ops) = make_test_app_with_channels().await;
+    let (mut server, requests, proxy) =
+        backend_banner_fallback_tests::start_fallback_thread(&mut app).await?;
+    configure_reserve_catalog(&mut app);
+    app.chat_widget
+        .set_feature_enabled(Feature::FastMode, /*enabled*/ true);
+    app.chat_widget.set_service_tier(Some("fast".into()));
+    if mode == ModeKind::Plan {
         app.chat_widget
-            .set_feature_enabled(Feature::FastMode, /*enabled*/ true);
-        app.chat_widget.set_service_tier(Some("fast".into()));
-        if mode == ModeKind::Plan {
-            app.chat_widget
-                .handle_key_event(KeyEvent::from(KeyCode::BackTab));
-        }
-        app.chat_widget
-            .restore_user_message_to_composer(UserMessage::from("continue"));
-        app.chat_widget
-            .handle_key_event(KeyEvent::from(KeyCode::Enter));
-        let pending = std::iter::from_fn(|| events.try_recv().ok())
-            .find(|event| matches!(event, AppEvent::CodexOp(AppCommand::UserTurn { .. })))
-            .expect("queued turn before the usage response");
-        requests.lock().unwrap().clear();
-        let mut tui = crate::tui::test_support::make_test_tui()?;
-        let generation = app.rate_limit_hard_stop_generation;
-        app.handle_event(
-            &mut tui,
-            &mut server,
-            AppEvent::RateLimitsLoaded {
-                request_id: 1,
-                origin: RateLimitRefreshOrigin::Periodic,
-                hard_stop_generation: generation,
-                result: Ok(reserve_response()),
-            },
-        )
-        .await?;
-        app.handle_event(&mut tui, &mut server, pending).await?;
-        let sent = requests.lock().unwrap().clone();
-        let methods: Vec<_> = sent.iter().map(|request| request.method.as_str()).collect();
-        assert_eq!(methods, ["thread/settings/update", "turn/start"]);
-        let settings: ThreadSettingsUpdateParams =
-            serde_json::from_value(sent[0].params.clone().unwrap())?;
-        let turn: codex_app_server_protocol::TurnStartParams =
-            serde_json::from_value(sent[1].params.clone().unwrap())?;
-        assert_eq!(
-            (
-                turn.model,
-                turn.effort,
-                turn.service_tier,
-                turn.collaboration_mode
-            ),
-            (
-                settings.model,
-                settings.effort,
-                settings.service_tier,
-                settings.collaboration_mode
-            )
-        );
-        assert_eq!(app.chat_widget.effective_collaboration_mode().mode, mode);
-        server.shutdown().await?;
-        proxy.await??;
+            .handle_key_event(KeyEvent::from(KeyCode::BackTab));
     }
+    app.chat_widget
+        .restore_user_message_to_composer(UserMessage::from("continue"));
+    app.chat_widget
+        .handle_key_event(KeyEvent::from(KeyCode::Enter));
+    let pending = std::iter::from_fn(|| events.try_recv().ok())
+        .find(|event| matches!(event, AppEvent::CodexOp(AppCommand::UserTurn { .. })))
+        .expect("queued turn before the usage response");
+    requests.lock().unwrap().clear();
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    let generation = app.rate_limit_hard_stop_generation;
+    app.handle_event(
+        &mut tui,
+        &mut server,
+        AppEvent::RateLimitsLoaded {
+            request_id: 1,
+            origin: RateLimitRefreshOrigin::Periodic,
+            hard_stop_generation: generation,
+            result: Ok(reserve_response()),
+        },
+    )
+    .await?;
+    app.handle_event(&mut tui, &mut server, pending).await?;
+    let sent = requests.lock().unwrap().clone();
+    let methods: Vec<_> = sent.iter().map(|request| request.method.as_str()).collect();
+    assert_eq!(methods, ["thread/settings/update", "turn/start"]);
+    let settings: ThreadSettingsUpdateParams =
+        serde_json::from_value(sent[0].params.clone().unwrap())?;
+    let turn: codex_app_server_protocol::TurnStartParams =
+        serde_json::from_value(sent[1].params.clone().unwrap())?;
+    assert_eq!(
+        (
+            turn.model,
+            turn.effort,
+            turn.service_tier,
+            turn.collaboration_mode
+        ),
+        (
+            settings.model,
+            settings.effort,
+            settings.service_tier,
+            settings.collaboration_mode
+        )
+    );
+    assert_eq!(app.chat_widget.effective_collaboration_mode().mode, mode);
+    server.shutdown().await?;
+    proxy.await??;
     Ok(())
+}
+
+#[tokio::test]
+async fn luna_reserve_entry_dispatches_queued_turn_in_default_mode() -> Result<()> {
+    check_luna_reserve_entry_dispatches_queued_turn_with_accepted_settings(ModeKind::Default).await
+}
+
+#[tokio::test]
+async fn luna_reserve_entry_dispatches_queued_turn_in_plan_mode() -> Result<()> {
+    check_luna_reserve_entry_dispatches_queued_turn_with_accepted_settings(ModeKind::Plan).await
 }
 
 #[tokio::test]
@@ -188,6 +196,8 @@ async fn luna_reserve_recovery_restores_task_and_pending_turn_after_fresh_backen
         configure_reserve_catalog(&mut app);
         app.chat_widget
             .set_feature_enabled(Feature::FastMode, /*enabled*/ false);
+        app.chat_widget
+            .set_feature_enabled(Feature::UltrafastMode, /*enabled*/ false);
         app.chat_widget
             .set_reasoning_effort(Some(ReasoningEffortConfig::High));
         let original_mode = app.chat_widget.effective_collaboration_mode();
@@ -348,9 +358,13 @@ async fn luna_reserve_recovery_requires_permission_and_no_remaining_blocker() ->
     Ok(())
 }
 
-#[tokio::test]
-async fn luna_reserve_recovery_does_not_override_manual_choice_or_account_change() -> Result<()> {
-    for change_account in [false, true] {
+async fn check_luna_reserve_recovery_does_not_override_manual_choice_or_account_change(
+    case_index: usize,
+) -> Result<()> {
+    for (current_case, change_account) in [false, true].into_iter().enumerate() {
+        if current_case != case_index {
+            continue;
+        }
         let (mut app, _events, _ops) = make_test_app_with_channels().await;
         let (mut server, requests, proxy) =
             backend_banner_fallback_tests::start_fallback_thread(&mut app).await?;
@@ -379,4 +393,20 @@ async fn luna_reserve_recovery_does_not_override_manual_choice_or_account_change
         proxy.await??;
     }
     Ok(())
+}
+
+#[tokio::test]
+async fn luna_reserve_recovery_does_not_override_manual_choice() -> Result<()> {
+    check_luna_reserve_recovery_does_not_override_manual_choice_or_account_change(
+        /*case_index*/ 0,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn luna_reserve_recovery_does_not_override_account_change() -> Result<()> {
+    check_luna_reserve_recovery_does_not_override_manual_choice_or_account_change(
+        /*case_index*/ 1,
+    )
+    .await
 }

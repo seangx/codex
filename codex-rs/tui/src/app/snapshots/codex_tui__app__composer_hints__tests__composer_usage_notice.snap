@@ -1,5 +1,6 @@
 ---
 source: tui/src/app/composer_hints_tests.rs
+assertion_line: 121
 expression: "crate::chatwidget::tests::helpers::normalize_snapshot_paths(snapshots.join(\"\\n\\n\"))"
 ---
 80 columns, 10 rows, running=false, queued=false
@@ -63,7 +64,7 @@ Conversation row 19
 
 • Queued follow-up inputs
   ↳ queued follow-up
-    shift+← edit last queued message
+    ⇧← edit last queued message
                                              ⚠ 5h limit: only 2% left · /status
 ────────────────────────────────────────────────────────────────────────────────
 ▌ draft stays
@@ -77,7 +78,7 @@ Conversation row 19
 
 • Queued follow-up inputs
   ↳ queued follow-up
-    shift+← edit last queued message
+    ⇧← edit last queued message
 ────────────────────────────────────────────────────────────────────────────────
 ▌ draft stays
 ▌ second line

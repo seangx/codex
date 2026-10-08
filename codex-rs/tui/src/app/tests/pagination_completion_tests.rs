@@ -59,6 +59,7 @@ pub(super) async fn completed_history_app(
         let turn_id = format!("turn-{index}");
         let finished = completed_at.timestamp() + index as i64 * 60;
         let mut events = vec![EventMsg::TurnStarted(TurnStartedEvent {
+            turn_attribution: None,
             turn_id: turn_id.clone(),
             root_turn_id: None,
             trace_id: None,
@@ -80,6 +81,7 @@ pub(super) async fn completed_history_app(
                 plugin_id: None,
                 script_path: None,
                 model_context: None,
+                sandbox_type: None,
                 process_id: None,
                 command: vec!["printf".to_string(), format!("{name}-command-output")],
                 cwd: codex_utils_path_uri::PathUri::from_abs_path(&app.config.cwd),
@@ -89,12 +91,9 @@ pub(super) async fn completed_history_app(
                 source: codex_protocol::protocol::ExecCommandSource::Agent,
                 interaction_input: None,
                 status: CommandExecutionStatus::Completed,
-                stdout: None,
-                stderr: None,
                 aggregated_output: Some(format!("{name}-command-output")),
                 exit_code: Some(0),
                 duration: Some(std::time::Duration::from_millis(100)),
-                formatted_output: None,
             }),
             TurnItem::AgentMessage(AgentMessageItem {
                 id: format!("answer-{index}"),
@@ -124,6 +123,7 @@ pub(super) async fn completed_history_app(
                 }),
         );
         events.push(EventMsg::TurnComplete(TurnCompleteEvent {
+            root_turn_id: None,
             turn_id,
             last_agent_message: Some(format!("{name} answer")),
             error: None,
@@ -217,9 +217,13 @@ async fn older_pagination_completion_footers_follow_answers_without_overlap_dupl
     Ok(())
 }
 
-#[tokio::test]
-async fn beginning_navigation_holds_the_view_until_the_last_page_arrives() -> Result<()> {
-    for initial_scroll in [0, -1] {
+async fn check_beginning_navigation_holds_the_view_until_the_last_page_arrives(
+    case_index: usize,
+) -> Result<()> {
+    for (current_case, initial_scroll) in [0, -1].into_iter().enumerate() {
+        if current_case != case_index {
+            continue;
+        }
         let (mut app, _codex_home, thread_id) =
             completed_history_app(&["Oldest", "Middle", "Newest"]).await?;
         let (mut app_server, _requests, proxy) = start_recording_app_server(
@@ -335,6 +339,17 @@ async fn beginning_navigation_holds_the_view_until_the_last_page_arrives() -> Re
         proxy.await??;
     }
     Ok(())
+}
+
+#[tokio::test]
+async fn beginning_navigation_holds_the_unscrolled_view_until_the_last_page_arrives() -> Result<()>
+{
+    check_beginning_navigation_holds_the_view_until_the_last_page_arrives(/*case_index*/ 0).await
+}
+
+#[tokio::test]
+async fn beginning_navigation_holds_the_scrolled_view_until_the_last_page_arrives() -> Result<()> {
+    check_beginning_navigation_holds_the_view_until_the_last_page_arrives(/*case_index*/ 1).await
 }
 
 #[tokio::test]

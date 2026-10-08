@@ -76,19 +76,6 @@ pub(crate) fn user_message_accent_style() -> Style {
     Style::default().fg(best_color(HISTORY_USER_MESSAGE_ACCENT_RGB))
 }
 
-/// Submitted prompts use a lighter fill than the editable composer in either theme.
-pub(crate) fn history_prompt_style() -> Style {
-    let Some(background) = default_bg() else {
-        return Style::default();
-    };
-    let (foreground, alpha) = if is_light(background) {
-        ((0, 0, 0), 0.02)
-    } else {
-        ((255, 255, 255), 0.16)
-    };
-    Style::default().bg(best_color(blend(foreground, background, alpha)))
-}
-
 pub fn proposed_plan_style() -> Style {
     proposed_plan_style_for(default_bg())
 }

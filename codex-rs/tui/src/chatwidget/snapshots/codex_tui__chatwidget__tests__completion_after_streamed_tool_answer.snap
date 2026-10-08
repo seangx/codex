@@ -1,10 +1,9 @@
 ---
 source: tui/src/chatwidget/tests/completion_styling_tests.rs
-assertion_line: 80
-expression: normalize_completion_timestamps(text)
+expression: text
 ---
 • Ran 1 shell command
 
 • The change is ready.
 
-  Worked for [duration] · [completion time]
+  Worked for [duration] • [completion time]

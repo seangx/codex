@@ -473,10 +473,11 @@ async fn only_confirmed_picker_model_changes_can_arm_the_sparkle() -> Result<()>
     Ok(())
 }
 
-#[tokio::test]
-async fn astra_picker_confirms_the_model_at_application_after_an_automatic_update() -> Result<()> {
+async fn check_astra_picker_confirms_after_automatic_update(
+    case_indices: &[usize],
+) -> Result<Vec<String>> {
     let mut snapshots = Vec::new();
-    for (picker, key, switches_away) in [
+    for (current_case, (picker, key, switches_away)) in [
         ("default no-op", KeyCode::Enter, false),
         ("session no-op", KeyCode::Char('s'), false),
         ("advanced no-op", KeyCode::Enter, false),
@@ -485,7 +486,13 @@ async fn astra_picker_confirms_the_model_at_application_after_an_automatic_updat
         ("default changes model", KeyCode::Enter, true),
         ("session changes model", KeyCode::Char('s'), true),
         ("advanced changes model", KeyCode::Enter, true),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if !case_indices.contains(&current_case) {
+            continue;
+        }
         let (mut app, mut events, _ops) = make_test_app_with_channels().await;
         app.config.model = Some("gpt-5.5".into());
         app.local_settings.tui.animations = true;
@@ -567,8 +574,138 @@ async fn astra_picker_confirms_the_model_at_application_after_an_automatic_updat
         }
         server.shutdown().await?;
     }
-    insta::assert_snapshot!(snapshots.join("\n\n"));
+    Ok(snapshots)
+}
+
+#[tokio::test]
+async fn astra_default_picker_snapshot_cases_confirm_after_automatic_update() -> Result<()> {
+    let snapshots =
+        check_astra_picker_confirms_after_automatic_update(/*case_indices*/ &[0, 5]).await?;
+    insta::assert_snapshot!(
+        "astra_picker_confirms_the_model_at_application_after_an_automatic_update",
+        snapshots.join("\n\n")
+    );
     Ok(())
+}
+
+#[tokio::test]
+async fn astra_default_queued_noop_confirms_after_automatic_update() -> Result<()> {
+    let snapshots =
+        check_astra_picker_confirms_after_automatic_update(/*case_indices*/ &[3]).await?;
+    assert_eq!(snapshots, Vec::<String>::new());
+    Ok(())
+}
+
+#[tokio::test]
+async fn astra_session_noop_confirms_after_automatic_update() -> Result<()> {
+    let snapshots =
+        check_astra_picker_confirms_after_automatic_update(/*case_indices*/ &[1]).await?;
+    assert_eq!(snapshots, Vec::<String>::new());
+    Ok(())
+}
+
+#[tokio::test]
+async fn astra_session_queued_noop_confirms_after_automatic_update() -> Result<()> {
+    let snapshots =
+        check_astra_picker_confirms_after_automatic_update(/*case_indices*/ &[4]).await?;
+    assert_eq!(snapshots, Vec::<String>::new());
+    Ok(())
+}
+
+#[tokio::test]
+async fn astra_session_model_change_confirms_after_automatic_update() -> Result<()> {
+    let snapshots =
+        check_astra_picker_confirms_after_automatic_update(/*case_indices*/ &[6]).await?;
+    assert_eq!(snapshots, Vec::<String>::new());
+    Ok(())
+}
+
+#[tokio::test]
+async fn astra_advanced_noop_confirms_after_automatic_update() -> Result<()> {
+    let snapshots =
+        check_astra_picker_confirms_after_automatic_update(/*case_indices*/ &[2]).await?;
+    assert_eq!(snapshots, Vec::<String>::new());
+    Ok(())
+}
+
+#[tokio::test]
+async fn astra_advanced_model_change_confirms_after_automatic_update() -> Result<()> {
+    let snapshots =
+        check_astra_picker_confirms_after_automatic_update(/*case_indices*/ &[7]).await?;
+    assert_eq!(snapshots, Vec::<String>::new());
+    Ok(())
+}
+
+#[test]
+fn astra_picker_xhigh_applies_on_a_bounded_stack() -> Result<()> {
+    const STACK_SIZE: usize = 4 * 1024 * 1024;
+    const SERVER_STACK_SIZE: usize = 8 * 1024 * 1024;
+    const WORKER_THREADS: usize = 1;
+
+    std::thread::Builder::new()
+        .name("astra-picker".into())
+        .stack_size(STACK_SIZE)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(WORKER_THREADS)
+                .thread_stack_size(SERVER_STACK_SIZE)
+                .enable_all()
+                .build()?;
+            runtime.block_on(Box::pin(async {
+                let (mut app, mut events, _ops) = Box::pin(make_test_app_with_channels()).await;
+                app.config.model = Some("gpt-5.5".into());
+                let mut server = Box::pin(start_config_write_test_app_server(&app)).await?;
+                let mut tui = crate::tui::test_support::make_test_tui()?;
+                let thread = server.start_thread(&app.config).await?;
+                Box::pin(app.replace_chat_widget_with_app_server_thread(
+                    &mut tui,
+                    thread,
+                    ThreadAttachPresentation::Fresh,
+                    /*initial_user_message*/ None,
+                ))
+                .await?;
+
+                let mut preset = crate::test_support::TEST_MODEL_PRESETS[0].clone();
+                preset.model = "gpt-6-astra".into();
+                preset.default_reasoning_effort = ReasoningEffortConfig::XHigh;
+                preset.supported_reasoning_efforts = vec![
+                    ReasoningEffortPreset {
+                        effort: ReasoningEffortConfig::XHigh,
+                        description: "Extra High".into(),
+                    },
+                    ReasoningEffortPreset {
+                        effort: ReasoningEffortConfig::Low,
+                        description: "Low".into(),
+                    },
+                ];
+                app.chat_widget.open_reasoning_popup(preset);
+                app.chat_widget.handle_key_event(KeyCode::Enter.into());
+                let mut confirmed = false;
+                while let Ok(event) = events.try_recv() {
+                    confirmed |= matches!(event, AppEvent::AstraSelectedFromModelPicker { .. });
+                    if matches!(
+                        &event,
+                        AppEvent::AstraSelectedFromModelPicker { .. }
+                            | AppEvent::UpdateReasoningEffort(_)
+                            | AppEvent::PersistModelSelection { .. }
+                    ) {
+                        Box::pin(app.handle_event(&mut tui, &mut server, event)).await?;
+                    }
+                }
+                assert!(confirmed);
+                assert_eq!(
+                    (
+                        app.chat_widget.current_model(),
+                        app.chat_widget.current_reasoning_effort(),
+                    ),
+                    ("gpt-6-astra", Some(ReasoningEffortConfig::XHigh)),
+                );
+                server.shutdown().await?;
+                Ok(())
+            }))
+        })?
+        .join()
+        .expect("Astra picker thread panicked")
 }
 
 #[tokio::test]

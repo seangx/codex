@@ -7,6 +7,7 @@ use codex_exec_server::ShellInfo;
 use codex_exec_server::ShellSnapshotRequest;
 use codex_features::Feature;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::sandbox::SandboxOverride;
 use codex_sandboxing::SandboxManager;
 use codex_sandboxing::SandboxablePreference;
 use codex_tools::ToolName;
@@ -92,6 +93,7 @@ impl Session {
                         /*has_managed_network_requirements*/ false,
                     )
                     .then(|| FileSystemSandboxContext {
+                        sandbox_override: SandboxOverride::NoOverride,
                         permissions: environment.permission_profile().clone(),
                         cwd: environment.cwd().clone(),
                         workspace_roots: environment.workspace_roots().to_vec(),
@@ -113,7 +115,7 @@ impl Session {
                     session.thread_id().to_string(),
                 );
                 inject_session_env(&mut env, session.session_id());
-                inject_apply_patch_env(&mut env, &config.features);
+                inject_apply_patch_env(&mut env);
                 inject_permission_profile_env(
                     &mut env,
                     environment.active_permission_profile().as_ref(),
@@ -179,15 +181,12 @@ pub(super) fn shell_snapshot_request(
         || !request.turn_environment.shell_snapshot_v2_supported
         || request.turn_environment.selection.cwd != *cwd
         || !matches!(request.shell_mode, UnifiedExecShellMode::Direct)
-        || !matches!(
-            request.shell_type,
-            ShellType::Bash | ShellType::Zsh | ShellType::Sh
-        )
-        || request.command.get(1).is_none_or(|flag| flag != "-lc")
+        || !request.shell.is_posix_login()
     {
         return None;
     }
 
+    let shell = &request.shell.shell;
     Some(ShellSnapshotRequest {
         scope_id: format!(
             "{}:{}",
@@ -195,8 +194,8 @@ pub(super) fn shell_snapshot_request(
             request.turn_environment.selection.environment_id
         ),
         shell: ShellInfo {
-            name: request.shell_type.name().to_string(),
-            path: request.command.first()?.clone(),
+            name: shell.name().to_string(),
+            path: shell.shell_path.to_string_lossy().into_owned(),
         },
     })
 }

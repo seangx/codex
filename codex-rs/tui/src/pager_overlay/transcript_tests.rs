@@ -29,6 +29,27 @@ fn transcript_overlay(cells: Vec<Arc<dyn HistoryCell>>) -> TranscriptOverlay {
 }
 
 #[test]
+fn keyboard_scroll_does_not_use_mouse_speed() {
+    let mut overlay = transcript_overlay(vec![Arc::new(TestCell {
+        lines: (0..60).map(|row| format!("row {row}").into()).collect(),
+    })]);
+    overlay.view.mouse_scroll_speed = 2.0;
+    let area = Rect::new(
+        /*x*/ 0, /*y*/ 0, /*width*/ 40, /*height*/ 12,
+    );
+    overlay.render(area, &mut Buffer::empty(area));
+    overlay.view.jump_to_entry(&overlay.cells, /*index*/ 0);
+    overlay.scroll(/*rows*/ 1);
+    let mut buffer = Buffer::empty(area);
+    overlay.render(area, &mut buffer);
+    let first_row = Rect::new(area.x, area.y + 1, area.width, /*height*/ 1);
+    assert_eq!(buffer_to_text(&buffer, first_row).trim(), "row 1");
+    overlay.scroll_mouse_wheel(/*rows*/ 1);
+    overlay.render(area, &mut buffer);
+    assert_eq!(buffer_to_text(&buffer, first_row).trim(), "row 3");
+}
+
+#[test]
 fn scrolling_prepend_and_resize_preserve_reading_content() {
     let cells = (0..30)
         .map(|index| {
@@ -277,7 +298,7 @@ async fn opening_find_retains_the_selected_mutable_revision() -> Result<()> {
         &mut tui,
         TuiEvent::Key(KeyEvent::new(KeyCode::F(3), KeyModifiers::NONE)),
     )?;
-    assert!(overlay.view.is_search_active());
+    assert!(overlay.view.is_search_editing());
     overlay.handle_event(
         &mut tui,
         TuiEvent::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
@@ -454,12 +475,7 @@ fn transcript_overlay_snapshots_paginated_history_states() {
         snapshots.push_str(&format!("--- {name} ---\n{}", buffer_to_text(&buf, area)));
     }
 
-    let snapshot_name = if cfg!(target_os = "macos") {
-        "transcript_overlay_paginated_history_states"
-    } else {
-        "transcript_overlay_paginated_history_states_non_macos"
-    };
-    assert_snapshot!(snapshot_name, snapshots);
+    assert_snapshot!("transcript_overlay_paginated_history_states", snapshots);
 }
 
 #[test]
@@ -518,7 +534,6 @@ fn transcript_overlay_absorbs_older_tail_into_live_without_duplicate_cells() {
     let header: Arc<dyn HistoryCell> = Arc::new(history_cell::SessionHeaderHistoryCell::new(
         "test model".to_owned(),
         /*reasoning_effort*/ None,
-        /*show_fast_status*/ false,
         std::path::PathBuf::from("/project"),
         "test",
     ));

@@ -215,7 +215,7 @@ fn code_mode_output_stays_compact_across_blocks_and_preserves_transcript() {
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join("\n");
-    insta::assert_snapshot!(display, @r"
+    insta::assert_snapshot!(display, @"
     • Inspect page
     ");
     let transcript = cell
@@ -256,7 +256,7 @@ fn code_mode_transcript_keeps_trailing_failure_diagnostics() {
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join("\n");
-    insta::assert_snapshot!(display, @r"
+    insta::assert_snapshot!(display, @"
     • Inspect page
     ");
     let transcript = cell

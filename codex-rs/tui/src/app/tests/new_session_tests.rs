@@ -7,6 +7,78 @@ use crossterm::event::KeyModifiers;
 use pretty_assertions::assert_eq;
 
 #[tokio::test]
+async fn new_sessions_preserve_yolo_launch_and_later_permission_choices() -> Result<()> {
+    let (mut app, _events, _ops) = make_test_app_with_channels().await;
+    app.harness_overrides.approval_policy = Some(AskForApproval::Never.to_core());
+    app.harness_overrides.sandbox_mode =
+        Some(codex_protocol::config_types::SandboxMode::DangerFullAccess);
+    let (mut server, requests, proxy) = start_recording_app_server(
+        &app.config,
+        /*blocked_thread_list*/ None,
+        /*failed_thread_name*/ None,
+    )
+    .await?;
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    let mut loaded_config = app.config.clone();
+    loaded_config
+        .permissions
+        .approval_policy
+        .set(AskForApproval::OnRequest.to_core())?;
+    loaded_config
+        .permissions
+        .set_permission_profile(PermissionProfile::read_only())?;
+    let loaded = server.start_thread(&loaded_config).await?;
+    app.select_agents_overview_thread(&mut tui, &mut server, loaded.session.thread_id)
+        .await?;
+    for picker_change in [false, true] {
+        if picker_change {
+            app.chat_widget
+                .set_approval_policy(AskForApproval::OnRequest);
+            app.chat_widget
+                .set_permission_profile_from_session_snapshot(PermissionProfileSnapshot::active(
+                    PermissionProfile::read_only(),
+                    ActivePermissionProfile::new(":read-only"),
+                ))?;
+            app.adopt_server_permissions();
+        }
+        app.start_fresh_session(
+            &mut tui,
+            &mut server,
+            /*session_start_source*/ None,
+            /*initial_user_message*/ None,
+            /*new_thread_name*/ None,
+        )
+        .await;
+        let cached = app.primary_session_configured.as_ref().unwrap().clone();
+        let mut resumed = cached.clone();
+        resumed.approval_policy = AskForApproval::OnRequest;
+        resumed.permission_profile = PermissionProfile::read_only();
+        resumed.active_permission_profile = None;
+        app.restore_runtime_permissions(&mut resumed, &cached);
+        assert_eq!(resumed, cached);
+    }
+    let params = recorded_params(&requests, "thread/start");
+    assert_eq!(
+        params
+            .iter()
+            .skip(1)
+            .map(|params| serde_json::json!({
+                "approvalPolicy": params["approvalPolicy"],
+                "sandbox": params["sandbox"],
+                "permissions": params["permissions"],
+            }))
+            .collect::<Vec<_>>(),
+        vec![
+            serde_json::json!({"approvalPolicy": "never", "sandbox": "danger-full-access", "permissions": null}),
+            serde_json::json!({"approvalPolicy": "on-request", "sandbox": null, "permissions": ":read-only"}),
+        ]
+    );
+    server.shutdown().await?;
+    proxy.await??;
+    Ok(())
+}
+
+#[tokio::test]
 async fn new_session_preserves_vim_line_yank() -> Result<()> {
     let (mut app, _events, _ops) = make_test_app_with_channels().await;
     let home = tempdir()?;
@@ -30,7 +102,7 @@ async fn new_session_preserves_vim_line_yank() -> Result<()> {
     )
     .await?;
     let mut tui = crate::tui::test_support::make_test_tui()?;
-    app.start_fresh_session_with_summary_hint(
+    app.start_fresh_session(
         &mut tui,
         &mut server,
         /*session_start_source*/ None,
@@ -58,134 +130,351 @@ async fn new_session_preserves_vim_line_yank() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn replacement_uses_server_defaults_and_preserves_explicit_launch_settings() -> Result<()> {
-    for (managed_effort, explicit, expected_model, expected_effort) in [
-        (None, "saved", "server-model", "high"),
-        (Some("medium"), "model", "cli-model", "high"),
-        (Some("medium"), "effort", "server-model", "low"),
-        (None, "profile_model", "profile-model", "high"),
-        (None, "profile_effort", "server-model", "low"),
-        (Some("medium"), "profile_model", "profile-model", "high"),
-        (Some("medium"), "profile_effort", "server-model", "low"),
-        (Some(""), "profile", "profile-model", "low"),
-        (Some("medium"), "profile", "profile-model", "low"),
-        (
-            Some("medium"),
-            "profile_unrelated",
-            "managed-model",
-            "medium",
-        ),
-    ] {
-        let (mut app, _events, _ops) = make_test_app_with_channels().await;
-        let server_home = tempdir()?;
-        let client_home = tempdir()?;
+struct ReplacementDefaultsCase {
+    managed_effort: Option<&'static str>,
+    explicit: &'static str,
+    expected_model: &'static str,
+    expected_effort: &'static str,
+}
+
+async fn check_replacement_uses_server_defaults_and_preserves_explicit_launch_settings(
+    case: ReplacementDefaultsCase,
+) -> Result<()> {
+    let ReplacementDefaultsCase {
+        managed_effort,
+        explicit,
+        expected_model,
+        expected_effort,
+    } = case;
+    let (mut app, _events, _ops) = make_test_app_with_channels().await;
+    let server_home = tempdir()?;
+    let client_home = tempdir()?;
+    std::fs::write(
+        server_home.path().join("work.config.toml"),
+        "model = \"server-model\"\nmodel_reasoning_effort = \"high\"\n",
+    )?;
+    std::fs::write(
+        client_home.path().join("config.toml"),
+        "model = \"stale-client-model\"\nmodel_reasoning_effort = \"low\"\nmodel_reasoning_summary = \"detailed\"\nfeatures.concurrent_reasoning_summaries = true\n",
+    )?;
+    if let Some(effort) = managed_effort {
+        let effort = if effort.is_empty() {
+            String::new()
+        } else {
+            format!("model_reasoning_effort = {effort:?}\n")
+        };
         std::fs::write(
-            server_home.path().join("work.config.toml"),
-            "model = \"server-model\"\nmodel_reasoning_effort = \"high\"\n",
+            server_home.path().join("requirements.toml"),
+            format!("[models.new_thread]\nmodel = \"managed-model\"\n{effort}"),
         )?;
-        std::fs::write(
-            client_home.path().join("config.toml"),
-            "model = \"stale-client-model\"\nmodel_reasoning_effort = \"low\"\n",
-        )?;
-        if let Some(effort) = managed_effort {
-            let effort = if effort.is_empty() {
-                String::new()
-            } else {
-                format!("model_reasoning_effort = {effort:?}\n")
-            };
+    }
+    let mut server_config = app.config.clone();
+    server_config.codex_home = server_home.path().to_path_buf().abs();
+    server_config.sqlite = SqliteConfig::new_for_testing(server_home.path().abs());
+    let (mut server, requests, proxy) = start_recording_app_server_with_history(
+        &server_config,
+        HistoryCapabilities::Current,
+        /*blocked_thread_list*/ None,
+        /*failed_thread_name*/ None,
+        if explicit.starts_with("profile_summary") {
+            crate::app_server_session::ThreadParamsMode::Embedded
+        } else {
+            crate::app_server_session::ThreadParamsMode::Remote
+        },
+        LoaderOverrides {
+            user_config_path: Some(server_home.path().join("work.config.toml").abs()),
+            user_config_profile: Some("work".parse()?),
+            system_requirements_path: Some(server_home.path().join("requirements.toml")),
+            ..LoaderOverrides::default()
+        },
+    )
+    .await?;
+    server = server.with_remote_cwd_override(Some(server_config.cwd.to_path_buf()));
+    server.bootstrap(&server_config).await?;
+    app.config.codex_home = client_home.path().to_path_buf().abs();
+    app.config.sqlite = SqliteConfig::new_for_testing(client_home.path().abs());
+    app.chat_widget
+        .handle_thread_session_quiet(test_thread_session(
+            ThreadId::new(),
+            client_home.path().to_path_buf(),
+        ));
+    match explicit {
+        "model" => app.harness_overrides.model = Some("cli-model".to_string()),
+        "effort" => app.cli_kv_overrides.push((
+            "model_reasoning_effort".to_string(),
+            TomlValue::String("low".to_string()),
+        )),
+        profile @ ("profile"
+        | "profile_model"
+        | "profile_effort"
+        | "profile_unrelated"
+        | "profile_summary"
+        | "profile_summary_off"
+        | "profile_summary_cli") => {
+            let path = client_home.path().join("work.config.toml");
             std::fs::write(
-                server_home.path().join("requirements.toml"),
-                format!("[models.new_thread]\nmodel = \"managed-model\"\n{effort}"),
+                &path,
+                match profile {
+                    "profile_model" => "model = \"profile-model\"\n",
+                    "profile_effort" => "model_reasoning_effort = \"low\"\n",
+                    "profile_unrelated" => "model_verbosity = \"low\"\n",
+                    "profile_summary" => {
+                        "model_reasoning_summary = \"detailed\"\nfeatures.concurrent_reasoning_summaries = true\n"
+                    }
+                    "profile_summary_off" | "profile_summary_cli" => {
+                        "model_reasoning_summary = \"detailed\"\nfeatures.concurrent_reasoning_summaries = false\n"
+                    }
+                    _ => "model = \"profile-model\"\nmodel_reasoning_effort = \"low\"\n",
+                },
             )?;
+            app.loader_overrides.user_config_path = Some(path.abs());
+            app.loader_overrides.user_config_profile = Some("work".parse()?);
         }
-        let mut server_config = app.config.clone();
-        server_config.codex_home = server_home.path().to_path_buf().abs();
-        server_config.sqlite = SqliteConfig::new_for_testing(server_home.path().abs());
-        let (mut server, requests, proxy) = start_recording_app_server_with_history(
-            &server_config,
-            HistoryCapabilities::Current,
-            /*blocked_thread_list*/ None,
-            /*failed_thread_name*/ None,
-            crate::app_server_session::ThreadParamsMode::Remote,
-            LoaderOverrides {
-                user_config_path: Some(server_home.path().join("work.config.toml").abs()),
-                user_config_profile: Some("work".parse()?),
-                system_requirements_path: Some(server_home.path().join("requirements.toml")),
-                ..LoaderOverrides::default()
+        _ => {}
+    }
+    if explicit == "profile_summary_cli" {
+        app.cli_kv_overrides.push((
+            "features.concurrent_reasoning_summaries".into(),
+            true.into(),
+        ));
+    }
+    if explicit.starts_with("profile_summary") {
+        app.app_server_target = AppServerTarget::LocalDaemon {
+            allow_embedded_fallback: true,
+            endpoint: crate::RemoteAppServerEndpoint::UnixSocket {
+                socket_path: client_home.path().join("daemon.sock").abs(),
             },
-        )
-        .await?;
-        server = server.with_remote_cwd_override(Some(server_config.cwd.to_path_buf()));
-        server.bootstrap(&server_config).await?;
-        app.config.codex_home = client_home.path().to_path_buf().abs();
-        app.config.sqlite = SqliteConfig::new_for_testing(client_home.path().abs());
-        app.chat_widget
-            .handle_thread_session_quiet(test_thread_session(
-                ThreadId::new(),
-                client_home.path().to_path_buf(),
-            ));
-        match explicit {
-            "model" => app.harness_overrides.model = Some("cli-model".to_string()),
-            "effort" => app.cli_kv_overrides.push((
-                "model_reasoning_effort".to_string(),
-                TomlValue::String("low".to_string()),
-            )),
-            profile @ ("profile" | "profile_model" | "profile_effort" | "profile_unrelated") => {
-                let path = client_home.path().join("work.config.toml");
-                std::fs::write(
-                    &path,
-                    match profile {
-                        "profile_model" => "model = \"profile-model\"\n",
-                        "profile_effort" => "model_reasoning_effort = \"low\"\n",
-                        "profile_unrelated" => "model_verbosity = \"low\"\n",
-                        _ => "model = \"profile-model\"\nmodel_reasoning_effort = \"low\"\n",
-                    },
-                )?;
-                app.loader_overrides.user_config_path = Some(path.abs());
-                app.loader_overrides.user_config_profile = Some("work".parse()?);
-            }
-            _ => {}
-        }
-        let mut tui = crate::tui::test_support::make_test_tui()?;
-        app.start_fresh_session_with_summary_hint(
-            &mut tui,
-            &mut server,
-            /*session_start_source*/ None,
-            /*initial_user_message*/ None,
-            /*new_thread_name*/ None,
-        )
-        .await;
-        let starts = recorded_params(&requests, "thread/start");
-        assert_eq!(starts.len(), 1);
-        assert_eq!(
-            (
-                &starts[0]["model"],
-                &starts[0]["config"]["model_reasoning_effort"]
-            ),
-            (
-                &serde_json::json!(expected_model),
-                &serde_json::json!(expected_effort)
-            ),
-        );
-        assert_eq!(
-            recorded_params(&requests, "config/read"),
-            vec![serde_json::json!({"cwd": server_config.cwd.display().to_string()})],
-        );
-        if explicit == "saved" {
-            let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 80)
-                .replace(&server_config.cwd.display().to_string(), "<PROJECT>");
-            insta::assert_snapshot!(rendered, @"
+        };
+        app.open_agents_overview(&server);
+    }
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    app.start_fresh_session(
+        &mut tui,
+        &mut server,
+        /*session_start_source*/ None,
+        /*initial_user_message*/ None,
+        /*new_thread_name*/ None,
+    )
+    .await;
+    let starts = recorded_params(&requests, "thread/start");
+    assert_eq!(starts.len(), 1);
+    assert_eq!(
+        (
+            starts[0]["config"].get("model_reasoning_summary"),
+            starts[0]["config"]["features"].get("concurrent_reasoning_summaries"),
+        ),
+        (
+            explicit
+                .starts_with("profile_summary")
+                .then_some(&serde_json::json!("detailed")),
+            explicit
+                .starts_with("profile_summary")
+                .then_some(&serde_json::json!(explicit != "profile_summary_off")),
+        ),
+        "{explicit}",
+    );
+    assert_eq!(
+        (
+            &starts[0]["model"],
+            &starts[0]["config"]["model_reasoning_effort"]
+        ),
+        (
+            &serde_json::json!(expected_model),
+            &serde_json::json!(expected_effort)
+        ),
+    );
+    assert_eq!(
+        recorded_params(&requests, "config/read"),
+        vec![
+            serde_json::json!({"cwd": if explicit.starts_with("profile_summary") {
+                    client_home.path().display().to_string()
+                } else {
+                    server_config.cwd.display().to_string()
+                }, "includeLayers": true})
+        ],
+    );
+    if explicit == "saved" {
+        let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 80)
+            .replace(&server_config.cwd.display().to_string(), "<PROJECT>");
+        insta::assert_snapshot!(rendered, @"
             ────────────────────────────────────────────────────────────────────────────────
             ▌ Ask Codex to do anything
             ────────────────────────────────────────────────────────────────────────────────
               server-model high · <PROJECT>
             ");
-        }
-        server.shutdown().await?;
-        proxy.await??;
     }
+    server.shutdown().await?;
+    proxy.await??;
     Ok(())
+}
+
+#[tokio::test]
+async fn replacement_uses_server_defaults_for_saved_settings() -> Result<()> {
+    check_replacement_uses_server_defaults_and_preserves_explicit_launch_settings(
+        ReplacementDefaultsCase {
+            managed_effort: None,
+            explicit: "saved",
+            expected_model: "server-model",
+            expected_effort: "high",
+        },
+    )
+    .await
+}
+
+#[tokio::test]
+async fn replacement_preserves_explicit_cli_model_with_managed_defaults() -> Result<()> {
+    check_replacement_uses_server_defaults_and_preserves_explicit_launch_settings(
+        ReplacementDefaultsCase {
+            managed_effort: Some("medium"),
+            explicit: "model",
+            expected_model: "cli-model",
+            expected_effort: "high",
+        },
+    )
+    .await
+}
+
+#[tokio::test]
+async fn replacement_preserves_explicit_cli_effort_with_managed_defaults() -> Result<()> {
+    check_replacement_uses_server_defaults_and_preserves_explicit_launch_settings(
+        ReplacementDefaultsCase {
+            managed_effort: Some("medium"),
+            explicit: "effort",
+            expected_model: "server-model",
+            expected_effort: "low",
+        },
+    )
+    .await
+}
+
+#[tokio::test]
+async fn replacement_preserves_profile_model() -> Result<()> {
+    check_replacement_uses_server_defaults_and_preserves_explicit_launch_settings(
+        ReplacementDefaultsCase {
+            managed_effort: None,
+            explicit: "profile_model",
+            expected_model: "profile-model",
+            expected_effort: "high",
+        },
+    )
+    .await
+}
+
+#[tokio::test]
+async fn replacement_preserves_profile_effort() -> Result<()> {
+    check_replacement_uses_server_defaults_and_preserves_explicit_launch_settings(
+        ReplacementDefaultsCase {
+            managed_effort: None,
+            explicit: "profile_effort",
+            expected_model: "server-model",
+            expected_effort: "low",
+        },
+    )
+    .await
+}
+
+#[tokio::test]
+async fn replacement_preserves_profile_summary_settings() -> Result<()> {
+    check_replacement_uses_server_defaults_and_preserves_explicit_launch_settings(
+        ReplacementDefaultsCase {
+            managed_effort: None,
+            explicit: "profile_summary",
+            expected_model: "server-model",
+            expected_effort: "high",
+        },
+    )
+    .await
+}
+
+#[tokio::test]
+async fn replacement_preserves_disabled_profile_summary_settings() -> Result<()> {
+    check_replacement_uses_server_defaults_and_preserves_explicit_launch_settings(
+        ReplacementDefaultsCase {
+            managed_effort: None,
+            explicit: "profile_summary_off",
+            expected_model: "server-model",
+            expected_effort: "high",
+        },
+    )
+    .await
+}
+
+#[tokio::test]
+async fn replacement_cli_override_reenables_profile_summary_settings() -> Result<()> {
+    check_replacement_uses_server_defaults_and_preserves_explicit_launch_settings(
+        ReplacementDefaultsCase {
+            managed_effort: None,
+            explicit: "profile_summary_cli",
+            expected_model: "server-model",
+            expected_effort: "high",
+        },
+    )
+    .await
+}
+
+#[tokio::test]
+async fn replacement_preserves_profile_model_with_managed_defaults() -> Result<()> {
+    check_replacement_uses_server_defaults_and_preserves_explicit_launch_settings(
+        ReplacementDefaultsCase {
+            managed_effort: Some("medium"),
+            explicit: "profile_model",
+            expected_model: "profile-model",
+            expected_effort: "high",
+        },
+    )
+    .await
+}
+
+#[tokio::test]
+async fn replacement_preserves_profile_effort_with_managed_defaults() -> Result<()> {
+    check_replacement_uses_server_defaults_and_preserves_explicit_launch_settings(
+        ReplacementDefaultsCase {
+            managed_effort: Some("medium"),
+            explicit: "profile_effort",
+            expected_model: "server-model",
+            expected_effort: "low",
+        },
+    )
+    .await
+}
+
+#[tokio::test]
+async fn replacement_preserves_profile_with_managed_model_only() -> Result<()> {
+    check_replacement_uses_server_defaults_and_preserves_explicit_launch_settings(
+        ReplacementDefaultsCase {
+            managed_effort: Some(""),
+            explicit: "profile",
+            expected_model: "profile-model",
+            expected_effort: "low",
+        },
+    )
+    .await
+}
+
+#[tokio::test]
+async fn replacement_preserves_profile_with_managed_model_and_effort() -> Result<()> {
+    check_replacement_uses_server_defaults_and_preserves_explicit_launch_settings(
+        ReplacementDefaultsCase {
+            managed_effort: Some("medium"),
+            explicit: "profile",
+            expected_model: "profile-model",
+            expected_effort: "low",
+        },
+    )
+    .await
+}
+
+#[tokio::test]
+async fn replacement_uses_managed_defaults_with_unrelated_profile_setting() -> Result<()> {
+    check_replacement_uses_server_defaults_and_preserves_explicit_launch_settings(
+        ReplacementDefaultsCase {
+            managed_effort: Some("medium"),
+            explicit: "profile_unrelated",
+            expected_model: "managed-model",
+            expected_effort: "medium",
+        },
+    )
+    .await
 }
 
 #[tokio::test]
@@ -216,7 +505,7 @@ async fn replacement_failure_keeps_current_task_and_restores_input() -> Result<(
             std::fs::write(home.path().join("config.toml"), "invalid = [")?;
         }
         let mut tui = crate::tui::test_support::make_test_tui()?;
-        app.start_fresh_session_with_summary_hint(
+        app.start_fresh_session(
             &mut tui,
             &mut server,
             /*session_start_source*/ None,
@@ -284,7 +573,7 @@ async fn replacement_preserves_remote_launch_paths_and_older_servers() -> Result
         .await?;
         let mut server = server.with_remote_cwd_override(remote_cwd.clone());
         let mut tui = crate::tui::test_support::make_test_tui()?;
-        app.start_fresh_session_with_summary_hint(
+        app.start_fresh_session(
             &mut tui,
             &mut server,
             /*session_start_source*/ None,
@@ -294,7 +583,7 @@ async fn replacement_preserves_remote_launch_paths_and_older_servers() -> Result
         .await;
         assert_eq!(
             recorded_params(&requests, "config/read"),
-            vec![serde_json::json!({"cwd": "."}),]
+            vec![serde_json::json!({"cwd": ".", "includeLayers": true}),]
         );
         let starts = recorded_params(&requests, "thread/start");
         assert_eq!(starts.len(), 1);

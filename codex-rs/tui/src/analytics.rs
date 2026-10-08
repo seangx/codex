@@ -524,6 +524,13 @@ impl AnalyticsView {
                 self.handle_mouse(mouse);
                 tui.frame_requester().schedule_frame();
             }
+            TuiEvent::MouseScroll(scroll) => {
+                // Preserve coalesced wheel strength with a bounded 60-row gesture.
+                for _ in 0..scroll.ticks.clamp(1, 20) {
+                    self.handle_mouse(scroll.mouse);
+                }
+                tui.frame_requester().schedule_frame();
+            }
             TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) | TuiEvent::FocusGained => {
                 // Rendering follows a selection on resize only when it was visible before
                 // reflow. Preserve an intentional reading position away from that selection.

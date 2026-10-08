@@ -3,6 +3,8 @@
 use super::*;
 use crate::exec_cell::ExecCell;
 use codex_protocol::parse_command::ParsedCommand;
+use std::collections::HashSet;
+use std::path::PathBuf;
 
 const TOOL_SUMMARY_ORANGE: Color = Color::LightYellow;
 
@@ -215,7 +217,7 @@ impl HistoryCell for ToolActivityGroupCell {
 
 #[derive(Debug, Default)]
 struct ToolActivitySummary {
-    reads: usize,
+    read_paths: HashSet<PathBuf>,
     lists: usize,
     searches: usize,
     web_searches: usize,
@@ -242,7 +244,9 @@ impl ToolActivitySummary {
             }
             for parsed in &call.parsed {
                 match parsed {
-                    ParsedCommand::Read { .. } => self.reads += 1,
+                    ParsedCommand::Read { path, .. } => {
+                        self.read_paths.insert(path.clone());
+                    }
                     ParsedCommand::ListFiles { .. } => self.lists += 1,
                     ParsedCommand::Search { .. } => self.searches += 1,
                     ParsedCommand::Unknown { .. } => unreachable!("handled above"),
@@ -267,12 +271,9 @@ impl ToolActivitySummary {
 
     fn render(&self) -> String {
         let mut parts = Vec::new();
-        if self.reads > 0 {
-            parts.push(format!(
-                "Read {} {}",
-                self.reads,
-                plural(self.reads, "file", "files")
-            ));
+        let reads = self.read_paths.len();
+        if reads > 0 {
+            parts.push(format!("Read {} {}", reads, plural(reads, "file", "files")));
         }
         if self.lists > 0 {
             parts.push(format!(
