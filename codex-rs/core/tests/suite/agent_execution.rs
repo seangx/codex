@@ -4,6 +4,7 @@ use codex_core::AgentTreeShutdownFailure;
 use codex_core::AgentTreeShutdownFailureReason;
 use codex_core::windows_sandbox::WindowsSandboxLevelExt;
 use codex_exec_server::CreateDirectoryOptions;
+use codex_extension_api::ExtensionRegistryBuilder;
 use codex_features::Feature;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::PermissionProfile;
@@ -13,6 +14,7 @@ use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::protocol::TurnEnvironmentRequests;
+use core_test_support::ThreadIdle;
 use core_test_support::apps_test_server::AppsTestServer;
 use core_test_support::responses::ResponseMock;
 use core_test_support::responses::ev_assistant_message;
@@ -29,6 +31,7 @@ use core_test_support::wait_for_event;
 use futures::FutureExt;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use std::sync::Arc;
 use std::time::Duration;
 use test_case::test_case;
 
@@ -371,9 +374,12 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
     let reloaded_worker_request =
         mount_completed_worker(&server, FOLLOWUP_TASK, "followup-call").await;
 
+    let mut extensions = ExtensionRegistryBuilder::new();
+    extensions.thread_lifecycle_contributor(Arc::new(ThreadIdle));
     let mut builder = test_codex()
         .with_model("gpt-5.6-sol")
         .with_exec_server_url("none")
+        .with_extensions(Arc::new(extensions.build()))
         .with_config(|config| {
             for feature in [Feature::Collab, Feature::MultiAgentV2] {
                 config
@@ -476,10 +482,7 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
     test.submit_text_turn(FIRST_PROMPT).await?;
     let first_thread_id = created_threads.recv().await?;
     let first_thread = test.thread_manager.get_thread(first_thread_id).await?;
-    wait_for_event(first_thread.as_ref(), |event| {
-        matches!(event, EventMsg::TurnComplete(_))
-    })
-    .await;
+    ThreadIdle::wait(first_thread.as_ref()).await;
 
     let mut parent_environment = child_environment.clone();
     if reload == ResidencyReload::OwnerRevokesWorkspaceRoot {
@@ -509,10 +512,7 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
         .thread_manager
         .get_thread(replacement_thread_id)
         .await?;
-    wait_for_event(replacement_thread.as_ref(), |event| {
-        matches!(event, EventMsg::TurnComplete(_))
-    })
-    .await;
+    ThreadIdle::wait(replacement_thread.as_ref()).await;
     assert!(
         test.thread_manager
             .get_thread(first_thread_id)
@@ -578,10 +578,7 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
 
     test.submit_text_turn(FOLLOWUP_PROMPT).await?;
     let reloaded_worker = test.thread_manager.get_thread(first_thread_id).await?;
-    wait_for_event(reloaded_worker.as_ref(), |event| {
-        matches!(event, EventMsg::TurnComplete(_))
-    })
-    .await;
+    ThreadIdle::wait(reloaded_worker.as_ref()).await;
     assert_eq!(
         reloaded_worker
             .config_snapshot()

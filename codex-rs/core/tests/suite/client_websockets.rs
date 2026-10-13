@@ -2749,6 +2749,8 @@ async fn responses_websocket_v2_sets_openai_beta_header() {
 
 fn message_item(text: &str) -> ResponseItem {
     ResponseItem::Message {
+        status: None,
+        encrypted_content: None,
         id: None,
         role: "user".into(),
         content: vec![ContentItem::InputText { text: text.into() }],
@@ -2759,9 +2761,15 @@ fn message_item(text: &str) -> ResponseItem {
 
 fn assistant_message_item(id: &str, text: &str) -> ResponseItem {
     ResponseItem::Message {
+        status: None,
+        encrypted_content: None,
         id: Some(ResponseItemId::with_suffix("msg", id)),
         role: "assistant".into(),
-        content: vec![ContentItem::OutputText { text: text.into() }],
+        content: vec![ContentItem::OutputText {
+            annotations: None,
+            logprobs: None,
+            text: text.into(),
+        }],
         phase: None,
         internal_chat_message_metadata_passthrough: None,
     }
@@ -2958,6 +2966,7 @@ async fn websocket_harness_with_provider_options_and_auth(
         config
             .features
             .enabled(Feature::ConcurrentReasoningSummaries),
+        config.features.enabled(Feature::OutputTokenReplay),
         /*attestation_provider*/ None,
         http_client_factory,
         config.workspace_routing_context(),

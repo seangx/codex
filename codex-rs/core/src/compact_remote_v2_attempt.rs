@@ -267,6 +267,8 @@ mod tests {
 
     fn message(role: &str, text: impl Into<String>) -> ResponseItemEnvelope {
         ResponseItemEnvelope::new(ResponseItem::Message {
+            encrypted_content: None,
+            status: None,
             id: None,
             role: role.to_string(),
             content: vec![ContentItem::InputText { text: text.into() }],
@@ -328,6 +330,8 @@ mod tests {
         let bounded = limit_remote_compaction_prompt_history(
             vec![
                 ResponseItemEnvelope::new(ResponseItem::FunctionCall {
+                    encrypted_content: None,
+                    status: None,
                     id: None,
                     name: "shell".to_string(),
                     namespace: None,

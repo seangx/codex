@@ -220,6 +220,8 @@ async fn remote_compact_v2_responses_lite_respects_input_item_limit() -> Result<
         .map(|index| {
             RolloutItem::ResponseItem(
                 ResponseItem::Message {
+                    encrypted_content: None,
+                    status: None,
                     id: None,
                     role: "user".to_string(),
                     content: vec![ContentItem::InputText {
@@ -274,6 +276,7 @@ async fn remote_compact_v2_recovers_interrupted_custom_tool_call() -> Result<()>
     )
     .await?;
     let call = ResponseItem::CustomToolCall {
+        encrypted_content: None,
         id: Some(codex_protocol::ResponseItemId::with_suffix(
             "ctc",
             "interrupted",
@@ -502,6 +505,8 @@ async fn remote_compact_v2_retains_only_client_developer_messages_when_enabled(
     )
     .await?;
     let developer = |text: &str| ResponseItem::Message {
+        status: None,
+        encrypted_content: None,
         id: None,
         role: "developer".to_string(),
         content: vec![ContentItem::InputText {

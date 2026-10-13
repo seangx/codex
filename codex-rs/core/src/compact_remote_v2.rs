@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use crate::compact_retained_tool_outputs::is_retained_tool_output;
+
 use crate::Prompt;
 use crate::ResponseStream;
 use crate::client::ModelClientSession;
@@ -35,6 +37,7 @@ use codex_analytics::CompactionTrigger;
 use codex_context_fragments::set_annotated_content;
 use codex_context_fragments::to_annotated_content;
 use codex_features::Feature;
+use codex_features::Features;
 use codex_history::CodexHarnessMetadata;
 use codex_history::ResponseItemEnvelope;
 use codex_protocol::error::CodexErr;
@@ -44,6 +47,8 @@ use codex_protocol::items::ContextCompactionItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::FunctionCallOutputBody;
+use codex_protocol::models::FunctionCallOutputContentItem;
 #[cfg(test)]
 use codex_protocol::models::ImageReference;
 use codex_protocol::models::ResponseItem;
@@ -319,7 +324,7 @@ async fn run_remote_compact_task_inner_impl(
         prompt_input,
         prompt_input_metadata,
         compaction_output,
-        sess.enabled(Feature::RetainClientDeveloperMessages),
+        sess.features().get(),
         if sess.enabled(Feature::CompactionImageBudget) {
             RetainedImageBudget::Enabled
         } else {
@@ -511,7 +516,7 @@ fn build_v2_compacted_history(
     prompt_input: Vec<ResponseItem>,
     prompt_input_metadata: Vec<Option<CodexHarnessMetadata>>,
     compaction_output: ResponseItem,
-    retain_client_developer_messages: bool,
+    features: &Features,
     image_budget: RetainedImageBudget,
 ) -> (Vec<ResponseItemEnvelope>, usize) {
     debug_assert_eq!(prompt_input.len(), prompt_input_metadata.len());
@@ -521,9 +526,7 @@ fn build_v2_compacted_history(
         .map(|(item, metadata)| ResponseItemEnvelope { item, metadata })
         .collect::<Vec<_>>();
     let retained = v2_history_item_groups(prompt_input)
-        .filter(|group| {
-            is_retained_for_remote_compaction_v2(&group.source, retain_client_developer_messages)
-        })
+        .filter(|group| is_retained_for_remote_compaction_v2(&group.source, features))
         .flat_map(HistoryItemGroup::into_items)
         .collect::<Vec<_>>();
     let mut retained =
@@ -560,8 +563,11 @@ fn v2_history_item_groups(
 
 fn is_retained_for_remote_compaction_v2(
     envelope: &ResponseItemEnvelope,
-    retain_client_developer_messages: bool,
+    features: &Features,
 ) -> bool {
+    if features.enabled(Feature::RetainClientToolOutputs) && is_retained_tool_output(envelope) {
+        return true;
+    }
     let item = &envelope.item;
     if let ResponseItem::AgentMessage {
         author,
@@ -599,13 +605,22 @@ fn is_retained_for_remote_compaction_v2(
             Some(TurnItem::UserMessage(_) | TurnItem::HookPrompt(_))
         ),
         "developer" => {
-            retain_client_developer_messages && is_client_authored_developer_message(envelope)
+            features.enabled(Feature::RetainClientDeveloperMessages)
+                && is_client_authored_developer_message(envelope)
         }
         _ => false,
     }
 }
 
 fn retained_input_image_count(item: &ResponseItem) -> usize {
+    if let ResponseItem::FunctionCallOutput { output, .. } = item
+        && let FunctionCallOutputBody::ContentItems(content) = &output.body
+    {
+        return content
+            .iter()
+            .filter(|item| matches!(item, FunctionCallOutputContentItem::InputImage { .. }))
+            .count();
+    }
     let ResponseItem::Message { content, .. } = item else {
         return 0;
     };
@@ -664,6 +679,9 @@ fn truncate_retained_messages(
             }
             truncated_reversed.push(group.source);
             remaining = remaining.saturating_sub(token_count);
+        } else if is_retained_tool_output(&group.source) {
+            // Keep outputs whole and stop before older items to preserve newest-first ordering.
+            break;
         } else if remaining > notice_tokens {
             let available_tokens = remaining - notice_tokens;
             let content_budget = if client_developer {
@@ -735,7 +753,7 @@ fn message_text_token_count(item: &ResponseItem) -> usize {
     content
         .iter()
         .map(|item| match item {
-            ContentItem::InputText { text } | ContentItem::OutputText { text } => {
+            ContentItem::InputText { text } | ContentItem::OutputText { text, .. } => {
                 approx_token_count(text)
             }
             ContentItem::InputImage { .. } | ContentItem::InputAudio { .. } => 0,
@@ -753,7 +771,7 @@ fn truncate_message_text_to_token_budget(
     let mut truncated_content = Vec::with_capacity(content.len());
     for mut content_item in content {
         match content_item.content_mut() {
-            ContentItem::InputText { text } | ContentItem::OutputText { text } => {
+            ContentItem::InputText { text } | ContentItem::OutputText { text, .. } => {
                 if remaining == 0 {
                     continue;
                 }
@@ -799,6 +817,8 @@ mod tests {
 
     fn message(role: &str, text: &str, phase: Option<MessagePhase>) -> ResponseItem {
         ResponseItem::Message {
+            status: None,
+            encrypted_content: None,
             id: None,
             role: role.to_string(),
             content: vec![ContentItem::InputText {
@@ -818,7 +838,7 @@ mod tests {
             input,
             metadata,
             output,
-            /*retain_client_developer_messages*/ false,
+            &Features::with_defaults(),
             RetainedImageBudget::Disabled,
         )
     }
@@ -870,6 +890,8 @@ mod tests {
             message("assistant", "commentary", Some(MessagePhase::Commentary)),
             message("assistant", "final", Some(MessagePhase::FinalAnswer)),
             ResponseItem::FunctionCall {
+                status: None,
+                encrypted_content: None,
                 id: None,
                 name: "shell_command".to_string(),
                 namespace: None,
@@ -919,6 +941,10 @@ mod tests {
         };
 
         for enabled in [false, true] {
+            let mut features = Features::with_defaults();
+            if enabled {
+                features.enable(Feature::RetainClientDeveloperMessages);
+            }
             let (history, _) = build_v2_compacted_history(
                 vec![
                     harness.clone(),
@@ -936,7 +962,7 @@ mod tests {
                     None,
                 ],
                 output.clone(),
-                enabled,
+                &features,
                 RetainedImageBudget::Disabled,
             );
             let mut expected = vec![
@@ -1006,6 +1032,8 @@ mod tests {
     #[test]
     fn build_v2_compacted_history_counts_retained_input_images() {
         let input = vec![ResponseItem::Message {
+            status: None,
+            encrypted_content: None,
             id: None,
             role: "user".to_string(),
             content: vec![
@@ -1055,6 +1083,8 @@ mod tests {
             truncated,
             vec![
                 ResponseItem::Message {
+                    encrypted_content: None,
+                    status: None,
                     id: None,
                     role: "user".to_string(),
                     content: vec![ContentItem::InputText {
@@ -1076,6 +1106,8 @@ mod tests {
     #[test]
     fn retained_history_truncation_preserves_images_and_truncates_later_text_parts() {
         let item = ResponseItem::Message {
+            status: None,
+            encrypted_content: None,
             id: None,
             role: "user".to_string(),
             content: vec![
@@ -1089,6 +1121,8 @@ mod tests {
                     detail: None,
                 },
                 ContentItem::OutputText {
+                    annotations: None,
+                    logprobs: None,
                     text: "uvwxyz".to_string(),
                 },
                 ContentItem::InputText {
@@ -1146,6 +1180,8 @@ mod tests {
         assert_eq!(
             truncated,
             vec![ResponseItem::Message {
+                encrypted_content: None,
+                status: None,
                 id: None,
                 role: "user".to_string(),
                 content: vec![
@@ -1159,6 +1195,8 @@ mod tests {
                         detail: None,
                     },
                     ContentItem::OutputText {
+                        annotations: None,
+                        logprobs: None,
                         text: "uv…1 tokens truncated…yz".to_string(),
                     },
                     ContentItem::InputImage {
@@ -1188,6 +1226,8 @@ mod tests {
     #[test]
     fn retained_history_truncation_charges_image_only_messages() {
         let image_only_message = ResponseItem::Message {
+            status: None,
+            encrypted_content: None,
             id: None,
             role: "user".to_string(),
             content: vec![ContentItem::InputImage {
@@ -1214,6 +1254,8 @@ mod tests {
     #[test]
     fn retained_history_truncation_drops_image_only_messages_after_budget_is_spent() {
         let image_only_message = ResponseItem::Message {
+            status: None,
+            encrypted_content: None,
             id: None,
             role: "user".to_string(),
             content: vec![ContentItem::InputImage {

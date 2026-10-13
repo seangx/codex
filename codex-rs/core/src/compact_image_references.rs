@@ -126,7 +126,7 @@ pub(crate) async fn prepare_history_for_compaction(
             let has_image_content = matches!(&source.item, ResponseItem::Message { content, .. }
             if content.iter().any(|item| match item {
                 ContentItem::InputImage { .. } => true,
-                ContentItem::InputText { text } | ContentItem::OutputText { text } => {
+                ContentItem::InputText { text } | ContentItem::OutputText { text, .. } => {
                     ImageResizeNotice::matches_text(text)
                 }
                 ContentItem::InputAudio { .. } => true,
@@ -163,7 +163,7 @@ pub(crate) async fn prepare_history_for_compaction(
                 content.retain(|item| {
                     item.kind().0 != "images.resize_notice"
                         && !matches!(item.content(), ContentItem::InputText { text }
-                            | ContentItem::OutputText { text }
+                            | ContentItem::OutputText { text, .. }
                             if ImageResizeNotice::matches_text(text))
                 });
                 let _ = set_annotated_content(&mut envelope.item, content);

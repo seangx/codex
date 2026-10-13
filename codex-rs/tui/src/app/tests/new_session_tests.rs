@@ -146,7 +146,7 @@ async fn check_replacement_uses_server_defaults_and_preserves_explicit_launch_se
         expected_model,
         expected_effort,
     } = case;
-    let (mut app, _events, _ops) = make_test_app_with_channels().await;
+    let (mut app, mut events, _ops) = make_test_app_with_channels().await;
     let server_home = tempdir()?;
     let client_home = tempdir()?;
     std::fs::write(
@@ -302,6 +302,15 @@ async fn check_replacement_uses_server_defaults_and_preserves_explicit_launch_se
             ────────────────────────────────────────────────────────────────────────────────
               server-model high · <PROJECT>
             ");
+    }
+    if explicit.starts_with("profile_summary") {
+        // Let the overview RPCs finish before closing the client connection.
+        loop {
+            let event = events.recv().await.expect("agents overview refresh");
+            if matches!(event, AppEvent::AgentsOverviewThreadsLoaded { .. }) {
+                break;
+            }
+        }
     }
     server.shutdown().await?;
     proxy.await??;

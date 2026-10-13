@@ -16,6 +16,8 @@ pub enum ApiError {
     Stream(String),
     #[error("stream error: Incomplete response returned, reason: content_filter")]
     ContentFilter,
+    #[error("Incomplete response returned, reason: {0}")]
+    ResponseIncomplete(String),
     #[error("context window exceeded")]
     ContextWindowExceeded,
     #[error("quota exceeded")]

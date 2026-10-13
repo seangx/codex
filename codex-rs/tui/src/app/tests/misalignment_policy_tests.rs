@@ -43,7 +43,7 @@ async fn misalignment_continuation_requires_current_review_and_submits_once_stan
 {
     run_misalignment_continuation_case(
         /*reject*/ false, /*preserve*/ false, /*daybreak*/ false,
-        /*rollout_enabled*/ true,
+        /*rollout_enabled*/ true, /*has_chatgpt_account*/ true,
     )
     .await
 }
@@ -53,7 +53,7 @@ async fn misalignment_continuation_requires_current_review_and_submits_once_pres
 -> Result<()> {
     run_misalignment_continuation_case(
         /*reject*/ false, /*preserve*/ true, /*daybreak*/ true,
-        /*rollout_enabled*/ true,
+        /*rollout_enabled*/ true, /*has_chatgpt_account*/ true,
     )
     .await
 }
@@ -63,7 +63,7 @@ async fn misalignment_continuation_requires_current_review_and_submits_once_reje
 {
     run_misalignment_continuation_case(
         /*reject*/ true, /*preserve*/ false, /*daybreak*/ false,
-        /*rollout_enabled*/ true,
+        /*rollout_enabled*/ true, /*has_chatgpt_account*/ true,
     )
     .await
 }
@@ -73,7 +73,7 @@ async fn misalignment_continuation_requires_current_review_and_submits_once_roll
 -> Result<()> {
     run_misalignment_continuation_case(
         /*reject*/ false, /*preserve*/ false, /*daybreak*/ false,
-        /*rollout_enabled*/ false,
+        /*rollout_enabled*/ false, /*has_chatgpt_account*/ true,
     )
     .await
 }
@@ -83,7 +83,25 @@ async fn misalignment_continuation_requires_current_review_and_submits_once_pres
 -> Result<()> {
     run_misalignment_continuation_case(
         /*reject*/ false, /*preserve*/ true, /*daybreak*/ true,
-        /*rollout_enabled*/ false,
+        /*rollout_enabled*/ false, /*has_chatgpt_account*/ true,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn misalignment_continuation_with_api_account_standard() -> Result<()> {
+    run_misalignment_continuation_case(
+        /*reject*/ false, /*preserve*/ false, /*daybreak*/ false,
+        /*rollout_enabled*/ true, /*has_chatgpt_account*/ false,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn misalignment_continuation_with_api_account_preserved_daybreak() -> Result<()> {
+    run_misalignment_continuation_case(
+        /*reject*/ false, /*preserve*/ true, /*daybreak*/ true,
+        /*rollout_enabled*/ true, /*has_chatgpt_account*/ false,
     )
     .await
 }
@@ -93,10 +111,13 @@ async fn run_misalignment_continuation_case(
     preserve: bool,
     daybreak: bool,
     rollout_enabled: bool,
+    has_chatgpt_account: bool,
 ) -> Result<()> {
     let (mut app, mut rx, _) = make_test_app_with_channels().await;
     app.chat_widget
         .set_feature_enabled(Feature::CliDaybreak, rollout_enabled);
+    app.chat_widget
+        .set_feature_enabled(Feature::ApiKeyCyberAccessPrograms, !has_chatgpt_account);
     let (mut server, requests, proxy) = start_recording_app_server(
         &app.config,
         /*blocked_thread_list*/ None,
@@ -117,8 +138,10 @@ async fn run_misalignment_continuation_case(
     app.chat_widget.handle_thread_session(session);
     if !reject {
         app.chat_widget.update_account_state(
-            /*status_account_display*/ None, /*plan_type*/ None,
-            /*has_chatgpt_account*/ true, /*has_codex_backend_auth*/ true,
+            (!has_chatgpt_account).then_some(crate::status::StatusAccountDisplay::ApiKey),
+            /*plan_type*/ None,
+            has_chatgpt_account,
+            has_chatgpt_account,
         );
         app.chat_widget.open_model_popup();
         let request_id = std::iter::from_fn(|| rx.try_recv().ok())

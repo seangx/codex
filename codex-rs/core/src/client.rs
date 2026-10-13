@@ -217,6 +217,7 @@ struct ModelClientState {
     include_timing_metrics: bool,
     beta_features_header: Option<String>,
     concurrent_reasoning_summaries_enabled: bool,
+    output_token_replay_enabled: bool,
     include_attestation: bool,
     attestation_provider: Option<Arc<dyn AttestationProvider>>,
     websocket_fallback: StdMutex<WebsocketFallbackState>,
@@ -583,6 +584,7 @@ impl ModelClient {
         include_timing_metrics: bool,
         beta_features_header: Option<String>,
         concurrent_reasoning_summaries_enabled: bool,
+        output_token_replay_enabled: bool,
         attestation_provider: Option<Arc<dyn AttestationProvider>>,
         http_client_factory: HttpClientFactory,
         workspace_routing: WorkspaceRoutingContext,
@@ -621,6 +623,7 @@ impl ModelClient {
                 include_timing_metrics,
                 beta_features_header,
                 concurrent_reasoning_summaries_enabled,
+                output_token_replay_enabled,
                 include_attestation,
                 attestation_provider,
                 websocket_fallback: StdMutex::new(WebsocketFallbackState::default()),
@@ -1058,6 +1061,14 @@ impl ModelClient {
         if !is_openai {
             for item in &mut input {
                 item.clear_internal_chat_message_metadata_passthrough();
+                if !matches!(
+                    item,
+                    ResponseItem::Reasoning { .. }
+                        | ResponseItem::Compaction { .. }
+                        | ResponseItem::ContextCompaction { .. }
+                ) {
+                    item.clear_encrypted_content();
+                }
                 if let ResponseItem::FunctionCall {
                     encrypted_function_args,
                     ..
@@ -1074,7 +1085,10 @@ impl ModelClient {
         .then_some(StreamOptions {
             reasoning_summary_delivery: codex_api::ReasoningSummaryDelivery::SequentialCutoff,
         });
-        let include = vec!["reasoning.encrypted_content".to_string()];
+        let mut include = vec!["reasoning.encrypted_content".to_string()];
+        if self.state.output_token_replay_enabled && is_openai {
+            include.push("output.encrypted_content".to_string());
+        }
         let verbosity = if model_info.support_verbosity {
             self.state.model_verbosity.or(model_info.default_verbosity)
         } else {

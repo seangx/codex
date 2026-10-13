@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::oneshot::Completion;
+use super::process::OutputDrainPolicy;
 
 use crate::codex_thread::BackgroundTerminalInfo;
 use crate::exec_env::CODEX_PERMISSION_PROFILE_ENV_VAR;
@@ -22,6 +23,7 @@ use crate::exec_env::create_env;
 use crate::exec_env::inject_apply_patch_env;
 use crate::exec_env::inject_permission_profile_env;
 use crate::exec_env::inject_session_env;
+use crate::exec_env::set_tool_call_id_env_var;
 use crate::exec_policy::ExecApprovalRequest;
 use crate::guardian::GuardianReviewContext;
 use crate::plugins::metrics::finish_and_track_measurements;
@@ -64,7 +66,6 @@ use crate::unified_exec::generate_chunk_id;
 use crate::unified_exec::head_tail_buffer::HeadTailBuffer;
 use crate::unified_exec::process::OutputBuffers;
 use crate::unified_exec::process::OutputHandles;
-use crate::unified_exec::process::SpawnLifecycleHandle;
 use crate::unified_exec::process::UnifiedExecProcess;
 use crate::unified_exec::shell_snapshot::shell_snapshot_request;
 use crate::unified_exec::take_plugin_metrics_sidecar;
@@ -723,6 +724,8 @@ impl UnifiedExecProcessManager {
                     ..
                 } => (Some(process_id), exit_code),
                 ProcessStatus::Exited { exit_code, entry } => {
+                    // Collection is finished even if the remote output stream remains open.
+                    entry.process.cancellation_token().cancel();
                     if let Err(message) =
                         finish_deferred_network_approval_after_process_exit_for_session(
                             Some(&context.session),
@@ -1072,6 +1075,8 @@ impl UnifiedExecProcessManager {
                 process_id,
             } => (Some(process_id), exit_code, call_id),
             ProcessStatus::Exited { exit_code, entry } => {
+                // Release the exit watcher after the final poll, not on remote process exit.
+                entry.process.cancellation_token().cancel();
                 let call_id = entry.call_id.clone();
                 if let Err(message) =
                     finish_network_approval_after_process_exit_for_entry(&entry).await
@@ -1264,7 +1269,6 @@ impl UnifiedExecProcessManager {
         shell_snapshot: Option<codex_exec_server::ShellSnapshotRequest>,
         windows_sandbox_proxy_settings_mode: codex_sandboxing::WindowsSandboxProxySettingsMode,
         tty: bool,
-        spawn_lifecycle: SpawnLifecycleHandle,
         environment: &codex_exec_server::Environment,
     ) -> Result<UnifiedExecProcess, ToolError> {
         let mut request = if environment.is_remote() || shell_snapshot.is_some() {
@@ -1292,7 +1296,6 @@ impl UnifiedExecProcessManager {
             windows_sandbox_proxy_settings_mode,
             network_policy_decider,
             tty,
-            spawn_lifecycle,
             environment,
         )
         .await
@@ -1316,18 +1319,9 @@ impl UnifiedExecProcessManager {
         windows_sandbox_proxy_settings_mode: codex_sandboxing::WindowsSandboxProxySettingsMode,
         network_policy_decider: Option<Arc<dyn NetworkPolicyDecider>>,
         tty: bool,
-        mut spawn_lifecycle: SpawnLifecycleHandle,
         environment: &codex_exec_server::Environment,
     ) -> Result<UnifiedExecProcess, UnifiedExecError> {
-        let inherited_fds = spawn_lifecycle.inherited_fds();
-
         if environment.is_remote() || request.exec_server_shell_snapshot.is_some() {
-            if !inherited_fds.is_empty() {
-                return Err(UnifiedExecError::create_process(
-                    "remote exec-server does not support inherited file descriptors".to_string(),
-                ));
-            }
-
             let backend = environment.get_exec_backend();
             let params = exec_server_params_for_request(
                 process_id,
@@ -1354,8 +1348,13 @@ impl UnifiedExecProcessManager {
                 None => backend.start(params).await,
             }
             .map_err(|err| UnifiedExecError::create_process(err.to_string()))?;
-            spawn_lifecycle.after_spawn();
-            return UnifiedExecProcess::from_exec_server_started(started).await;
+            let output_drain_policy = if environment.is_remote() {
+                OutputDrainPolicy::WaitForOutputClosure
+            } else {
+                OutputDrainPolicy::BoundedAfterExit
+            };
+            return UnifiedExecProcess::from_exec_server_started(started, output_drain_policy)
+                .await;
         }
 
         // TODO(anp): Keep PathUri through the local PTY/process launch boundary.
@@ -1421,13 +1420,12 @@ impl UnifiedExecProcessManager {
             windows_sandbox,
             tty,
             stdin_open: tty,
-            inherited_fds: codex_utils_pty::ChildFds::Inherited(&inherited_fds),
+            inherited_fds: codex_utils_pty::ChildFds::Inherited(&[]),
         })
         .await;
-        spawn_lifecycle.after_spawn();
         let spawned =
             spawn_result.map_err(|err| UnifiedExecError::create_process(err.to_string()))?;
-        UnifiedExecProcess::from_spawned(spawned, request.sandbox, spawn_lifecycle).await
+        UnifiedExecProcess::from_spawned(spawned, request.sandbox).await
     }
 
     #[tracing::instrument(
@@ -1445,10 +1443,13 @@ impl UnifiedExecProcessManager {
         let shell_environment_policy = request.turn_environment.shell_environment_policy();
         let local_policy_env = create_env(shell_environment_policy, /*thread_id*/ None);
         let mut env = local_policy_env.clone();
+        #[cfg(windows)]
+        env.retain(|name, _| !name.eq_ignore_ascii_case(CODEX_THREAD_ID_ENV_VAR));
         env.insert(
             CODEX_THREAD_ID_ENV_VAR.to_string(),
             context.session.thread_id.to_string(),
         );
+        set_tool_call_id_env_var(&mut env, Some(&context.call_id));
         inject_session_env(&mut env, context.session.session_id());
         inject_apply_patch_env(&mut env);
         let active_permission_profile = request.turn_environment.active_permission_profile();
@@ -1463,7 +1464,7 @@ impl UnifiedExecProcessManager {
         };
         let shell_snapshot = shell_snapshot_request(request, &cwd, context);
         let mut orchestrator = ToolOrchestrator::new();
-        let mut runtime = UnifiedExecRuntime::new(self, request.shell_mode.clone());
+        let mut runtime = UnifiedExecRuntime::new(self);
         let session_shell = context.session.user_shell();
         let configured_shell = request
             .turn_environment
@@ -1500,7 +1501,6 @@ impl UnifiedExecProcessManager {
                     allow_prefix_rules: context.step_context.turn.allow_prefix_rules(),
                 },
                 configured_shell,
-                &request.shell_mode,
                 command_platform,
             )
             .await;
@@ -1520,8 +1520,6 @@ impl UnifiedExecProcessManager {
             tty: request.tty,
             sandbox_permissions: request.sandbox_permissions,
             additional_permissions: request.additional_permissions.clone(),
-            #[cfg(unix)]
-            additional_permissions_preapproved: request.additional_permissions_preapproved,
             justification: request.justification.clone(),
             exec_approval_requirement,
         };
@@ -1853,6 +1851,7 @@ impl UnifiedExecProcessManager {
         if !already_exited && process.terminate_confirmed().await.is_err() {
             return false;
         }
+        process.cancellation_token().cancel();
 
         let entry = {
             let mut store = self.process_store.lock().await;

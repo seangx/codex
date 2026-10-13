@@ -1292,6 +1292,7 @@ async fn thread_fork_can_cut_before_unfinished_stored_turn() -> Result<()> {
         .await?;
     let ThreadReadResponse {
         thread: source_thread,
+        ..
     } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(read_id)).await??;
     assert_eq!(source_thread.turns.len(), 2);
     assert_eq!(source_thread.turns[1].id, unfinished_turn_id);
@@ -1837,6 +1838,8 @@ async fn assert_thread_fork_freezes_active_paginated_turn_as_interrupted(
     let user_response_item = |id: &str| {
         RolloutItem::ResponseItem(
             ResponseItem::Message {
+                status: None,
+                encrypted_content: None,
                 id: None,
                 role: "user".to_string(),
                 content: vec![ContentItem::InputText {

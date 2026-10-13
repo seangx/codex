@@ -1,4 +1,4 @@
-//! Low-cardinality metrics for Guardian V2 classification, connections, and approval decisions.
+//! Structured failure diagnostics and low-cardinality metrics for Guardian V2 scoring and decisions.
 
 use std::time::Duration;
 
@@ -47,6 +47,7 @@ pub(super) fn sampler_failure_reason(error: &LunaSamplerError) -> &'static str {
             ApiError::Transport(TransportError::ResponseTooLarge { .. }) => "response_too_large",
             ApiError::Transport(TransportError::Policy(_)) => "network_policy_denied",
             ApiError::Stream(_) | ApiError::ContentFilter => "stream_error",
+            ApiError::ResponseIncomplete(_) => "incomplete_response",
             ApiError::ContextWindowExceeded => "context_window_exceeded",
             ApiError::QuotaExceeded => "quota_exceeded",
             ApiError::UsageNotIncluded => "usage_not_included",
@@ -69,6 +70,14 @@ pub(super) fn record_classification(
     outcome: &str,
     failure_reason: Option<&str>,
 ) {
+    if outcome == "failure" {
+        tracing::warn!(
+            failure_reason,
+            context_mode = context_mode.as_str(),
+            duration_ms = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
+            "Guardian V2 background scoring failed"
+        );
+    }
     let Some(metrics) = metrics else {
         return;
     };

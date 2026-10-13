@@ -105,6 +105,8 @@ pub enum CodexErrorDetails {
         "stream disconnected before completion: Incomplete response returned, reason: content_filter"
     )]
     ContentFilter,
+    #[error("Incomplete response returned, reason: {0}")]
+    ResponseIncomplete(String),
     /// A retryable upstream rate limit received inside the response stream.
     #[error("rate limit exceeded: {0}")]
     RateLimitExceeded(String),
@@ -405,6 +407,7 @@ impl CodexErr {
             | CodexErrorDetails::QuotaExceeded
             | CodexErrorDetails::InvalidImageRequest()
             | CodexErrorDetails::InvalidRequest(_)
+            | CodexErrorDetails::ResponseIncomplete(_)
             | CodexErrorDetails::InvalidPrompt { .. }
             | CodexErrorDetails::ToolCollision(_)
             | CodexErrorDetails::RefreshTokenFailed(_)

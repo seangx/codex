@@ -1,3 +1,5 @@
+//! Accounts for resident MAv2 children and unloads exact idle runtimes while preserving their state.
+
 use super::LocalAgentControl;
 use super::LocalAgentRuntime;
 use super::runtime::AgentTreeMembership;
@@ -18,6 +20,87 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use tracing::info;
 use tracing::warn;
+
+/// The result of trying to unload one exact MAv2 child runtime.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ThreadEvictionOutcome {
+    /// Work or another teardown owns the runtime; retry later.
+    Busy,
+    /// This operation stopped and removed the runtime.
+    Evicted,
+    /// The runtime was removed or replaced; leave its replacement alone.
+    NotCurrent,
+}
+
+impl ThreadManagerState {
+    pub(crate) async fn try_evict_v2_thread(
+        self: &Arc<Self>,
+        thread: Arc<CodexThread>,
+        membership: &AgentTreeMembership,
+    ) -> CodexResult<ThreadEvictionOutcome> {
+        let Ok(residency_guard) = Arc::clone(&thread.residency_gate).try_write_owned() else {
+            return Ok(ThreadEvictionOutcome::Busy);
+        };
+        let thread_id = thread.session.thread_id;
+        if !self
+            .get_thread(thread_id)
+            .await
+            .is_ok_and(|registered| Arc::ptr_eq(&registered, &thread))
+        {
+            return Ok(ThreadEvictionOutcome::NotCurrent);
+        }
+        if !is_resident_candidate(&thread) || !is_unloadable(&thread, thread_id).await {
+            return Ok(ThreadEvictionOutcome::Busy);
+        }
+        let manager = Arc::clone(self);
+        let teardown = membership
+            .clone()
+            .into_teardown_guard("resident_eviction", Some(thread_id));
+        // Once shutdown is submitted, cancellation cannot release delivery or capacity early.
+        tokio::spawn(async move {
+            let _residency_guard = residency_guard;
+            thread.ensure_rollout_materialized().await;
+            if let Err(err) = thread.shutdown_and_wait().await {
+                teardown.record_shutdown_failure("stop_resident", CodexErrKind::from(&err).into());
+                teardown.complete();
+                return Err(err);
+            }
+            // Dispatch has stopped and the residency guard excludes senders. A tree
+            // shutdown deliberately discards its mailbox instead of retaining it.
+            let mail = thread
+                .session
+                .input_queue
+                .drain_mailbox()
+                .await
+                .into_iter()
+                .map(|mail| mail.communication)
+                .collect();
+            let runtime = &thread.session.services.local_agent_runtime;
+            let _ = runtime.mailboxes.enqueue(thread_id, /*id*/ None, mail);
+            let environments = thread.environment_selections().await;
+            let mut threads = manager.threads.write().await;
+            if threads
+                .get(&thread_id)
+                .is_some_and(|registered| !Arc::ptr_eq(registered, &thread))
+            {
+                teardown.complete();
+                return Ok(ThreadEvictionOutcome::NotCurrent);
+            }
+            runtime
+                .registry
+                .save_evicted_environments(thread_id, environments);
+            let removed = threads.remove(&thread_id).is_some();
+            runtime.residency.remove(thread_id);
+            teardown.complete();
+            Ok(if removed {
+                ThreadEvictionOutcome::Evicted
+            } else {
+                ThreadEvictionOutcome::NotCurrent
+            })
+        })
+        .await?
+    }
+}
 
 #[derive(Default)]
 pub(super) struct V2Residency {
@@ -70,16 +153,6 @@ impl LocalAgentControl {
                 self.runtime.agent_execution_limiter.active_count(),
             )
             .await
-    }
-
-    pub(super) async fn touch_loaded_v2_residency(
-        &self,
-        state: &Arc<ThreadManagerState>,
-        thread_id: ThreadId,
-    ) {
-        if let Ok(thread) = state.get_thread(thread_id).await {
-            let _ = self.runtime.pin_v2_residency(state, &thread).await;
-        }
     }
 
     pub(super) fn forget_v2_residency(&self, thread_id: ThreadId) {
@@ -205,33 +278,27 @@ impl V2Residency {
                     }
                 }
             };
-            let Ok(residency_guard) =
-                Arc::clone(&candidate_thread.residency_gate).try_write_owned()
-            else {
-                continue;
-            };
-            if !manager
-                .get_thread(candidate_thread_id)
+            match manager
+                .try_evict_v2_thread(candidate_thread, membership)
                 .await
-                .is_ok_and(|registered| Arc::ptr_eq(&registered, &candidate_thread))
-                || !is_unloadable(candidate_thread.as_ref(), candidate_thread_id).await
             {
-                continue;
-            }
-            // Once shutdown is submitted, cancellation cannot revoke it. The eviction task
-            // must keep delivery excluded and capacity reserved through registry removal.
-            let manager = Arc::clone(manager);
-            let residency = Arc::clone(self);
-            let teardown = membership
-                .clone()
-                .into_teardown_guard("resident_eviction", Some(candidate_thread_id));
-            let eviction = tokio::spawn(async move {
-                let _residency_guard = residency_guard;
-                candidate_thread.ensure_rollout_materialized().await;
-                if let Err(err) = candidate_thread.shutdown_and_wait().await {
-                    teardown
-                        .record_shutdown_failure("stop_resident", CodexErrKind::from(&err).into());
-                    let (resident, pending) = residency.counts();
+                Ok(ThreadEvictionOutcome::Evicted) => {
+                    let (resident, pending) = self.counts();
+                    info!(
+                        released_thread_id = %candidate_thread_id,
+                        active_at_reservation,
+                        resident,
+                        pending,
+                        capacity,
+                        thread_removed = true,
+                        "released v2 residency capacity"
+                    );
+                    return true;
+                }
+                Ok(ThreadEvictionOutcome::NotCurrent) => return true,
+                Ok(ThreadEvictionOutcome::Busy) => {}
+                Err(err) => {
+                    let (resident, pending) = self.counts();
                     warn!(
                         candidate_thread_id = %candidate_thread_id,
                         active_at_reservation,
@@ -239,63 +306,9 @@ impl V2Residency {
                         pending,
                         capacity,
                         shutdown_succeeded = false,
-                        "failed to shut down v2 resident thread before unloading"
+                        "failed to shut down v2 resident thread before unloading: {err}"
                     );
-                    teardown.complete();
-                    return false;
                 }
-                // The submission loop has stopped and the residency guard excludes senders.
-                // Preserve unread queue-only mail before dropping the session that held it.
-                let mail = candidate_thread
-                    .session
-                    .input_queue
-                    .drain_mailbox()
-                    .await
-                    .into_iter()
-                    .map(|mail| mail.communication)
-                    .collect();
-                // A concurrent tree shutdown deliberately discards its unread mail.
-                let _ = candidate_thread
-                    .session
-                    .services
-                    .local_agent_runtime
-                    .mailboxes
-                    .enqueue(candidate_thread_id, /*id*/ None, mail);
-                let environments = candidate_thread.environment_selections().await;
-                let mut threads = manager.threads.write().await;
-                if threads
-                    .get(&candidate_thread_id)
-                    .is_some_and(|registered| !Arc::ptr_eq(registered, &candidate_thread))
-                {
-                    teardown.complete();
-                    return false;
-                }
-                candidate_thread
-                    .session
-                    .services
-                    .local_agent_runtime
-                    .registry
-                    .save_evicted_environments(candidate_thread_id, environments);
-                // Keep publication excluded until both entries have been removed.
-                let thread_removed = threads.remove(&candidate_thread_id).is_some();
-                residency.remove(candidate_thread_id);
-                let (resident, pending) = residency.counts();
-                info!(
-                    released_thread_id = %candidate_thread_id,
-                    active_at_reservation,
-                    resident,
-                    pending,
-                    capacity,
-                    thread_removed,
-                    "released v2 residency capacity"
-                );
-                teardown.complete();
-                true
-            });
-            match eviction.await {
-                Ok(true) => return true,
-                Ok(false) => {}
-                Err(err) => warn!("v2 resident eviction task failed: {err}"),
             }
         }
         false
