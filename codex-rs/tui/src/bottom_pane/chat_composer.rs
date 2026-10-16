@@ -18,6 +18,8 @@
 //! Transcript interactions borrow the hint footer through `ComposerRenderOptions`;
 //! its resolved presentation drives height, painting, and the focused cursor together.
 //!
+//! Preset submenu hints borrow slots and reflow with the composer.
+//!
 //! The plain-text preset keeps command prefixes literal, including `!`, so Enter and Tab
 //! submit ordinary text without enabling shell mode.
 //!
@@ -155,8 +157,8 @@
 //! Parent-owned subagent threads keep the draft editable while blocking agent-directed submission.
 //! On the `Enter` and `Tab` submission paths, normal prompts, disallowed slash commands, and `!`
 //! shell commands return `ParentOwnedInputBlocked` without clearing the draft. Bare local and
-//! navigation slash commands remain available so users can leave or manage the view. Transcript
-//! exports also remain available, including an explicit destination filename.
+//! navigation slash commands remain available so users can leave or manage the view.
+//! Exports and local display commands (`/title` and `/statusline`) also accept arguments.
 //!
 //! During reconnection, `handle_restricted_key` edits the draft directly without popup dispatch,
 //! composer shortcuts, or submission; `?` becomes literal input. Enter and Tab leave the draft
@@ -249,7 +251,7 @@
 //! Submission flushes expired characters and buffers before classifying Enter, independent of
 //! UI flush ticks. `disable_paste_burst` bypasses detection; setting it flushes and clears in-flight state.
 //! Mouse edits flush pending typing; selection and copy behavior lives in [`mouse`]. Confirmed
-//! copies clear the selection while preserving the draft and cursor. Footer text uses a separate
+//! explicit copies clear the selection while preserving the draft and cursor. Footer text uses a separate
 //! read-only selection owner over its final rendered cells.
 //!
 //! See `codex-rs/tui/src/bottom_pane/paste_burst.rs` for the detailed state machine.
@@ -488,7 +490,10 @@ pub enum InputResult {
 }
 
 fn parent_owned_command_is_allowed(command: SlashCommand, args: &str) -> bool {
-    if command == SlashCommand::Export {
+    if matches!(
+        command,
+        SlashCommand::Export | SlashCommand::Title | SlashCommand::Statusline
+    ) {
         return true;
     }
 
@@ -526,8 +531,6 @@ fn parent_owned_command_is_allowed(command: SlashCommand, args: &str) -> bool {
                 | SlashCommand::Usage
                 | SlashCommand::Ide
                 | SlashCommand::DebugConfig
-                | SlashCommand::Title
-                | SlashCommand::Statusline
                 | SlashCommand::Theme
                 | SlashCommand::Pets
                 | SlashCommand::Ps

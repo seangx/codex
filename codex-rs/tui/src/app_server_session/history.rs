@@ -10,6 +10,7 @@ use crate::resize_reflow_cap::resize_reflow_max_rows;
 use crate::thread_transcript::RawReasoningVisibility;
 use crate::thread_transcript::thread_items_to_transcript_cells;
 use codex_app_server_protocol::ClientRequest;
+use codex_app_server_protocol::GeneratedImageRef;
 use codex_app_server_protocol::SortDirection;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadHistoryMode;
@@ -252,10 +253,12 @@ impl AppServerSession {
             .await
             .wrap_err("failed to load a bounded thread item page")?;
         for entry in &mut page.data {
-            if let ThreadItem::ImageGeneration(item) = &mut entry.item {
+            if let ThreadItem::ImageGeneration(item) = &mut entry.item
+                && let GeneratedImageRef::Inline { result } = &mut item.image
+            {
                 // Historical rendering uses `saved_path`; retaining the inline base64 result can
                 // multiply resume memory by hundreds of megabytes.
-                item.result.clear();
+                result.clear();
             }
         }
         Ok(page)

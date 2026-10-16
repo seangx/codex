@@ -356,28 +356,26 @@ fn source_backed_cells_render_raw_source_without_prefix_or_style() {
 
 #[test]
 fn proposed_plan_cell_renders_markdown_table() {
-    let plan = new_proposed_plan(
-        "## Plan\n\n| Step | Owner |\n| --- | --- |\n| Verify | Codex |\n".to_string(),
-        &test_cwd(),
-    );
+    crate::terminal_palette::with_test_default_colors(
+        crate::terminal_probe::DefaultColors {
+            fg: (30, 30, 30),
+            bg: (255, 255, 255),
+        },
+        || {
+            let plan = new_proposed_plan(
+                "## Plan\n\n| Step | Owner |\n| --- | --- |\n| Verify | Codex |\n".to_string(),
+                &test_cwd(),
+            );
 
-    let rendered = render_lines(&plan.display_lines(/*width*/ 80));
+            let lines = plan.display_lines(/*width*/ 80);
+            insta::assert_debug_snapshot!(lines);
 
-    assert!(
-        rendered.iter().any(|line| line.contains('━')),
-        "expected separated table in proposed plan output: {rendered:?}"
-    );
-    assert!(
-        !rendered
-            .iter()
-            .any(|line| line.trim() == "| Step | Owner |"),
-        "did not expect raw table header in rich proposed plan output: {rendered:?}"
-    );
-
-    let raw = render_lines(&plan.raw_lines());
-    assert!(
-        raw.iter().any(|line| line == "| Step | Owner |"),
-        "expected raw mode to preserve table markdown source: {raw:?}"
+            let raw = render_lines(&plan.raw_lines());
+            assert!(
+                raw.iter().any(|line| line == "| Step | Owner |"),
+                "expected raw mode to preserve table markdown source: {raw:?}"
+            );
+        },
     );
 }
 
@@ -632,8 +630,10 @@ fn image_generation_call_renders_saved_path() {
         "call-image-generation".to_string(),
         "completed",
         Some("A tiny blue square".to_string()),
-        Some(saved_path),
+        Some(saved_path.clone()),
     );
+
+    assert_eq!(cell.image_path(), Some(saved_path));
 
     assert_eq!(
         render_lines(&cell.display_lines(/*width*/ 80)),

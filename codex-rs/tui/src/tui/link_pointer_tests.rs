@@ -127,3 +127,20 @@ fn motion_survives_repaint_but_not_drag_focus_loss_resize_or_resume() {
         assert_eq!(hover.mouse, None);
     }
 }
+
+#[test]
+fn coalesced_scroll_updates_hover_position_before_repaint() {
+    let mouse = MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column: 7,
+        row: 3,
+        modifiers: KeyModifiers::NONE,
+    };
+    let mut hover = LinkHover::default();
+    hover.observe(&TuiEvent::MouseScroll(super::super::MouseScrollEvent {
+        mouse,
+        ticks: 3,
+    }));
+    hover.observe(&TuiEvent::Draw);
+    assert_eq!(hover.mouse, Some(mouse));
+}

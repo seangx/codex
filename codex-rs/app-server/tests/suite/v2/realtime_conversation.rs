@@ -411,6 +411,7 @@ impl RealtimeE2eHarness {
                 realtime_end_instructions: None,
                 prompt: Some(Some("backend prompt".to_string())),
                 realtime_session_id: None,
+                voice_session_id: None,
                 transport: Some(ThreadRealtimeStartTransport::Webrtc {
                     sdp: offer_sdp.to_string(),
                 }),
@@ -473,6 +474,7 @@ impl RealtimeE2eHarness {
                 realtime_end_instructions: None,
                 prompt: Some(Some("backend prompt".to_string())),
                 realtime_session_id: None,
+                voice_session_id: None,
                 transport: None,
                 version: None,
                 voice: None,
@@ -511,6 +513,7 @@ impl RealtimeE2eHarness {
                 realtime_end_instructions: None,
                 prompt: Some(Some("backend prompt".to_string())),
                 realtime_session_id: None,
+                voice_session_id: None,
                 transport: None,
                 version: Some(RealtimeConversationVersion::V3),
                 voice: None,
@@ -730,6 +733,7 @@ async fn realtime_conversation_streams_timeline_items() -> Result<()> {
             realtime_end_instructions: None,
             prompt: None,
             realtime_session_id: None,
+            voice_session_id: None,
             transport: None,
             version: None,
             voice: None,
@@ -928,6 +932,7 @@ async fn realtime_conversation_streams_v2_notifications() -> Result<()> {
             realtime_end_instructions: None,
             prompt: None,
             realtime_session_id: None,
+            voice_session_id: None,
             transport: None,
             version: None,
             voice: Some(RealtimeVoice::Cedar),
@@ -1312,6 +1317,7 @@ async fn realtime_timeline_splits_accepted_steering_and_persists_promoted_artifa
                 additional_context: None,
                 client_user_message_id: None,
                 responsesapi_client_metadata: None,
+                responsesapi_client_metadata_patch: None,
             })
             .await?;
         let rejected = timeout(
@@ -1344,6 +1350,7 @@ async fn realtime_timeline_splits_accepted_steering_and_persists_promoted_artifa
             additional_context: None,
             client_user_message_id: Some("accepted-steer".to_string()),
             responsesapi_client_metadata: None,
+            responsesapi_client_metadata_patch: None,
         })
         .await?;
     let accepted: TurnSteerResponse =
@@ -1508,6 +1515,7 @@ async fn realtime_start_can_skip_startup_context() -> Result<()> {
             realtime_end_instructions: None,
             prompt: None,
             realtime_session_id: None,
+            voice_session_id: None,
             transport: None,
             version: None,
             voice: None,
@@ -1606,6 +1614,7 @@ async fn realtime_text_output_modality_requests_text_output_and_final_transcript
             realtime_end_instructions: None,
             prompt: None,
             realtime_session_id: None,
+            voice_session_id: None,
             transport: None,
             version: None,
             voice: None,
@@ -1823,6 +1832,7 @@ async fn realtime_conversation_stop_emits_closed_notification(
             realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
+            voice_session_id: None,
             transport: None,
             version: Some(RealtimeConversationVersion::V1),
             voice: None,
@@ -1981,6 +1991,7 @@ async fn realtime_mode_uses_client_instructions_on_entry_and_exit() -> Result<()
             realtime_end_instructions: Some(end_instructions.to_string()),
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
+            voice_session_id: None,
             transport: None,
             version: None,
             voice: None,
@@ -2268,6 +2279,7 @@ async fn realtime_webrtc_start_emits_sdp_notification() -> Result<()> {
             realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
+            voice_session_id: None,
             transport: Some(ThreadRealtimeStartTransport::Webrtc {
                 sdp: "v=offer\r\n".to_string(),
             }),
@@ -2460,6 +2472,7 @@ async fn existing_call_attaches_without_reinitializing_the_client_session(
     expected_handshake_uri: &str,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
+    let voice_session_id = "voice-session-client-owned";
 
     let mut harness = RealtimeE2eHarness::new(
         RealtimeTestVersion::V1,
@@ -2487,6 +2500,7 @@ async fn existing_call_attaches_without_reinitializing_the_client_session(
             realtime_end_instructions: None,
             prompt: None,
             realtime_session_id: realtime_session_id.map(str::to_string),
+            voice_session_id: Some(voice_session_id.to_string()),
             transport: Some(ThreadRealtimeStartTransport::ExistingCall {
                 call_id: "rtc_existing".to_string(),
             }),
@@ -2523,6 +2537,14 @@ async fn existing_call_attaches_without_reinitializing_the_client_session(
     assert_eq!(
         harness.realtime_server.single_handshake().uri(),
         expected_handshake_uri
+    );
+    assert_eq!(
+        harness
+            .realtime_server
+            .single_handshake()
+            .header("voice-session-id")
+            .as_deref(),
+        Some(voice_session_id)
     );
     assert!(
         harness.realtime_server.single_connection().is_empty(),
@@ -2576,6 +2598,7 @@ async fn existing_call_rejects_client_owned_session_configuration(option: &str) 
         realtime_end_instructions: None,
         prompt: None,
         realtime_session_id: None,
+        voice_session_id: None,
         transport: Some(ThreadRealtimeStartTransport::ExistingCall {
             call_id: "rtc_existing".to_string(),
         }),
@@ -4096,6 +4119,7 @@ async fn realtime_webrtc_start_surfaces_backend_error() -> Result<()> {
             realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
+            voice_session_id: None,
             transport: Some(ThreadRealtimeStartTransport::Webrtc {
                 sdp: "v=offer\r\n".to_string(),
             }),

@@ -3,10 +3,12 @@ use super::super::WsCommand;
 use super::super::WsStream;
 use super::super::connection_diagnostics::ConnectionDiagnostics;
 use super::super::run_websocket_response_stream;
+use crate::common::ResponseInterrupt;
 use crate::error::ApiError;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
 use codex_websocket_client::WebSocketConnector;
+use futures::FutureExt;
 use futures::SinkExt;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
@@ -131,6 +133,14 @@ async fn exchange(
     };
     let (tx_event, _rx_event) = mpsc::channel(16);
     let (_tx_interrupt, rx_interrupt) = oneshot::channel();
+    let interrupt = async move {
+        match rx_interrupt.await {
+            Ok(()) => ResponseInterrupt::Drain,
+            Err(_) => std::future::pending().await,
+        }
+    }
+    .shared();
+    let mut completion = None;
     let result = run_websocket_response_stream(
         &mut stream,
         tx_event,
@@ -139,7 +149,8 @@ async fn exchange(
         /*telemetry*/ None,
         /*turn_state*/ None,
         &context,
-        rx_interrupt,
+        interrupt,
+        &mut completion,
     )
     .await;
     let logs = capture.0.lock().unwrap().clone();
@@ -371,6 +382,14 @@ async fn idle_server_close_is_logged_after_completed_request_without_another_req
         };
         let (tx_event, _rx_event) = mpsc::channel(/*buffer*/ 16);
         let (_tx_interrupt, rx_interrupt) = oneshot::channel();
+        let interrupt = async move {
+            match rx_interrupt.await {
+                Ok(()) => ResponseInterrupt::Drain,
+                Err(_) => std::future::pending().await,
+            }
+        }
+        .shared();
+        let mut completion = None;
         run_websocket_response_stream(
             &mut stream,
             tx_event,
@@ -379,7 +398,8 @@ async fn idle_server_close_is_logged_after_completed_request_without_another_req
             /*telemetry*/ None,
             /*turn_state*/ None,
             &context,
-            rx_interrupt,
+            interrupt,
+            &mut completion,
         )
         .await
         .expect("response should complete before the idle close");

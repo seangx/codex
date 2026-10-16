@@ -76,14 +76,16 @@ Scenario: Independent Codex runtimes share a local board: a writer publishes, an
     Publish an update.
 -- request 14 (request) --
 08:function_call/collaboration.post:{"agents_to_notify":["/root/00000000000040008000000000000002"],"channel_name":"policy","text":"Must not publish"}
-09:function_call/collaboration.post:{"channel_name":"policy","text":"A new policy"}
-10:function_call/collaboration.post:{"agents_to_notify":["/root/00000000000040008000000000000001"],"channel_name":"policy","text":"An explicit update"}
-11:function_call_output:no thread with id: <UUID 4>
-12:function_call_output:{"author":"/root/00000000000040008000000000000000","channel_name":"policy","created_at":"2026-09-18T12:00:00Z","message_id":"<UUID 5>","thread_id":"<UUID 5>"}
+09:function_call_output:no thread with id: <UUID 4>
+-- request 15 (request) --
+10:function_call/collaboration.post:{"channel_name":"policy","text":"A new policy"}
+11:function_call_output:{"author":"/root/00000000000040008000000000000000","channel_name":"policy","created_at":"2026-09-18T12:00:00Z","message_id":"<UUID 5>","thread_id":"<UUID 5>"}
+-- request 16 (request) --
+12:function_call/collaboration.post:{"agents_to_notify":["/root/00000000000040008000000000000001"],"channel_name":"policy","text":"An explicit update"}
 13:function_call_output:{"author":"/root/00000000000040008000000000000000","channel_name":"policy","created_at":"2026-09-18T12:00:00Z","message_id":"<UUID 6>","thread_id":"<UUID 6>"}
 
-## Window 4 (after request 14: input diverged at item 04, settings changed (prompt_cache_key))
--- request 15 (request) --
+## Window 4 (after request 16: input diverged at item 04, settings changed (prompt_cache_key))
+-- request 17 (request) --
 00:message/developer:
     <MODEL_INSTRUCTIONS>
 01:message/developer:

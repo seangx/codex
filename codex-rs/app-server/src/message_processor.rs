@@ -252,6 +252,8 @@ pub(crate) struct MessageProcessorArgs {
     pub(crate) analytics_events_client: AnalyticsEventsClient,
     pub(crate) arg0_paths: Arg0DispatchPaths,
     pub(crate) config: Arc<Config>,
+    /// Original project context, retained even when startup falls back to defaults.
+    pub(crate) startup_cwd: Option<std::path::PathBuf>,
     pub(crate) config_manager: ConfigManager,
     pub(crate) environment_manager: Arc<EnvironmentManager>,
     pub(crate) feedback: CodexFeedback,
@@ -278,6 +280,7 @@ impl MessageProcessor {
             analytics_events_client,
             arg0_paths,
             config,
+            startup_cwd,
             config_manager,
             environment_manager,
             feedback,
@@ -379,8 +382,10 @@ impl MessageProcessor {
         });
         let model_catalog = Arc::new(crate::model_catalog::ModelCatalog::new(
             config_manager.clone(),
+            startup_cwd,
             Arc::clone(&config),
             thread_manager.get_models_manager(),
+            Arc::clone(&auth_manager),
         ));
         let models_refresh_worker = crate::models_refresh_worker::spawn(&model_catalog);
         let turn_cost_worker =
@@ -404,6 +409,7 @@ impl MessageProcessor {
             outgoing.clone(),
             config_manager.clone(),
             thread_manager.clone(),
+            Arc::clone(&model_catalog),
             analytics_events_client.clone(),
         );
         let on_effective_plugins_changed =
@@ -420,6 +426,7 @@ impl MessageProcessor {
             outgoing.clone(),
             Arc::clone(&config),
             config_manager.clone(),
+            Arc::clone(&model_catalog),
         );
         let apps_processor = AppsRequestProcessor::new(
             auth_manager.clone(),

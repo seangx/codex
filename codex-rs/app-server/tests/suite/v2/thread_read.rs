@@ -1806,7 +1806,12 @@ async fn thread_items_list_omits_inline_image_generation_result() -> Result<()> 
     assert_eq!(image.status, "completed");
     assert_eq!(image.revised_prompt.as_deref(), Some("revised prompt"));
     assert_eq!(image.saved_path.as_ref(), Some(&saved_path));
-    assert!(image.result.is_empty());
+    assert_eq!(
+        image.image,
+        codex_app_server_protocol::GeneratedImageRef::Inline {
+            result: String::new(),
+        }
+    );
 
     Ok(())
 }

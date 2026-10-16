@@ -16,6 +16,7 @@ use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
 use crate::tools::ApprovalContext;
+use crate::tools::ApprovalResolutionSource;
 use crate::tools::context::ToolCallOrigin;
 use crate::tools::hook_names::HookToolName;
 use crate::tools::lifecycle::process_mcp_tool_result;
@@ -275,7 +276,7 @@ pub(crate) async fn handle_mcp_tool_call(
     } else {
         McpToolApprovalPolicy::for_server(approval_mode)
     };
-    if let Some(decision) = maybe_request_mcp_tool_approval(
+    if let Some(approval) = maybe_request_mcp_tool_approval(
         &sess,
         step_context,
         cancellation_token,
@@ -290,7 +291,9 @@ pub(crate) async fn handle_mcp_tool_call(
     )
     .await
     {
-        let result = match decision {
+        let cancellation_outcome = matches!(approval.decision, ReviewDecision::Abort)
+            .then(|| McpCallMetricOutcome::approval_cancelled(approval.source));
+        let result = match approval.decision {
             decision @ (ReviewDecision::Approved
             | ReviewDecision::ApprovedForSession
             | ReviewDecision::ApprovedMcpPolicyAmendment
@@ -356,7 +359,8 @@ pub(crate) async fn handle_mcp_tool_call(
         };
 
         let status = if result.is_ok() { "ok" } else { "error" };
-        let outcome = McpCallMetricOutcome::from_status(status);
+        let outcome =
+            cancellation_outcome.unwrap_or_else(|| McpCallMetricOutcome::from_status(status));
         emit_mcp_call_metrics(
             &step_context.session_telemetry,
             &outcome,
@@ -465,6 +469,7 @@ async fn handle_approved_mcp_tool_call(
         .clone()
         .unwrap_or_else(|| JsonValue::Object(serde_json::Map::new()));
     let mut elicitation_type = None;
+    let mut request_error_code = None;
     let result = async {
         let result = async {
             let mut result = prepared_call
@@ -547,7 +552,10 @@ async fn handle_approved_mcp_tool_call(
                     ))
                 })
                 .await
-                .map_err(|error| format!("tool call error: {error:?}"))?;
+                .map_err(|error| {
+                    request_error_code = codex_rmcp_client::request_error_code(&error);
+                    format!("tool call error: {error:?}")
+                })?;
             crate::tools::record_confirmed_code_mode_send(
                 sess,
                 &turn_context.sub_id,
@@ -588,7 +596,7 @@ async fn handle_approved_mcp_tool_call(
             .await)
         }
         .await;
-        record_mcp_result_span_telemetry(&Span::current(), &result);
+        record_mcp_result_span_telemetry(&Span::current(), &result, request_error_code);
         result
     }
     .instrument(mcp_tool_call_span(
@@ -638,7 +646,7 @@ async fn handle_approved_mcp_tool_call(
     .await;
     maybe_track_codex_app_used(sess, step_context, &server, &metadata, elicitation_type).await;
 
-    let outcome = mcp_call_metric_outcome(&result);
+    let outcome = mcp_call_metric_outcome(&result).with_request_error_code(request_error_code);
     emit_mcp_call_metrics(
         &step_context.session_telemetry,
         &outcome,
@@ -716,8 +724,13 @@ fn record_server_fields(span: &Span, url: Option<&str>) {
     }
 }
 
-fn record_mcp_result_span_telemetry(span: &Span, result: &Result<CallToolResult, String>) {
-    record_mcp_call_outcome_span_telemetry(span, result);
+fn record_mcp_result_span_telemetry(
+    span: &Span,
+    result: &Result<CallToolResult, String>,
+    request_error_code: Option<&str>,
+) {
+    let outcome = mcp_call_metric_outcome(result).with_request_error_code(request_error_code);
+    record_mcp_call_outcome_span_telemetry(span, &outcome);
 
     let Some(span_telemetry) = result
         .as_ref()
@@ -875,40 +888,23 @@ async fn augment_mcp_tool_request_meta_with_sandbox_state(
     };
     // TODO(anp): Build this metadata from the server's captured
     // TurnEnvironment::sandbox_context instead of the runtime-wide Landlock value.
-    let sandbox_state = serde_json::to_value(SandboxState {
-        codex_executable: prepared_call
-            .sandbox_codex_executable()
-            .await
-            .map(AbsolutePathBuf::into_path_buf),
-        permission_profile: prepared_call.permission_profile().clone(),
-        codex_linux_sandbox_exe: prepared_call.config().codex_linux_sandbox_exe.clone(),
-        sandbox_cwd,
-        use_legacy_landlock: prepared_call.config().use_legacy_landlock,
-        use_mxc: prepared_call
-            .config()
-            .environment_use_mxc
-            .get(server_environment_id)
-            .copied()
-            .unwrap_or(false),
-    })?;
-
-    match meta.as_mut() {
-        Some(serde_json::Value::Object(map)) => {
-            map.insert(
-                codex_mcp::MCP_SANDBOX_STATE_META_CAPABILITY.to_string(),
-                sandbox_state,
-            );
-        }
-        Some(_) => {}
-        None => {
-            let mut map = serde_json::Map::new();
-            map.insert(
-                codex_mcp::MCP_SANDBOX_STATE_META_CAPABILITY.to_string(),
-                sandbox_state,
-            );
-            meta = Some(serde_json::Value::Object(map));
-        }
-    }
+    prepared_call
+        .augment_sandbox_metadata(
+            &mut meta,
+            SandboxState {
+                permission_profile: prepared_call.permission_profile().clone(),
+                codex_linux_sandbox_exe: prepared_call.config().codex_linux_sandbox_exe.clone(),
+                sandbox_cwd,
+                use_legacy_landlock: prepared_call.config().use_legacy_landlock,
+                use_mxc: prepared_call
+                    .config()
+                    .environment_use_mxc
+                    .get(server_environment_id)
+                    .copied()
+                    .unwrap_or(false),
+            },
+        )
+        .await?;
 
     Ok(meta)
 }
@@ -1484,6 +1480,12 @@ fn mcp_tool_approval_prompt_options(
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct McpToolApproval {
+    decision: ReviewDecision,
+    source: Option<ApprovalResolutionSource>,
+}
+
 #[expect(clippy::too_many_arguments)]
 async fn maybe_request_mcp_tool_approval(
     sess: &Arc<Session>,
@@ -1497,7 +1499,7 @@ async fn maybe_request_mcp_tool_approval(
     config: &codex_mcp::McpConfig,
     permission_profile: &PermissionProfile,
     policy: McpToolApprovalPolicy,
-) -> Option<ReviewDecision> {
+) -> Option<McpToolApproval> {
     let turn_context = &step_context.turn;
     let strict_auto_review = turn_context.strict_auto_review_enabled();
     let approvals_reviewer = connectors::mcp_approvals_reviewer_from_layers(
@@ -1539,7 +1541,10 @@ async fn maybe_request_mcp_tool_approval(
         && let Some(key) = session_approval_key.as_ref()
         && mcp_tool_approval_is_remembered(sess, key).await
     {
-        return Some(ReviewDecision::Approved);
+        return Some(McpToolApproval {
+            decision: ReviewDecision::Approved,
+            source: None,
+        });
     }
 
     let action = ApprovalAction::McpToolCall {
@@ -1580,13 +1585,15 @@ async fn maybe_request_mcp_tool_approval(
         retry_reason: None,
         network_approval_context: None,
     };
-    Some(
-        match sess.request_approval(action, approval_context).await {
+    let approval = sess.request_approval(action, approval_context).await;
+    Some(McpToolApproval {
+        decision: match approval.result {
             Ok(decision) => decision,
             Err(ToolError::Rejected(rejection)) => ReviewDecision::denied(rejection),
             Err(ToolError::Codex(_)) => ReviewDecision::Abort,
         },
-    )
+        source: approval.source,
+    })
 }
 
 pub(crate) async fn request_mcp_tool_user_approval(

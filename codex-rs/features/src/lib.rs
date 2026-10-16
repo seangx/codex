@@ -214,7 +214,7 @@ pub enum Feature {
     NetworkProxy,
     /// Mask credentials and inject them through an already enabled network proxy.
     CredentialMasking,
-    /// Enable managed worktree creation and repository-aware sessions.
+    /// Removed compatibility flag. Managed worktrees and repository-aware sessions are always available.
     Worktrees,
     /// Respect host system proxy settings for Codex-owned network clients.
     RespectSystemProxy,
@@ -275,6 +275,8 @@ pub enum Feature {
     Plugins,
     /// Discover selected-root plugin and skill manifests through one high-level exec-server RPC.
     ExecutorCapabilityDiscovery,
+    /// Acquire V2 executor inventories without publishing or activating their capabilities.
+    ExecutorCapabilityDiscoveryV2,
     /// Skip host skill snapshots when no registered contributor requires them.
     SkipHostSkillDiscovery,
     /// Removed compatibility flag for plugin-bundled lifecycle hooks.
@@ -414,7 +416,7 @@ pub enum Feature {
     UltrafastMode,
     /// Enable explicitly requested model changes for later step captures.
     StepModelSwitching,
-    /// Enable voice conversations in the TUI.
+    /// Removed compatibility flag. TUI voice availability follows platform support.
     RealtimeConversation,
     /// Prevent idle system sleep while a turn is actively running.
     PreventIdleSleep,
@@ -665,7 +667,7 @@ impl Features {
                     self.record_legacy_usage_force("features.transcript_v2", Feature::TranscriptV2);
                     continue;
                 }
-                "tui_app_server" => {
+                "tui_app_server" | "worktrees" | "realtime_conversation" => {
                     continue;
                 }
                 "undo" => {
@@ -1153,7 +1155,7 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::StableEnvironmentTools,
         key: "stable_environment_tools",
-        stage: Stage::UnderDevelopment,
+        stage: Stage::Removed,
         default_enabled: false,
     },
     FeatureSpec {
@@ -1411,14 +1413,14 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::CliDaybreak,
         key: "cli_daybreak",
-        stage: Stage::UnderDevelopment,
-        default_enabled: false,
+        stage: Stage::Stable,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::ApiKeyCyberAccessPrograms,
         key: "api_key_cyber_access_programs",
         stage: Stage::Stable,
-        default_enabled: false,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::EnableRequestCompression,
@@ -1451,7 +1453,7 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::Worktrees,
         key: "worktrees",
-        stage: Stage::Stable,
+        stage: Stage::Removed,
         default_enabled: true,
     },
     FeatureSpec {
@@ -1625,6 +1627,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::ExecutorCapabilityDiscovery,
         key: "executor_capability_discovery",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::ExecutorCapabilityDiscoveryV2,
+        key: "executor_capability_discovery_v2",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
@@ -1991,7 +1999,7 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::RealtimeConversation,
         key: "realtime_conversation",
-        stage: Stage::Stable,
+        stage: Stage::Removed,
         default_enabled: true,
     },
     FeatureSpec {

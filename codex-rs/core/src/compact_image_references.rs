@@ -13,6 +13,7 @@ use codex_context_fragments::set_annotated_content;
 use codex_context_fragments::to_annotated_content;
 use codex_protocol::error::Result;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::ContentItemMetadata;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::ImageReference;
@@ -142,21 +143,21 @@ pub(crate) async fn prepare_history_for_compaction(
                         match image {
                             ImageReference::Inline { image_url } => {
                                 let reference = archive_image(&codex_home, image_url)?;
-                                *item = AnnotatedContent::input_text(
+                                *item = AnnotatedContent::text(
                                     reference.body(),
                                     reference.content_kind(),
+                                    ContentItemMetadata::harness(),
                                 );
                             }
                             ImageReference::File { .. } => {
                                 // Provider-backed references remain model-visible so the retained
                                 // image budget can decide whether to keep them after compaction.
-                                *item =
-                                    AnnotatedContent::new(original.clone(), item.kind().clone());
+                                *item.content_mut() = original.clone();
                             }
                         }
                     } else if matches!(original, ContentItem::InputAudio { .. }) {
                         // Image archival does not change audio retention.
-                        *item = AnnotatedContent::new(original.clone(), item.kind().clone());
+                        *item.content_mut() = original.clone();
                     }
                 }
                 // The preceding images are now references, not resized model-visible images.

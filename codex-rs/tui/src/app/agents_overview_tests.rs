@@ -242,7 +242,7 @@ async fn overview_right_preserves_editors_and_offline_state() {
     assert!(rx.try_recv().is_err());
 }
 
-fn overview_thread(
+pub(in crate::app) fn overview_thread(
     thread_id: ThreadId,
     parent_thread_id: Option<ThreadId>,
     name: &str,
@@ -1134,7 +1134,7 @@ async fn agents_overview_reasoning_uses_existing_events_and_expires_with_attachm
 }
 
 #[tokio::test]
-async fn worktrees_overview_grouping_requires_feature() {
+async fn worktrees_overview_groups_linked_checkouts() {
     let mut app = make_test_app().await;
     let root = tempfile::tempdir().unwrap();
     let primary = root.path().join("primary");
@@ -1179,32 +1179,24 @@ async fn worktrees_overview_grouping_requires_feature() {
     let display_heading = &headings[0];
     let grouped_heading = format!("{display_heading}  2");
     let width = 160;
-    for enabled in [false, true] {
-        app.config
-            .features
-            .set_enabled(Feature::Worktrees, enabled)
-            .unwrap();
-        let view = app.agents_overview_view(threads.clone(), /*selected_thread_id*/ None);
-        app.chat_widget.show_bottom_pane_view(Box::new(view));
-        let popup = render_bottom_popup(&app.chat_widget, width);
-        assert_eq!(popup.contains(&grouped_heading), enabled, "{popup}");
-        if enabled {
-            let grouping = popup
-                .lines()
-                .map(|line| line.split('│').next().unwrap_or(line).trim_end())
-                .collect::<Vec<_>>()
-                .join("\n")
-                .replace(&headings[1], "/tmp/worktree-root/primary/subdir/child")
-                .replace(display_heading, "/tmp/worktree-root/primary")
-                .replace('\\', "/");
-            insta::with_settings!({snapshot_path => "../snapshots"}, {
-                insta::assert_snapshot!(
-                    "agents_overview_worktree_grouping",
-                    normalize_agent_center_snapshot(grouping)
-                );
-            });
-        }
-    }
+    let view = app.agents_overview_view(threads, /*selected_thread_id*/ None);
+    app.chat_widget.show_bottom_pane_view(Box::new(view));
+    let popup = render_bottom_popup(&app.chat_widget, width);
+    assert!(popup.contains(&grouped_heading), "{popup}");
+    let grouping = popup
+        .lines()
+        .map(|line| line.split('│').next().unwrap_or(line).trim_end())
+        .collect::<Vec<_>>()
+        .join("\n")
+        .replace(&headings[1], "/tmp/worktree-root/primary/subdir/child")
+        .replace(display_heading, "/tmp/worktree-root/primary")
+        .replace('\\', "/");
+    insta::with_settings!({snapshot_path => "../snapshots"}, {
+        insta::assert_snapshot!(
+            "agents_overview_worktree_grouping",
+            normalize_agent_center_snapshot(grouping)
+        );
+    });
 }
 
 #[tokio::test]
@@ -3057,7 +3049,6 @@ async fn overview_grouping_persists_across_config_reloads() -> Result<()> {
 #[tokio::test]
 async fn command_center_new_actions_use_selection_and_leave_metadata_text_alone() {
     let mut app = make_test_app().await;
-    app.config.features.enable(Feature::Worktrees).unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     app.app_event_tx = AppEventSender::new(tx);
     let id = ThreadId::new();
@@ -3110,8 +3101,4 @@ async fn command_center_new_actions_use_selection_and_leave_metadata_text_alone(
         rx.try_recv(),
         Ok(AppEvent::NewAgentsOverviewSession { cwd: None })
     ));
-    app.config.features.disable(Feature::Worktrees).unwrap();
-    let mut disabled = app.agents_overview_view(vec![target], Some(id));
-    disabled.handle_key_event(KeyCode::Char('w').into());
-    assert!(rx.try_recv().is_err());
 }

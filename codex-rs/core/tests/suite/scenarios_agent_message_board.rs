@@ -983,35 +983,29 @@ async fn codex_instances_share_board_with_fixed_access() -> anyhow::Result<()> {
                 body: tool("checkpoint", "get_channels", json!({})),
             },
         ],
-        response(sse(vec![
-            ev_function_call_with_namespace(
-                "wrong-board",
-                "collaboration",
-                "post",
-                &json!({
-                    "channel_name":"policy", "text":"Must not publish",
-                    "agents_to_notify":["/root/00000000000040008000000000000002"]
-                })
-                .to_string(),
-            ),
-            ev_function_call_with_namespace(
-                "update",
-                "collaboration",
-                "post",
-                &json!({"channel_name":"policy", "text":"A new policy"}).to_string(),
-            ),
-            ev_function_call_with_namespace(
-                "explicit-update",
-                "collaboration",
-                "post",
-                &json!({
-                    "channel_name":"policy", "text":"An explicit update",
-                    "agents_to_notify":["/root/00000000000040008000000000000001"]
-                })
-                .to_string(),
-            ),
-            ev_completed("update"),
-        ])),
+        // Separate responses order the writes before snapshotting last_message_id.
+        // Non-parallel tools exclude one another but can acquire the lock in either order.
+        response(tool(
+            "wrong-board",
+            "post",
+            json!({
+                "channel_name":"policy", "text":"Must not publish",
+                "agents_to_notify":["/root/00000000000040008000000000000002"]
+            }),
+        )),
+        response(tool(
+            "update",
+            "post",
+            json!({"channel_name":"policy", "text":"A new policy"}),
+        )),
+        response(tool(
+            "explicit-update",
+            "post",
+            json!({
+                "channel_name":"policy", "text":"An explicit update",
+                "agents_to_notify":["/root/00000000000040008000000000000001"]
+            }),
+        )),
         response(done()),
         response(done()),
     ])
@@ -1167,7 +1161,7 @@ async fn codex_instances_share_board_with_fixed_access() -> anyhow::Result<()> {
         .iter()
         .map(|body| serde_json::from_slice::<Value>(body))
         .collect::<serde_json::Result<Vec<_>>>()?;
-    assert_eq!(bodies.len(), 15);
+    assert_eq!(bodies.len(), 17);
     for body in &mut bodies {
         for item in body["input"].as_array_mut().context("request input")? {
             if let Some(Value::String(output)) = item.get_mut("output") {

@@ -175,12 +175,29 @@ single_version_override(
     version = "0.15.1",
 )
 
-bazel_dep(name = "rules_python", version = "1.7.0")
+bazel_dep(name = "rules_python", version = "2.4.2")
 
 voice_python = use_extension("@rules_python//python/extensions:python.bzl", "python")
 voice_python.defaults(python_version = "3.11")
 voice_python.toolchain(python_version = "3.12")
 use_repo(voice_python, "python_3_12")
+
+pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
+pip.parse(
+    download_only = True,
+    hub_name = "schema_python",
+    python_version = "3.12",
+    target_platforms = [
+        "linux_aarch64",
+        "linux_x86_64",
+        "osx_aarch64",
+        "osx_x86_64",
+        "windows_aarch64",
+        "windows_x86_64",
+    ],
+    uv_lock = "//sdk/python:uv.lock",
+)
+use_repo(pip, "schema_python")
 
 # Use the existing pinned Make build for foreign_cc consumers, including the
 # native voice pkg-config bootstrap, instead of a PATH-provided Make.

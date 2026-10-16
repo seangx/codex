@@ -12,6 +12,7 @@ use super::thread_input::can_accept_direct_input;
 use super::thread_input::ensure_direct_input_allowed;
 use super::*;
 use crate::error_code::method_not_found;
+use codex_app_server_protocol::GeneratedImageRef;
 use codex_app_server_protocol::SelectedCapabilityRoot;
 use codex_app_server_protocol::ThreadHistoryMode as ApiThreadHistoryMode;
 use codex_app_server_protocol::ThreadItemsListAnchor;
@@ -5177,6 +5178,9 @@ impl ThreadRequestProcessor {
             })?;
             options.config.ephemeral = ephemeral;
             options
+                .thread_extension_init
+                .insert(codex_core::compact::AutoCompactionDisabled);
+            options
                 .config
                 .features
                 .enable(Feature::ReasoningEffortOverride)
@@ -6170,11 +6174,13 @@ fn deserialize_stored_thread_item(
 
 fn strip_thread_items_list_inline_media(items: &mut [ThreadItemEntry]) {
     for entry in items {
-        if let ThreadItem::ImageGeneration(item) = &mut entry.item {
+        if let ThreadItem::ImageGeneration(item) = &mut entry.item
+            && let GeneratedImageRef::Inline { result } = &mut item.image
+        {
             // Historical rendering uses `saved_path`. Keep the stored item and model history
             // untouched, but do not serialize its potentially enormous inline base64 result into
             // every bounded history-page response.
-            item.result.clear();
+            result.clear();
         }
     }
 }
@@ -6210,10 +6216,13 @@ mod thread_items_list_inline_media_tests {
                     generation_id: None,
                     status: "completed".to_string(),
                     revised_prompt: Some("revised prompt".to_string()),
-                    result: "large-inline-base64".repeat(1024),
+                    image: GeneratedImageRef::Inline {
+                        result: "large-inline-base64".repeat(1024),
+                    },
                     transparent_background: Some(true),
                     failure: None,
-                    saved_path: Some(saved_path.clone()),
+                    saved_path: Some(saved_path),
+                    input_images: Vec::new(),
                     imagegen_request_id: None,
                 }),
                 started_at_ms: None,
@@ -6221,21 +6230,26 @@ mod thread_items_list_inline_media_tests {
             },
         ];
 
-        strip_thread_items_list_inline_media(&mut items);
-
-        assert!(matches!(
-            &items[0].item,
-            ThreadItem::AgentMessage { text, .. } if text == "kept"
-        ));
-        let ThreadItem::ImageGeneration(image) = &items[1].item else {
+        let mut file_entry = items[1].clone();
+        let ThreadItem::ImageGeneration(image) = &mut file_entry.item else {
             panic!("expected image generation item");
         };
-        assert_eq!(image.id, "image-1");
-        assert_eq!(image.status, "completed");
-        assert_eq!(image.revised_prompt.as_deref(), Some("revised prompt"));
-        assert_eq!(image.transparent_background, Some(true));
-        assert_eq!(image.saved_path.as_ref(), Some(&saved_path));
-        assert!(image.result.is_empty());
+        image.id = "image-2".to_string();
+        image.image = GeneratedImageRef::File {
+            file_id: "file-image-2".to_string(),
+        };
+        items.push(file_entry);
+        let mut expected = items.clone();
+        let ThreadItem::ImageGeneration(image) = &mut expected[1].item else {
+            panic!("expected image generation item");
+        };
+        image.image = GeneratedImageRef::Inline {
+            result: String::new(),
+        };
+
+        strip_thread_items_list_inline_media(&mut items);
+
+        pretty_assertions::assert_eq!(items, expected);
     }
 }
 

@@ -1,5 +1,8 @@
 //! App-level orchestration tests for the TUI.
 
+#[path = "tests/terminal_size_telemetry_tests.rs"]
+mod terminal_size_telemetry_tests;
+
 #[path = "tests/copy_mode_tests.rs"]
 mod copy_mode_tests;
 #[path = "tests/mcp_login_tests.rs"]
@@ -65,6 +68,8 @@ mod patch_approval_tests;
 mod permission_selection_tests;
 #[path = "tests/projectless_tests.rs"]
 mod projectless_tests;
+#[path = "tests/quick_dials_tests.rs"]
+mod quick_dials_tests;
 #[path = "tests/unavailable_commands_tests.rs"]
 mod unavailable_commands;
 
@@ -96,6 +101,8 @@ mod startup_frame_tests;
 mod startup_warnings_tests;
 #[path = "tests/stream_animation_tests.rs"]
 mod stream_animation_tests;
+#[path = "tests/streaming_interleave_e2e.rs"]
+mod streaming_interleave_e2e;
 #[path = "tests/thread_usage.rs"]
 mod thread_usage;
 #[path = "tests/transcript_composer.rs"]
@@ -127,6 +134,7 @@ use codex_utils_absolute_path::test_support::PathExt;
 
 use crate::chatwidget::ChatWidgetInit;
 use crate::chatwidget::create_initial_user_message;
+use crate::chatwidget::tests::helpers::normalize_snapshot_paths;
 use crate::chatwidget::tests::helpers::render_bottom_popup;
 use crate::chatwidget::tests::helpers::set_active_cell;
 use crate::chatwidget::tests::make_chatwidget_manual_with_sender;
@@ -356,6 +364,71 @@ async fn middle_click_returns_from_owned_and_inline_transcripts_to_latest() -> R
     assert!(matches!(app.overlay.as_ref(), Some(Overlay::Transcript(_))));
     assert!(app.return_to_latest_from_transcript(&mut tui));
     assert!(app.overlay.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn program_status_acknowledges_deliberate_mouse_events() -> Result<()> {
+    use crate::terminal_program_status::ProgramStatus;
+    use crossterm::event::MouseButton;
+    use crossterm::event::MouseEvent;
+    use crossterm::event::MouseEventKind;
+
+    let mut app = make_test_app().await;
+    let mut app_server = start_config_write_test_app_server(&app).await?;
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    let thread_id = ThreadId::new();
+    for (turn_status, expected) in [
+        (TurnStatus::Completed, ProgramStatus::Done),
+        (TurnStatus::Failed, ProgramStatus::Error),
+    ] {
+        for (kind, coalesced) in [
+            (MouseEventKind::Down(MouseButton::Left), false),
+            (MouseEventKind::Drag(MouseButton::Left), false),
+            (MouseEventKind::Up(MouseButton::Left), false),
+            (MouseEventKind::ScrollUp, false),
+            (MouseEventKind::ScrollDown, false),
+            (MouseEventKind::ScrollUp, true),
+            (MouseEventKind::ScrollDown, true),
+        ] {
+            app.chat_widget.handle_server_notification(
+                turn_started_notification(thread_id, "result"),
+                /*replay_kind*/ None,
+            );
+            app.chat_widget.handle_server_notification(
+                turn_completed_notification(thread_id, "result", turn_status.clone()),
+                /*replay_kind*/ None,
+            );
+            let before = app.chat_widget.desired_program_status();
+            let mut mouse = MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: 1,
+                row: 1,
+                modifiers: KeyModifiers::NONE,
+            };
+            app.handle_tui_event(&mut tui, &mut app_server, TuiEvent::Mouse(mouse))
+                .await?;
+            let after_hover = app.chat_widget.desired_program_status();
+            mouse.kind = kind;
+            let event = if coalesced {
+                TuiEvent::MouseScroll(crate::tui::MouseScrollEvent { mouse, ticks: 2 })
+            } else {
+                TuiEvent::Mouse(mouse)
+            };
+            app.handle_tui_event(&mut tui, &mut app_server, event)
+                .await?;
+            assert_eq!(
+                [
+                    before,
+                    after_hover,
+                    app.chat_widget.desired_program_status()
+                ],
+                [expected, expected, ProgramStatus::Idle],
+                "after {turn_status:?}, {kind:?}, coalesced={coalesced}",
+            );
+        }
+    }
+    app_server.shutdown().await?;
     Ok(())
 }
 
@@ -2843,13 +2916,31 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
                 "type": "session_meta",
                 "payload": serde_json::to_value(session_meta)?,
             });
-            std::fs::write(rollout_path, format!("{session_meta_line}\n"))?;
+            let saved_message = format!("Saved work from child-{index}");
+            let response_item = serde_json::json!({
+                "timestamp": timestamp,
+                "type": "response_item",
+                "payload": {
+                    "type": "message", "role": "user",
+                    "content": [{"type": "input_text", "text": saved_message}]
+                }
+            });
+            let user_message = serde_json::json!({
+                "timestamp": timestamp,
+                "type": "event_msg",
+                "payload": {"type": "user_message", "message": saved_message, "kind": "plain"}
+            });
+            std::fs::write(
+                rollout_path,
+                format!("{session_meta_line}\n{response_item}\n{user_message}\n"),
+            )?;
             child_thread_ids.push(child_thread_id);
         }
 
         // Cold-resume the persisted V2 root so its children are registered before selection.
+        app.config.thread_unload_delay = Duration::ZERO;
         let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
-            app.chat_widget.config_ref(),
+            &app.config,
         ))
         .await?;
         let root = Box::pin(app_server.resume_thread(
@@ -2861,20 +2952,82 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
         .await?;
         app.enqueue_primary_thread_session(root.session, root.turns)
             .await?;
-        for (child_thread_id, multi_agent_version) in child_thread_ids
+        let mut tui = crate::tui::test_support::make_test_tui()?;
+        for (index, (child_thread_id, multi_agent_version)) in child_thread_ids
             .iter()
             .copied()
             .zip([MultiAgentVersion::V1, MultiAgentVersion::V2])
+            .enumerate()
         {
-            assert!(
-                app.attach_live_thread_for_selection(&mut app_server, child_thread_id)
-                    .await?
+            while app_event_rx.try_recv().is_ok() {}
+            assert_eq!(
+                app_server.thread_read(child_thread_id, /*include_turns*/ false).await?.status,
+                codex_app_server_protocol::ThreadStatus::NotLoaded
             );
+            app.select_agent_thread(&mut tui, &mut app_server, child_thread_id)
+                .await?;
+            assert_eq!(app.active_thread_id, Some(child_thread_id));
             assert_eq!(
                 app.agent_navigation.is_parent_owned(child_thread_id),
                 multi_agent_version == MultiAgentVersion::V2
             );
+            assert_app_snapshot!(
+                format!("selected_unloaded_subagent_{multi_agent_version:?}"),
+                normalize_snapshot_paths(render_bottom_popup(&app.chat_widget, /*width*/ 80))
+            );
+            let saved_message = format!("Saved work from child-{index}");
+            while let Ok(event) = app_event_rx.try_recv() {
+                if let AppEvent::InsertHistoryCell(cell) = event {
+                    app.transcript_cells.push(Arc::from(cell));
+                }
+            }
+            assert!(
+                app.render_transcript_lines_for_reflow(/*width*/ 80)
+                    .lines
+                    .iter()
+                    .any(|line| rendered_line_text(line).contains(&saved_message))
+            );
+            app.select_agent_thread(&mut tui, &mut app_server, root_thread_id)
+                .await?;
+            app_server.thread_unsubscribe(child_thread_id).await?;
+            let closed = tokio::time::timeout(Duration::from_secs(/*secs*/ 5), async {
+                while let Some(event) = app_server.next_event().await {
+                    if matches!(&event,
+                        codex_app_server_client::AppServerEvent::ServerNotification(notification)
+                            if matches!(notification.as_ref(), ServerNotification::ThreadClosed(closed)
+                                if closed.thread_id == child_thread_id.to_string()))
+                    {
+                        return event;
+                    }
+                }
+                panic!("server event stream ended before the child closed");
+            })
+            .await?;
+            while app_event_rx.try_recv().is_ok() {}
+            app.select_agent_thread(&mut tui, &mut app_server, child_thread_id)
+                .await?;
+            // A queued close from the old runtime must not undo the new attachment.
+            app.handle_app_server_event(&app_server, closed).await;
+            app.drain_active_thread_events(&mut tui).await?;
+            assert_eq!(app.active_thread_id, Some(child_thread_id));
+            assert!(!matches!(
+                app_server.thread_read(child_thread_id, /*include_turns*/ false).await?.status,
+                codex_app_server_protocol::ThreadStatus::NotLoaded
+            ));
+            while let Ok(event) = app_event_rx.try_recv() {
+                if let AppEvent::InsertHistoryCell(cell) = event {
+                    app.transcript_cells.push(Arc::from(cell));
+                }
+            }
+            assert!(
+                app.render_transcript_lines_for_reflow(/*width*/ 80)
+                    .lines
+                    .iter()
+                    .any(|line| rendered_line_text(line).contains(&saved_message))
+            );
         }
+        app.select_agent_thread(&mut tui, &mut app_server, root_thread_id)
+            .await?;
 
         app.agent_navigation
             .record_sub_agent_activity(SubAgentActivityDisplay {
@@ -2902,7 +3055,6 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
         assert!(!app.agent_navigation.is_parent_owned(child_thread_ids[0]));
         assert!(app.agent_navigation.is_parent_owned(child_thread_ids[1]));
 
-        let mut tui = crate::tui::test_support::make_test_tui()?;
         app.select_agent_thread(&mut tui, &mut app_server, child_thread_ids[0])
             .await?;
         while app_event_rx.try_recv().is_ok() {}
@@ -3040,32 +3192,6 @@ fn attach_live_thread_for_selection_rejects_unmaterialized_fallback_threads() ->
         assert!(!app.thread_event_channels.contains_key(&thread_id));
         Ok(())
     })
-}
-
-#[tokio::test]
-async fn should_attach_live_thread_for_selection_skips_closed_metadata_only_threads() {
-    let mut app = make_test_app().await;
-    let thread_id = ThreadId::new();
-    app.agent_navigation.upsert(
-        thread_id,
-        Some("Ghost".to_string()),
-        Some("worker".to_string()),
-        /*is_closed*/ true,
-    );
-
-    assert!(!app.should_attach_live_thread_for_selection(thread_id));
-
-    app.agent_navigation.upsert(
-        thread_id,
-        Some("Ghost".to_string()),
-        Some("worker".to_string()),
-        /*is_closed*/ false,
-    );
-    assert!(app.should_attach_live_thread_for_selection(thread_id));
-
-    app.thread_event_channels
-        .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
-    assert!(!app.should_attach_live_thread_for_selection(thread_id));
 }
 
 #[tokio::test]
@@ -6383,6 +6509,7 @@ async fn make_test_app() -> Box<App> {
         config_notification_test_pending: None,
         model_catalog: chat_widget.model_catalog(),
         session_telemetry,
+        terminal_size_tags: Vec::new(),
         app_event_tx,
         chat_widget,
         workspace_command_runner: None,
@@ -6508,6 +6635,7 @@ pub(super) async fn make_test_app_with_channels() -> (
             config_notification_test_pending: None,
             model_catalog: chat_widget.model_catalog(),
             session_telemetry,
+            terminal_size_tags: Vec::new(),
             app_event_tx,
             chat_widget,
             workspace_command_runner: None,
@@ -9727,17 +9855,32 @@ async fn changing_cyber_model_reasoning_preserves_selected_permissions() {
             (ReasoningEffortConfig::High, true),
             (ReasoningEffortConfig::Ultra, true),
         ] {
+            app.chat_widget.set_model(&model_name);
             if session_only {
+                app.chat_widget.set_model("different-base-model");
+                let default_mode = app.chat_widget.current_collaboration_mode().clone();
+                app.chat_widget
+                    .set_feature_enabled(Feature::CollaborationModes, /*enabled*/ true);
+                app.chat_widget
+                    .set_collaboration_mask(CollaborationModeMask {
+                        name: "Plan".to_string(),
+                        mode: Some(ModeKind::Plan),
+                        model: Some(model_name.clone()),
+                        reasoning_effort: Some(Some(effort.clone())),
+                        developer_instructions: None,
+                    });
                 app.handle_event(
                     &mut tui,
                     &mut app_server,
                     AppEvent::SelectSessionModel {
                         model: model_name.clone(),
                         effort: Some(effort.clone()),
+                        service_tier: None,
                     },
                 )
                 .await
                 .expect("session-only reasoning selection should succeed");
+                assert_eq!(app.chat_widget.current_collaboration_mode(), &default_mode);
             } else if effort == ReasoningEffortConfig::Ultra {
                 app.chat_widget
                     .set_feature_enabled(Feature::CollaborationModes, /*enabled*/ true);

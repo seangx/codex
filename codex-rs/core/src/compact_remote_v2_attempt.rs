@@ -1,8 +1,11 @@
+//! Builds and sends foreground and speculative remote V2 compaction attempts.
+
 use crate::context::UserGoalUpdate;
 use codex_protocol::ResponseItemId;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use super::CompactionRequestTransport;
 use super::RemoteCompactionV2Output;
 use super::run_remote_compaction_request_v2;
 use crate::Prompt;
@@ -10,14 +13,22 @@ use crate::client::ModelClientSession;
 use crate::compact::CompactionAnalyticsDetails;
 use crate::compact_remote_history::retain_recent_history_item_groups;
 use crate::compact_remote_history::trim_function_call_history_to_fit_context_window;
+use crate::context::world_state::WorldState;
+use crate::context_manager::ContextManager;
 use crate::responses_metadata::CompactionTurnMetadata;
+use crate::session::CompactionPrefix;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
+use codex_analytics::CompactionImplementation;
+use codex_analytics::CompactionPhase;
+use codex_analytics::CompactionReason;
+use codex_analytics::CompactionTrigger;
 use codex_history::CodexHarnessMetadata;
 use codex_history::ResponseItemEnvelope;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::protocol::TokenUsage;
 use codex_rollout_trace::CompactionTraceContext;
 use tracing::info;
@@ -38,38 +49,110 @@ pub(super) struct RemoteCompactV2Attempt {
     pub(super) owned_client_session: Option<ModelClientSession>,
 }
 
+pub(super) enum RemoteCompactV2AttemptInput<'a> {
+    Foreground(Option<&'a mut ModelClientSession>),
+    Background(Box<BackgroundCompactionInput>),
+}
+
+pub(crate) struct BackgroundCompactionCandidate {
+    pub(crate) prefix: CompactionPrefix,
+    pub(super) model_info: Arc<ModelInfo>,
+    pub(super) cutoff_world_state: Arc<WorldState>,
+    pub(super) attempt: RemoteCompactV2Attempt,
+}
+
+pub(crate) struct BackgroundCompactionInput {
+    prefix: CompactionPrefix,
+    turn_state: Option<String>,
+    window: (String, u64, uuid::Uuid),
+    base_instructions: BaseInstructions,
+    snapshot: ContextManager,
+}
+
 pub(super) async fn run_remote_compact_v2_attempt(
     sess: &Arc<Session>,
     step_context: &Arc<StepContext>,
-    client_session: Option<&mut ModelClientSession>,
     compaction_trace: &CompactionTraceContext,
     compaction_metadata: CompactionTurnMetadata,
     analytics_details: &mut CompactionAnalyticsDetails,
+    input: RemoteCompactV2AttemptInput<'_>,
 ) -> CodexResult<RemoteCompactV2Attempt> {
     let turn_context = &step_context.turn;
-    let mut history = crate::compact_image_references::prepare_history_for_compaction(
-        sess.clone_history().await,
-        turn_context.config.codex_home.to_path_buf(),
-        &turn_context.session_source,
-    )
-    .await?;
+    let mut owned_client_session = None;
+    let (
+        model_info,
+        mut history,
+        base_instructions,
+        transport,
+        captured_window,
+        context_window,
+        update_analytics_for_trim,
+    ) = match input {
+        RemoteCompactV2AttemptInput::Foreground(client_session) => {
+            let model_info = turn_context.model_info();
+            let history = crate::compact_image_references::prepare_history_for_compaction(
+                sess.clone_history().await,
+                turn_context.config.codex_home.to_path_buf(),
+                &turn_context.session_source,
+            )
+            .await?;
+            let tools_in_history = step_context.settings.model_info.use_responses_lite
+                && history
+                    .raw_items()
+                    .any(|item| matches!(item, ResponseItem::AdditionalTools { .. }));
+            let base_instructions = if tools_in_history {
+                BaseInstructions {
+                    text: String::new(),
+                    provenance: None,
+                }
+            } else {
+                sess.get_prompt_base_instructions().await
+            };
+            let client_session = client_session.unwrap_or_else(|| {
+                owned_client_session.insert(sess.services.model_client.new_session())
+            });
+            (
+                model_info,
+                history,
+                base_instructions,
+                CompactionRequestTransport::Foreground(client_session),
+                None,
+                turn_context.model_context_window(),
+                true,
+            )
+        }
+        RemoteCompactV2AttemptInput::Background(input) => {
+            let input = *input;
+            let history = crate::compact_image_references::prepare_history_for_compaction(
+                input.snapshot,
+                turn_context.config.codex_home.to_path_buf(),
+                &turn_context.session_source,
+            )
+            .await?;
+            (
+                &step_context.settings.model_info,
+                history,
+                input.base_instructions,
+                CompactionRequestTransport::Background(
+                    input.turn_state,
+                    input.prefix.auth_owner_generation,
+                ),
+                Some(input.window),
+                step_context.settings.model_info.usable_context_window(),
+                false,
+            )
+        }
+    };
     let input_goal_ids = UserGoalUpdate::message_ids(history.raw_items());
-    let tools_in_history = step_context.settings.model_info.use_responses_lite
+    let tools_in_history = model_info.use_responses_lite
         && history
             .raw_items()
             .any(|item| matches!(item, ResponseItem::AdditionalTools { .. }));
-    let base_instructions = if tools_in_history {
-        BaseInstructions {
-            text: String::new(),
-            provenance: None,
-        }
-    } else {
-        sess.get_prompt_base_instructions().await
-    };
     let (rewritten_outputs, estimated_deleted_tokens) =
         trim_function_call_history_to_fit_context_window(
             &mut history,
-            turn_context.as_ref(),
+            turn_context,
+            context_window,
             &base_instructions,
         );
     if rewritten_outputs > 0 {
@@ -79,7 +162,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
             "rewrote history outputs before remote compaction v2"
         );
     }
-    if estimated_deleted_tokens > 0 {
+    if update_analytics_for_trim && estimated_deleted_tokens > 0 {
         let max_local_deleted_tokens = sess
             .estimated_tokens_after_last_model_generated_item()
             .await;
@@ -95,14 +178,13 @@ pub(super) async fn run_remote_compact_v2_attempt(
     // Ordinary sessions use archived references so retained history does not reintroduce image
     // bytes; Guardian reviewers preserve their bounded, admitted evidence as model-visible images.
     let retained_history = history.clone();
-    let prompt_history =
-        history.for_compaction_prompt_annotated(&turn_context.model_info().input_modalities);
+    let prompt_history = history.for_compaction_prompt_annotated(&model_info.input_modalities);
     let original_prompt_item_count = prompt_history.len();
     // Remote compaction appends one trigger. Responses Lite additionally prepends the tool
     // inventory and, when present, the base instructions while constructing the wire request.
     // Reserve every generated item before bounding history so the serialized `input` stays within
     // the API limit rather than bounding only the pre-format Prompt.
-    let responses_lite_prefix_item_count = if turn_context.model_info().use_responses_lite {
+    let responses_lite_prefix_item_count = if model_info.use_responses_lite {
         let base_instructions_item_count = if base_instructions.text.is_empty() {
             0
         } else {
@@ -156,27 +238,28 @@ pub(super) async fn run_remote_compact_v2_attempt(
         cyber_access_program: turn_context.cyber_access_program,
     };
 
-    let mut responses_metadata = sess
-        .compaction_responses_metadata(turn_context.as_ref(), compaction_metadata)
-        .await;
+    let mut responses_metadata = match captured_window {
+        Some(window) => {
+            sess.compaction_responses_metadata_for_window(turn_context, compaction_metadata, window)
+        }
+        None => {
+            sess.compaction_responses_metadata(turn_context, compaction_metadata)
+                .await
+        }
+    };
     responses_metadata.tool_namespaces_info = tool_router.tool_namespaces_info().cloned();
     let trace_attempt = compaction_trace.start_attempt(&serde_json::json!({
-        "model": turn_context.model_info().slug.as_str(),
+        "model": model_info.slug.as_str(),
         "instructions": prompt.base_instructions.text.as_str(),
         "input": &prompt.input,
         "parallel_tool_calls": prompt.parallel_tool_calls,
     }));
-    let mut owned_client_session = None;
-    let client_session = match client_session {
-        Some(client_session) => client_session,
-        None => owned_client_session.insert(sess.services.model_client.new_session()),
-    };
     let compaction_output_result = run_remote_compaction_request_v2(
         sess,
         step_context,
-        client_session,
         &prompt,
         &responses_metadata,
+        transport,
     )
     .await;
     trace_attempt.record_result(
@@ -190,7 +273,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
         token_usage,
     } = compaction_output_result?;
     let retained_prompt_history =
-        retained_history.for_prompt_annotated(&turn_context.model_info().input_modalities);
+        retained_history.for_prompt_annotated(&model_info.input_modalities);
     let (prompt_input, prompt_input_metadata): (Vec<_>, Vec<_>) = retained_prompt_history
         .into_iter()
         .map(|envelope| (envelope.item, envelope.metadata))
@@ -256,6 +339,82 @@ fn limit_remote_compaction_prompt_history(
         _ => true,
     });
     prompt_history
+}
+
+pub(crate) fn capture_background_input(
+    _sess: &Session,
+    step_context: &StepContext,
+    snapshot: ContextManager,
+    base_instructions: BaseInstructions,
+    turn_state: Option<String>,
+    auth_owner_generation: Option<u64>,
+    window: (String, u64, uuid::Uuid),
+) -> BackgroundCompactionInput {
+    let base_instructions = if step_context.settings.model_info.use_responses_lite
+        && snapshot
+            .raw_items()
+            .any(|item| matches!(item, ResponseItem::AdditionalTools { .. }))
+    {
+        BaseInstructions {
+            text: String::new(),
+            provenance: None,
+        }
+    } else {
+        base_instructions
+    };
+    let prefix = CompactionPrefix {
+        generation: snapshot.history_version(),
+        len: snapshot.annotated_items().len(),
+        auth_owner_generation,
+    };
+    BackgroundCompactionInput {
+        prefix,
+        turn_state,
+        window,
+        base_instructions,
+        snapshot,
+    }
+}
+
+pub(crate) async fn run_background_compaction(
+    sess: &Arc<Session>,
+    step_context: Arc<StepContext>,
+    cutoff_world_state: Arc<WorldState>,
+    phase: CompactionPhase,
+    prepared_input: BackgroundCompactionInput,
+) -> CodexResult<BackgroundCompactionCandidate> {
+    let prefix = prepared_input.prefix;
+    let metadata = CompactionTurnMetadata::new(
+        CompactionTrigger::Auto,
+        CompactionReason::ContextLimit,
+        CompactionImplementation::ResponsesCompactionV2,
+        phase,
+    );
+    let total_deadline = step_context.turn.provider.info().stream_idle_timeout();
+    let attempt = tokio::time::timeout(
+        total_deadline,
+        run_remote_compact_v2_attempt(
+            sess,
+            &step_context,
+            &CompactionTraceContext::disabled(),
+            metadata,
+            &mut CompactionAnalyticsDetails::default(),
+            RemoteCompactV2AttemptInput::Background(Box::new(prepared_input)),
+        ),
+    )
+    .await
+    .map_err(|_| {
+        codex_protocol::error::CodexErr::Stream(format!(
+            "remote compaction v2 exceeded its total deadline of {} ms waiting for response.completed",
+            total_deadline.as_millis()
+        ))
+    })??;
+    Ok(BackgroundCompactionCandidate {
+        prefix,
+        model_info: Arc::clone(&step_context.settings.model_info),
+        cutoff_world_state,
+        attempt,
+    })
 }
 
 #[cfg(test)]

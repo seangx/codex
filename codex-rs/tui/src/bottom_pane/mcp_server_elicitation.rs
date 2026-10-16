@@ -56,6 +56,7 @@ use crate::keymap::ListAction;
 use crate::keymap::ListKeymap;
 use crate::keymap::RuntimeKeymap;
 use crate::render::renderable::Renderable;
+use crate::terminal_program_status::ProgramStatusKind;
 use crate::text_formatting::format_json_compact;
 use crate::text_formatting::truncate_text;
 
@@ -1656,6 +1657,13 @@ impl BottomPaneView for McpServerElicitationOverlay {
         true
     }
 
+    fn program_status_blocked_kind(&self) -> Option<ProgramStatusKind> {
+        Some(match self.request.response_mode {
+            McpServerElicitationResponseMode::FormContent => ProgramStatusKind::Question,
+            McpServerElicitationResponseMode::ApprovalAction => ProgramStatusKind::Permission,
+        })
+    }
+
     fn on_ctrl_c(&mut self) -> CancellationEvent {
         if !self.current_field_is_select() && !self.composer.current_text_with_pending().is_empty()
         {
@@ -2681,6 +2689,10 @@ mod tests {
             /*disable_paste_burst*/ false,
         );
 
+        assert_eq!(
+            overlay.program_status_blocked_kind(),
+            Some(ProgramStatusKind::Question)
+        );
         insta::assert_snapshot!(
             "mcp_server_elicitation_boolean_form",
             render_snapshot(&overlay, Rect::new(0, 0, 120, 16))
@@ -2708,6 +2720,10 @@ mod tests {
             /*disable_paste_burst*/ false,
         );
 
+        assert_eq!(
+            overlay.program_status_blocked_kind(),
+            Some(ProgramStatusKind::Permission)
+        );
         insta::assert_snapshot!(
             "mcp_server_elicitation_approval_form_without_schema",
             render_snapshot(&overlay, Rect::new(0, 0, 120, 16))

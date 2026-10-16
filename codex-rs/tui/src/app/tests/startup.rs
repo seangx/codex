@@ -140,7 +140,7 @@ async fn windows_sandbox_setup_completion_requires_matching_pending_mode() -> Re
     let (mut app, mut events, _ops) = make_test_app_with_channels().await;
     app.chat_widget.windows_sandbox_local_server = true;
     while events.try_recv().is_ok() {}
-    let app_server =
+    let mut app_server =
         crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
     let preset = builtin_approval_presets()
         .into_iter()
@@ -148,6 +148,18 @@ async fn windows_sandbox_setup_completion_requires_matching_pending_mode() -> Re
         .expect("auto preset");
     app.windows_sandbox.pending_setup = Some((WindowsSandboxEnableMode::Elevated, preset, None));
     app.windows_sandbox.setup_started_at = Some(Instant::now());
+    app.chat_widget.select_permission_profile(":workspace");
+    let AppEvent::FetchPermissionProfiles { request_id, .. } = events.try_recv()? else {
+        panic!("expected profile discovery");
+    };
+    app.chat_widget.on_permission_profiles_loaded(
+        request_id,
+        Ok(crate::permission_discovery::PermissionDiscovery::local(
+            app.chat_widget.config_ref(),
+        )),
+    );
+    while events.try_recv().is_ok() {}
+    let mut tui = crate::tui::test_support::make_test_tui()?;
 
     for mode in [
         WindowsSandboxSetupMode::Unelevated,
@@ -166,10 +178,7 @@ async fn windows_sandbox_setup_completion_requires_matching_pending_mode() -> Re
             )),
         )
         .await;
-        assert_eq!(
-            app.windows_sandbox.pending_setup.is_some(),
-            mode == WindowsSandboxSetupMode::Unelevated
-        );
+        assert!(app.windows_sandbox.pending_setup.is_some());
     }
     assert!(!app.chat_widget.windows_sandbox_elevated_setup_complete);
     assert!(app.windows_sandbox_blocks_thread_switch());
@@ -181,6 +190,14 @@ async fn windows_sandbox_setup_completion_requires_matching_pending_mode() -> Re
         })
     ));
     assert!(events.try_recv().is_err());
+
+    // Completion can overtake this close event; selection still belongs to the queued handler.
+    app.handle_event(&mut tui, &mut app_server, AppEvent::SettingsSelectionClosed)
+        .await?;
+    assert!(
+        app.chat_widget
+            .inline_permission_profile_selection_pending()
+    );
 
     app_server.shutdown().await?;
     Ok(())
@@ -1952,9 +1969,21 @@ async fn windows_sandbox_config_refresh_uses_connected_server() -> Result<()> {
     let mut tui = crate::tui::test_support::make_test_tui()?;
     app.chat_widget.windows_sandbox_local_server = true;
     app.chat_widget.windows_sandbox_host = WindowsSandboxHost::Local;
-    Box::pin(app.handle_event(&mut tui, &mut recovered, AppEvent::OpenPermissionsPopup)).await?;
+    while events.try_recv().is_ok() {}
+    Box::pin(app.handle_event(
+        &mut tui,
+        &mut recovered,
+        AppEvent::ResolvePermissionProfile {
+            profile_id: codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_READ_ONLY.to_string(),
+        },
+    ))
+    .await?;
     assert_eq!(app.chat_widget.windows_sandbox_config, loaded_config);
     assert!(app.chat_widget.has_active_view());
+    assert!(matches!(
+        events.try_recv(),
+        Ok(AppEvent::FetchPermissionProfiles { .. })
+    ));
     recovered.shutdown().await?;
     server.shutdown().await?;
     Ok(())

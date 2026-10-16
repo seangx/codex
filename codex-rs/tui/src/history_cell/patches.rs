@@ -161,11 +161,20 @@ impl HistoryCell for PatchFailureCell {
 
 #[derive(Debug)]
 pub(crate) struct ViewImageHistoryCell {
+    activity_id: String,
     filename: String,
     path_label: String,
 }
 
 impl HistoryCell for ViewImageHistoryCell {
+    fn activity_ids(&self) -> Vec<String> {
+        vec![self.activity_id.clone()]
+    }
+
+    fn image_path(&self) -> Option<AbsolutePathBuf> {
+        LegacyAppPathString::from_string(self.path_label.clone()).to_inferred_abs_path()
+    }
+
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
         let line = vec![
             "• ".dim(),
@@ -193,12 +202,16 @@ impl HistoryCell for ViewImageHistoryCell {
     }
 }
 
-pub(crate) fn new_view_image_tool_call(path: LegacyAppPathString) -> ViewImageHistoryCell {
+pub(crate) fn new_view_image_tool_call(
+    id: String,
+    path: LegacyAppPathString,
+) -> ViewImageHistoryCell {
     let filename = path
         .to_inferred_path_uri()
         .and_then(|path| path.basename())
         .unwrap_or_else(|| path.render_for_ui());
     ViewImageHistoryCell {
+        activity_id: format!("image-view:{id}"),
         filename,
         path_label: path.into_string(),
     }
@@ -207,6 +220,7 @@ pub(crate) fn new_view_image_tool_call(path: LegacyAppPathString) -> ViewImageHi
 #[derive(Debug)]
 pub(crate) struct ImageGenerationHistoryCell {
     lines: Vec<HyperlinkLine>,
+    saved_path: Option<AbsolutePathBuf>,
 }
 
 impl HistoryCell for ImageGenerationHistoryCell {
@@ -224,6 +238,10 @@ impl HistoryCell for ImageGenerationHistoryCell {
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
         plain_lines(visible_lines(self.lines.clone()))
+    }
+
+    fn image_path(&self) -> Option<AbsolutePathBuf> {
+        self.saved_path.clone()
     }
 }
 
@@ -243,7 +261,7 @@ pub(crate) fn new_image_generation_call(
         HyperlinkLine::new(heading),
         HyperlinkLine::new(vec!["  └ ".dim(), detail.dim()].into()),
     ];
-    if let Some(saved_path) = saved_path {
+    if let Some(saved_path) = &saved_path {
         let saved_path_url = Url::from_file_path(saved_path.as_path())
             .map(|url| url.to_string())
             .unwrap_or_else(|_| saved_path.display().to_string());
@@ -266,7 +284,10 @@ pub(crate) fn new_image_generation_call(
         }
     }
 
-    ImageGenerationHistoryCell { lines }
+    ImageGenerationHistoryCell {
+        lines,
+        saved_path: saved_path.filter(|_| status != "failed"),
+    }
 }
 
 pub(crate) fn open_folder_link_line(

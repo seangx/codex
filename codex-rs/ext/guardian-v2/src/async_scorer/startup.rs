@@ -67,6 +67,7 @@ pub(super) fn decisions_api_key(
                 .as_ref()
                 .and_then(CodexAuth::api_key)
                 .map(str::to_owned)
+                .or_else(codex_login::read_openai_api_key_from_env)
                 .ok_or(DecisionsError::Credentials)
         }
         Err(std::env::VarError::NotPresent | std::env::VarError::NotUnicode(_)) => {

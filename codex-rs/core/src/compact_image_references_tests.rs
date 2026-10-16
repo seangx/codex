@@ -52,8 +52,16 @@ async fn compaction_snapshot_archives_inline_images_and_preserves_file_reference
         {"type":"message", "role":"user", "content":[
             {"type":"input_text", "text":"Inspect the grip"},
             {"type":"input_image", "image_url":image},
-            {"type":"input_image", "file_id":"file-user", "detail":"low"}
-        ]},
+            {"type":"input_image", "file_id":"file-user", "detail":"low"},
+            {"type":"input_audio", "audio_url":"data:audio/wav;base64,YXVkaW8="}
+        ], "internal_chat_message_metadata_passthrough": {
+            "content_item_metadata": [
+                {"provenance":{"type":"user"}},
+                {"provenance":{"type":"user"}},
+                {"provenance":{"type":"user"}},
+                {"provenance":{"type":"user"}}
+            ]
+        }},
         {"type":"message", "role":"assistant", "content":[
             {"type":"output_text", "text":"The grip is aligned"}
         ]},
@@ -78,7 +86,13 @@ async fn compaction_snapshot_archives_inline_images_and_preserves_file_reference
     let mut expected = serde_json::to_value(items)?;
     expected[0]["content"][1] = json!({"type":"input_text", "text":replacement});
     expected[0]["internal_chat_message_metadata_passthrough"] = json!({
-        "content_item_kinds": ["unknown", "user.image_reference", "unknown"]
+        "content_item_kinds": ["unknown", "user.image_reference", "unknown", "unknown"],
+        "content_item_metadata": [
+            {"provenance":{"type":"user"}},
+            {"provenance":{"type":"harness", "hook":false}},
+            {"provenance":{"type":"user"}},
+            {"provenance":{"type":"user"}}
+        ]
     });
     for index in [2, 3] {
         expected[index]["output"][0] = json!({"type":"input_text", "text":replacement});

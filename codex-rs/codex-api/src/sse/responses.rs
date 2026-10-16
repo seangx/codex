@@ -11,6 +11,7 @@ use crate::telemetry::SseTelemetry;
 use codex_client::ByteStream;
 use codex_client::StreamResponse;
 use codex_protocol::ResponseUsageMetadata;
+use codex_protocol::error::ResponseIncompleteError;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::ModelVerification;
 use codex_protocol::protocol::TokenUsage;
@@ -429,8 +430,23 @@ pub fn process_responses_event(
                     return Err(ResponsesEventError::Api(ApiError::ContentFilter));
                 }
                 if reason != "interrupted" {
+                    let response = event.response.as_ref();
+                    let response_id = response
+                        .and_then(|response| response.get("id"))
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                    let token_usage = response
+                        .and_then(|response| response.get("usage"))
+                        .and_then(|usage| {
+                            serde_json::from_value::<ResponseCompletedUsage>(usage.clone()).ok()
+                        })
+                        .map(Into::into);
                     return Err(ResponsesEventError::Api(ApiError::ResponseIncomplete(
-                        reason.to_string(),
+                        Box::new(ResponseIncompleteError {
+                            reason: reason.to_string(),
+                            response_id,
+                            token_usage,
+                        }),
                     )));
                 }
             }

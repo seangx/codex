@@ -406,11 +406,10 @@ impl App {
         let mut view = AgentsOverviewView::new(
             rows,
             selected_thread_id,
-            self.config.features.enabled(Feature::Worktrees)
-                && !crate::uses_remote_workspace_or_environment(
-                    &self.app_server_target,
-                    self.environment_manager.as_ref(),
-                ),
+            !crate::uses_remote_workspace_or_environment(
+                &self.app_server_target,
+                self.environment_manager.as_ref(),
+            ),
             self.local_settings.tui.status_line_use_colors,
             self.app_event_tx.clone(),
             self.keymap.clone(),
@@ -948,7 +947,6 @@ impl App {
             .as_ref()
             .filter(|_| remote)
             .map(AbsolutePathBuf::to_path_buf);
-        let preserve_service_tier = remote || cwd.is_none();
         let local_cwd = if remote {
             self.config.cwd.to_path_buf()
         } else {
@@ -970,9 +968,6 @@ impl App {
                 return None;
             }
         };
-        if preserve_service_tier {
-            config.service_tier = self.chat_widget.configured_service_tier();
-        }
         let trust_cwd = config.cwd.to_path_buf();
         if self
             .confirm_directory_trust(
@@ -1221,7 +1216,7 @@ impl App {
 
 #[cfg(test)]
 #[path = "agents_overview_tests.rs"]
-mod tests;
+pub(super) mod tests;
 
 fn agents_overview_group(
     thread: &Thread,

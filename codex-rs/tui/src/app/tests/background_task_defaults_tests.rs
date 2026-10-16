@@ -252,7 +252,7 @@ async fn check_command_center_new_reads_server_defaults_for_actual_destination(
         std::fs::write(
             server_home.path().join("config.toml"),
             format!(
-                "{}model_reasoning_effort = \"high\"\n{}",
+                "{}model_reasoning_effort = \"high\"\nservice_tier = \"fast\"\n{}",
                 if mode == "remote-null-fast" {
                     ""
                 } else {
@@ -405,11 +405,7 @@ async fn check_command_center_new_reads_server_defaults_for_actual_destination(
                     serde_json::Value::Null
                 },
                 &serde_json::json!("high"),
-                &serde_json::json!(if mode == "local" && explicit_cwd {
-                    "flex"
-                } else {
-                    "priority"
-                }),
+                &serde_json::json!(if explicit_cwd { "flex" } else { "priority" }),
             ),
             "{mode} {expected_cwd}"
         );
@@ -1264,9 +1260,6 @@ async fn check_command_center_new_checkout_and_worktree_preserve_source_and_defa
         app.config.cwd = selected.cwd.clone().abs();
         app.chat_widget.windows_sandbox_local_server = cfg!(target_os = "windows");
         app.harness_overrides.cwd = Some(selected.cwd.clone());
-        app.cli_kv_overrides
-            .push(("features.worktrees".into(), TomlValue::Boolean(true)));
-        app.config.features.enable(Feature::Worktrees)?;
         trust_launch_folder(&mut app);
         let (mut server, requests, proxy) = start_recording_app_server_with_history(
             &app.config,

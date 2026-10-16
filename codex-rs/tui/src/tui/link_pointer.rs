@@ -22,7 +22,8 @@ pub(crate) struct LinkHover {
 impl LinkHover {
     pub(crate) fn observe(&mut self, event: &TuiEvent) {
         match event {
-            TuiEvent::Mouse(mouse) => {
+            TuiEvent::Mouse(mouse)
+            | TuiEvent::MouseScroll(super::MouseScrollEvent { mouse, .. }) => {
                 self.mouse = (!matches!(
                     mouse.kind,
                     MouseEventKind::Down(_) | MouseEventKind::Drag(_)

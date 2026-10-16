@@ -152,7 +152,7 @@ pub struct GuardianV2ConfigToml {
     /// Transcript encoding for synchronous Guardian review and asynchronous scoring. Defaults to line.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transcript_mode: Option<codex_protocol::TranscriptFormat>,
-    /// Classifier experiment override. Otherwise use the model default, then snapshots.
+    /// Classifier mode override. Otherwise use the model default, then conversation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub async_classifier_mode: Option<codex_protocol::openai_models::AsyncClassifierMode>,
     /// Reset retained async history when the next request exceeds this token estimate.
@@ -331,6 +331,9 @@ pub struct MultiAgentV2ConfigToml {
     /// Expose the multi-agent v2 `wait_agent` tool.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wait_agent_enabled: Option<bool>,
+    /// Hide native multi-agent tools while retaining the V2 runtime for host-provided tools.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disable_native_tools: Option<bool>,
     /// Disable the model's direct-message tools; spawning and automatic child results remain available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub disable_direct_message: Option<bool>,

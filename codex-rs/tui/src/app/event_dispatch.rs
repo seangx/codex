@@ -17,6 +17,7 @@ use crate::config_update::format_config_error;
 use crate::external_agent_config_migration::flow::ExternalAgentConfigMigrationFlowOutcome;
 use crate::pager_overlay::TranscriptHistoryState;
 use crate::session_resume::cwds_differ;
+use crate::status::StatusAccountDisplay;
 use codex_app_server_client::AppServerEvent;
 use codex_app_server_protocol::ThreadGoalStatus;
 #[cfg(target_os = "windows")]
@@ -108,6 +109,10 @@ impl App {
                 AppEvent::OpenWindowsSandboxFallbackPrompt { .. }
                     | AppEvent::EnableWindowsSandboxForAgentMode { .. }
             ) {
+                #[cfg(any(target_os = "windows", test))]
+                {
+                    self.windows_sandbox.pending_setup = None;
+                }
                 self.chat_widget.clear_windows_sandbox_setup_status();
             }
             self.chat_widget.add_info_message(
@@ -165,7 +170,9 @@ impl App {
                     && self.daemon_restart.is_none()
                 {
                     self.daemon_restart = Some(tokio::spawn(codex_app_server_daemon::run(
-                        codex_app_server_daemon::LifecycleCommand::Restart,
+                        codex_app_server_daemon::LifecycleCommand::Restart {
+                            feature_overrides: Default::default(),
+                        },
                     )));
                 }
             }
@@ -2184,14 +2191,52 @@ impl App {
                 }
             }
             AppEvent::SettingsSelectionClosed => {
+                #[cfg(any(target_os = "windows", test))]
+                let windows_sandbox_setup_pending =
+                    self.windows_sandbox.pending_setup.is_some();
+                #[cfg(not(any(target_os = "windows", test)))]
+                let windows_sandbox_setup_pending = false;
+                if self.chat_widget.no_modal_or_popup_active()
+                    && !windows_sandbox_setup_pending
+                {
+                    self.chat_widget
+                        .recover_inline_permission_profile_selection();
+                }
                 self.app_event_tx.send(AppEvent::SettingsSelectionSettled);
             }
             AppEvent::SettingsSelectionSettled => {
                 if self.chat_widget.no_modal_or_popup_active()
                     && !self
                         .chat_widget
+                        .inline_permission_profile_selection_pending()
+                    && !self
+                        .chat_widget
                         .thread_id()
-                        .is_some_and(|thread_id| self.pending_server_profiles.contains_key(&thread_id))
+                        .is_some_and(|thread_id| {
+                            self.pending_server_profiles.contains_key(&thread_id)
+                                || self
+                                    .agents_overview
+                                    .requested_permission_profiles
+                                    .get(&thread_id)
+                                    .is_some_and(|selection| {
+                                        let config = self.chat_widget.config_ref();
+                                        config
+                                            .permissions
+                                            .active_permission_profile()
+                                            .is_none_or(|active| {
+                                                active.id != selection.profile_id
+                                            })
+                                            || selection.approval_policy.is_some_and(|policy| {
+                                                config.permissions.approval_policy.value()
+                                                    != policy.to_core()
+                                            })
+                                            || selection
+                                                .approvals_reviewer
+                                                .is_some_and(|reviewer| {
+                                                    config.approvals_reviewer != reviewer
+                                                })
+                                    })
+                        })
                 {
                     let config = self.chat_widget.config_ref();
                     let permissions_override = Self::turn_permissions_override_from_config(
@@ -2229,7 +2274,23 @@ impl App {
                     app_server.fetch_models(request_id, self.app_event_tx.clone());
                 }
             }
-            AppEvent::ModelsLoaded { request_id, result } => {
+            AppEvent::ModelsLoaded { request_id, result: Ok(models) }
+                if self.chat_widget.model_popup_request_is_current(request_id)
+                    && self.chat_widget.status_account_display() == Some(&StatusAccountDisplay::ApiKey) =>
+            {
+                let checked = app_server.constrain_api_key_models(
+                    self.chat_widget.config_ref(),
+                    self.chat_widget.thread_id(),
+                    /*requirements*/ None,
+                    models,
+                );
+                let tx = self.app_event_tx.clone();
+                tokio::spawn(async move {
+                    tx.send(AppEvent::ApiKeyCompatModelsLoaded { request_id, result: Ok(checked.await) });
+                });
+            }
+            AppEvent::ModelsLoaded { request_id, result }
+            | AppEvent::ApiKeyCompatModelsLoaded { request_id, result } => {
                 if self.chat_widget.on_models_loaded(request_id, result) {
                     self.model_catalog = self.chat_widget.model_catalog();
                     app_server.set_available_models(self.model_catalog.try_list_models()?);
@@ -2363,6 +2424,10 @@ impl App {
                 preset,
                 profile_selection,
             } => {
+                #[cfg(any(target_os = "windows", test))]
+                {
+                    self.windows_sandbox.pending_setup = None;
+                }
                 self.session_telemetry.counter(
                     "codex.windows_sandbox.fallback_prompt_shown",
                     /*inc*/ 1,
@@ -2414,6 +2479,10 @@ impl App {
                 mode,
                 profile_selection,
             } => {
+                #[cfg(any(target_os = "windows", test))]
+                {
+                    self.windows_sandbox.pending_setup = None;
+                }
                 #[cfg(target_os = "windows")]
                 {
                     self.chat_widget.clear_windows_sandbox_setup_status();
@@ -2438,7 +2507,11 @@ impl App {
                             self.chat_widget.windows_sandbox_elevated_setup_complete =
                                 elevated_enabled;
                             if let Some(selection) = profile_selection {
+                                let inline = self.chat_widget.complete_inline_permission_profile_selection();
                                 self.select_permission_profile(app_server, selection).await;
+                                if inline {
+                                    self.app_event_tx.send(AppEvent::SettingsSelectionClosed);
+                                }
                             } else {
                                 self.app_event_tx.send(AppEvent::CodexOp(
                                     AppCommand::override_turn_context(
@@ -2470,8 +2543,14 @@ impl App {
                                             .dark_gray(),
                                     ]),
                                 ]);
+                    } else if self
+                        .chat_widget
+                        .recover_inline_permission_profile_selection()
+                    {
+                        self.app_event_tx.send(AppEvent::SettingsSelectionClosed);
                     } else {
-                        self.chat_widget.retain_input_after_failed_permission_selection();
+                        self.chat_widget
+                            .retain_input_after_failed_permission_selection();
                     }
                 }
                 #[cfg(not(target_os = "windows"))]
@@ -2518,9 +2597,25 @@ impl App {
             AppEvent::PersistDaybreakSelection { thread_id, enabled } => {
                 self.persist_daybreak_selection(app_server, thread_id, enabled).await;
             }
-            AppEvent::SelectSessionModel { model, effort } => {
+            AppEvent::SelectSessionModel { model, effort, service_tier } => {
                 self.app_event_tx.send(AppEvent::FollowTranscript);
-                self.select_session_model(app_server, model, effort).await;
+                self.select_session_model(app_server, model, effort, service_tier).await;
+            }
+            AppEvent::OpenQuickDialEditor { target, dial } => {
+                self.chat_widget.open_quick_dial_editor(target, dial);
+            }
+            AppEvent::OpenQuickDialSavePicker(dial) => {
+                self.chat_widget.open_quick_dial_save_picker(dial);
+            }
+            AppEvent::ConfirmQuickDial { slot, dial } => self.chat_widget.confirm_quick_dial(slot, dial),
+            AppEvent::SaveQuickDial { slot, dial } => {
+                self.app_event_tx.send(AppEvent::FollowTranscript);
+                self.save_quick_dial(slot, dial).await;
+            }
+            AppEvent::RecallQuickDial { slot, thread_id } => {
+                if self.chat_widget.thread_id() == thread_id {
+                    self.chat_widget.recall_quick_dial(slot);
+                }
             }
             AppEvent::CyberModelAutoReviewNotice => {
                 self.chat_widget.add_warning_message(
@@ -2670,7 +2765,13 @@ impl App {
                 self.chat_widget.submit_initial_user_message_if_pending();
             }
             AppEvent::SelectPermissionProfile(selection) => {
+                let inline_selection = self
+                    .chat_widget
+                    .complete_inline_permission_profile_selection();
                 self.select_permission_profile(app_server, selection).await;
+                if inline_selection {
+                    self.app_event_tx.send(AppEvent::SettingsSelectionClosed);
+                }
             }
             AppEvent::UpdateApprovalsReviewer(policy) => {
                 if self.reject_pending_permission_change() {
@@ -3123,6 +3224,25 @@ impl App {
                     self.chat_widget.add_error_message(err);
                 }
             }
+            AppEvent::ResolvePermissionProfile { profile_id } => {
+                if self.reject_pending_permission_change() {
+                    self.chat_widget
+                        .retain_input_after_failed_permission_selection();
+                    self.app_event_tx.send(AppEvent::SettingsSelectionClosed);
+                    return Ok(AppRunControl::Continue);
+                }
+                #[cfg(any(target_os = "windows", test))]
+                if self.chat_widget.windows_sandbox_local_server
+                    && self.windows_sandbox_host() != WindowsSandboxHost::Remote
+                    && self.chat_widget.windows_sandbox_config.requirements.is_none()
+                    && !self.refresh_windows_sandbox_config(app_server).await
+                {
+                    self.app_event_tx.send(AppEvent::SettingsSelectionClosed);
+                    return Ok(AppRunControl::Continue);
+                }
+                self.chat_widget
+                    .select_permission_profile(&profile_id);
+            }
             AppEvent::OpenPermissionsPopup | AppEvent::OpenApprovalsPopup => {
                 if self.reject_pending_permission_change() {
                     return Ok(AppRunControl::Continue);
@@ -3411,7 +3531,7 @@ impl App {
                 key,
                 intent,
             } => {
-                self.apply_keymap_capture(context, action, key, intent)
+                self.apply_keymap_capture(app_server, context, action, key, intent)
                     .await;
                 self.merge_startup_warnings(tui, &history_cell::StartupWarningsCell::default());
             }
@@ -3496,6 +3616,7 @@ impl App {
 
     async fn apply_keymap_capture(
         &mut self,
+        app_server: &mut AppServerSession,
         context: String,
         action: String,
         key: String,
@@ -3545,13 +3666,41 @@ impl App {
             }
         };
 
-        let edit =
-            crate::legacy_core::config::edit::keymap_bindings_edit(&context, &action, &bindings);
-        match ConfigEditsBuilder::for_config_path(self.local_settings.user_config_path.as_path())
-            .with_edits([edit])
-            .apply()
-            .await
-        {
+        let save = if matches!(self.app_server_target, AppServerTarget::LocalDaemon { .. }) {
+            // Let the daemon validate shared config before writing: older daemons may
+            // not understand bindings introduced by this TUI, including new defaults.
+            app_server
+                .request_handle()
+                .request_typed::<codex_app_server_protocol::ConfigWriteResponse>(
+                    codex_app_server_protocol::ClientRequest::ConfigValueWrite {
+                        request_id: app_server.next_request_id(),
+                        params: codex_app_server_protocol::ConfigValueWriteParams {
+                            key_path: format!("tui.keymap.{context}.{action}"),
+                            value: match bindings.as_slice() {
+                                [binding] => serde_json::json!(binding),
+                                bindings => serde_json::json!(bindings),
+                            },
+                            merge_strategy: codex_app_server_protocol::MergeStrategy::Replace,
+                            file_path: Some(
+                                self.local_settings.user_config_path.display().to_string(),
+                            ),
+                            expected_version: None,
+                        },
+                    },
+                )
+                .await
+                .map(|_| ())
+                .map_err(anyhow::Error::new)
+        } else {
+            let edit = crate::legacy_core::config::edit::keymap_bindings_edit(
+                &context, &action, &bindings,
+            );
+            ConfigEditsBuilder::for_config_path(self.local_settings.user_config_path.as_path())
+                .with_edits([edit])
+                .apply()
+                .await
+        };
+        match save {
             Ok(()) => {
                 self.cancel_pending_key_chord();
                 self.local_settings.tui.keymap = keymap_config.clone();

@@ -384,18 +384,6 @@ async fn exploration_nonzero_exits_remain_visible_beside_successful_reads() {
         end_exec(&mut chat, item, "", "", exit_code);
     }
     insta::assert_snapshot!(active_blob(&chat));
-    insta::assert_snapshot!(
-        "compact_exploration_with_failures",
-        chat.transcript
-            .active_cell
-            .as_ref()
-            .unwrap()
-            .compact_hyperlink_lines(/*width*/ 24)
-            .iter()
-            .map(|line| line.line.to_string())
-            .collect::<Vec<_>>()
-            .join("\n")
-    );
     let active = chat
         .transcript
         .active_cell
@@ -407,6 +395,15 @@ async fn exploration_nonzero_exits_remain_visible_beside_successful_reads() {
         .expect("exploration is wrapped in the compact tool group")
         .exec_for_call("read")
         .expect("exploration group retains the first read");
+    insta::assert_snapshot!(
+        "compact_exploration_with_failures",
+        exploration
+            .compact_hyperlink_lines(/*width*/ 24)
+            .iter()
+            .map(|line| line.line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
     let statuses = exploration
         .display_lines(/*width*/ 80)
         .into_iter()

@@ -101,6 +101,8 @@ mod windows_console;
 #[cfg(any(windows, test))]
 mod windows_key_sequence;
 
+pub(crate) use selection_clipboard::SelectionCopy;
+
 /// Target frame interval for UI redraw scheduling.
 pub(crate) const TARGET_FRAME_INTERVAL: Duration = frame_rate_limiter::MIN_FRAME_INTERVAL;
 
@@ -899,6 +901,7 @@ pub struct Tui {
     frame_requester: FrameRequester,
     draw_tx: broadcast::Sender<()>,
     event_broker: Arc<EventBroker>,
+    pub(crate) terminal_size_tags: crate::terminal_size_telemetry::LaunchTags,
     pub(crate) terminal: Terminal,
     pending_history_lines: Vec<PendingHistoryLines>,
     mouse_selection: MouseSelectionState,
@@ -906,6 +909,7 @@ pub struct Tui {
     screen_size: ScreenSizePolicy,
     ambient_pet_image_state: crate::pets::PetImageRenderState,
     pet_picker_preview_image_state: crate::pets::PetImageRenderState,
+    pub(crate) transcript_images: Vec<crate::transcript_image::ImagePlacement>,
     alt_saved_viewport: Option<ratatui::layout::Rect>,
     alt_saved_history: Option<custom_terminal::InlineHistoryState>,
     #[cfg(unix)]
@@ -978,6 +982,7 @@ impl Tui {
             frame_requester,
             draw_tx,
             event_broker: Arc::new(event_broker),
+            terminal_size_tags: Vec::new(),
             terminal,
             pending_history_lines: vec![],
             mouse_selection: MouseSelectionState::default(),
@@ -985,6 +990,7 @@ impl Tui {
             screen_size: ScreenSizePolicy::default(),
             ambient_pet_image_state: crate::pets::PetImageRenderState::default(),
             pet_picker_preview_image_state: crate::pets::PetImageRenderState::default(),
+            transcript_images: Vec::new(),
             alt_saved_viewport: None,
             alt_saved_history: None,
             #[cfg(unix)]
@@ -1643,7 +1649,7 @@ impl Tui {
             }
 
             let mouse_selection = self.mouse_selection.selection();
-            terminal.draw_with_size(screen_size, |frame| {
+            terminal.draw_with_size(screen_size, &mut self.transcript_images, |frame| {
                 draw_fn(frame);
                 if let Some(selection) = mouse_selection {
                     selection.highlight(frame.buffer_mut());
@@ -1786,7 +1792,7 @@ impl Tui {
             }
 
             let mouse_selection = self.mouse_selection.selection();
-            terminal.draw_with_size(screen_size, |frame| {
+            terminal.draw_with_size(screen_size, &mut self.transcript_images, |frame| {
                 draw_fn(frame);
                 if let Some(selection) = mouse_selection {
                     selection.highlight(frame.buffer_mut());
