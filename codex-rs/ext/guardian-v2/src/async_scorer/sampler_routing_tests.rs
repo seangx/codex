@@ -242,6 +242,7 @@ async fn account_switch_cancels_request_opening_and_first_token_waits() -> Resul
             response_headers: Vec::new(),
             accept_delay: None,
             close_after_requests: false,
+            idle_timeout: None,
         };
         let websocket = responses::start_websocket_server_with_headers(vec![stalled; 2]).await;
         let changes = Arc::new(AuthAfterRouting {

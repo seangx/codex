@@ -8,9 +8,6 @@ use std::fs;
 use std::process::Command;
 use std::time::Duration;
 
-#[cfg(target_os = "macos")]
-static DAEMON_STARTUP_SERIAL: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
-
 #[tokio::test]
 #[cfg(unix)]
 async fn auto_daemon_start_attaches_to_shared_server() -> Result<()> {
@@ -155,11 +152,6 @@ async fn bedrock_onboarding_leaves_a_running_daemon_untouched() -> Result<()> {
 }
 
 async fn daemon_startup(command: &str) -> Result<()> {
-    // Background QoS is intentionally allowed to reduce throughput. Avoid
-    // making many independent daemon fixtures compete during this test binary.
-    #[cfg(target_os = "macos")]
-    let _serial = DAEMON_STARTUP_SERIAL.acquire().await?;
-
     #[cfg(windows)]
     let elevated = codex_app_server_daemon::is_elevated()?;
     #[cfg(not(windows))]
@@ -195,7 +187,7 @@ async fn daemon_startup(command: &str) -> Result<()> {
          notice.model_migrations.\"gpt-5.6-terra\" = \"gpt-6-sol\"\n\
          [projects.{}]\ntrust_level = \"{}\"\n",
             if command == "discovered" {
-                "tui.status_line=[\"model\",\"thread-id\",\"thread-name\"]"
+                "tui.status_line=[\"model\",\"thread-id\",\"thread-name\"]\nfeatures.daemon_auto_start=false"
             } else {
                 ""
             },
@@ -480,6 +472,12 @@ async fn daemon_startup(command: &str) -> Result<()> {
                             }) {
                                 continue;
                             }
+                        }
+                        // A replacement PID can appear before the TUI observes the disconnect.
+                        // Wait for reconnect to clear/rebuild the transcript, so the old
+                        // composer's command popup cannot make the status probe look ready.
+                        if *input == b"/status" && !output.contains("\x1b[3J") {
+                            continue;
                         }
                         // The old header can linger while the daemon stops. Check both
                         // the draft and its Enter against the replacement process and UI.

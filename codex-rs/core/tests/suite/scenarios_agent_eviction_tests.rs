@@ -2,11 +2,35 @@
 
 use super::*;
 use codex_core::ThreadEvictionOutcome;
+use codex_exec_server::CreateDirectoryOptions;
+use codex_extension_api::MessageLifecycleContributor;
+use codex_extension_api::MessageLifecycleInput;
+use codex_protocol::ResponseItemId;
+use codex_protocol::ThreadId;
 use codex_protocol::protocol::ThreadSettingsOverrides;
+use codex_protocol::protocol::TurnSettingsUpdate;
+use codex_protocol::protocol::TurnSettingsUpdateOutcome;
 use core_test_support::ThreadIdle;
 use core_test_support::responses;
 use core_test_support::submit_thread_settings;
 use pretty_assertions::assert_eq;
+use std::collections::HashSet;
+use std::sync::Mutex;
+
+#[derive(Default)]
+struct Messages(Mutex<HashSet<ResponseItemId>>);
+
+impl MessageLifecycleContributor for Messages {
+    fn on_publish(&self, input: &MessageLifecycleInput) {
+        let mut pending = self.0.lock().expect("messages lock");
+        assert!(pending.insert(input.message_id.clone()));
+    }
+
+    fn on_consumed(&self, input: &MessageLifecycleInput, _recipient: ThreadId) {
+        let mut pending = self.0.lock().expect("messages lock");
+        assert!(pending.remove(&input.message_id));
+    }
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn idle_eviction_preserves_worker_context_for_followup() -> Result<()> {
@@ -15,11 +39,19 @@ async fn idle_eviction_preserves_worker_context_for_followup() -> Result<()> {
     let server = start_mock_server().await;
     let mut extensions = ExtensionRegistryBuilder::<Config>::new();
     extensions.thread_lifecycle_contributor(Arc::new(ThreadIdle));
+    let messages = Arc::new(Messages::default());
+    extensions.message_lifecycle_contributor(messages.clone());
     let mut test = test_codex()
         .with_model("gpt-5.6-sol")
         .with_extensions(Arc::new(extensions.build()))
         .with_config(|config| {
             configure_scenario_catalog(config);
+            // This scenario uses client_echo; omit platform-specific shell schemas.
+            config.features.disable(Feature::ShellTool).unwrap();
+            config
+                .features
+                .enable(Feature::SubagentThreadEnvironments)
+                .expect("enable configured environment inheritance");
             config.features.enable(Feature::Collab).unwrap();
             config.features.enable(Feature::MultiAgentV2).unwrap();
             config
@@ -45,15 +77,30 @@ async fn idle_eviction_preserves_worker_context_for_followup() -> Result<()> {
                 }),
                 defer_loading: false,
             })],
-            environments: Some(vec![test.executor_environment().request()]),
+            environments: Some(Vec::new()),
             ..StartThreadOptions::new(test.config.clone())
         })
         .await?;
     test.codex = root.thread;
     test.session_configured = root.session_configured;
+    let configured = test.codex.environment_selections().await;
+    let mut temporary = test.executor_environment().selection().clone();
+    temporary.cwd = test.workspace_path_uri("turn-only-workspace")?;
+    temporary.workspace_roots = vec![temporary.cwd.clone()];
+    test.fs()
+        .create_directory(
+            &temporary.cwd,
+            CreateDirectoryOptions {
+                recursive: false,
+                follow_symlinks: true,
+            },
+            /*sandbox*/ None,
+        )
+        .await?;
     let parent_id = test.session_configured.session_id.to_string();
     let mut created = test.thread_manager.subscribe_thread_created();
     let mut child_id = None;
+    let mut retained_publications = None;
 
     for (tool, arguments, answer) in [
         (
@@ -78,6 +125,7 @@ async fn idle_eviction_preserves_worker_context_for_followup() -> Result<()> {
         if tool == "send_message" {
             let id = child_id.expect("spawned child");
             let child = test.thread_manager.get_thread(id).await?;
+            assert_eq!(child.environment_selections().await, configured);
             assert_eq!(
                 test.thread_manager.try_evict_v2_thread(child).await?,
                 ThreadEvictionOutcome::Evicted,
@@ -152,6 +200,9 @@ async fn idle_eviction_preserves_worker_context_for_followup() -> Result<()> {
                 2,
                 "queue-only mail and eviction must not start another model turn",
             );
+            let retained = messages.0.lock().expect("messages lock").clone();
+            assert_eq!(retained.len(), 1);
+            retained_publications = Some(retained);
         } else {
             let id = created.recv().await?;
             if let Some(child_id) = child_id {
@@ -160,12 +211,45 @@ async fn idle_eviction_preserves_worker_context_for_followup() -> Result<()> {
                 child_id = Some(id);
             }
             let child = test.thread_manager.get_thread(id).await?;
+            assert_eq!(child.environment_selections().await, configured);
             let call = wait_for_event_match(&child, |event| match event {
                 EventMsg::DynamicToolCallRequest(call) => Some(call.clone()),
                 _ => None,
             })
             .await;
             assert_eq!(call.call_id, format!("worker-echo-{tool}"));
+            if tool == "followup_task" {
+                let retained = retained_publications
+                    .as_ref()
+                    .expect("queued publication captured before follow-up");
+                assert!(
+                    messages
+                        .0
+                        .lock()
+                        .expect("messages lock")
+                        .is_disjoint(retained),
+                    "queued publication must be consumed before the resumed sample",
+                );
+            }
+            assert_eq!(
+                child
+                    .current_turn_environment_selections(&call.turn_id)
+                    .await,
+                Some(Vec::new()),
+            );
+            // A child-owned temporary attachment must disappear across idle eviction.
+            let (reply, outcome) = tokio::sync::oneshot::channel();
+            child
+                .submit(Op::TurnSettings {
+                    turn_id: call.turn_id,
+                    update: TurnSettingsUpdate {
+                        environments: Some(vec![temporary.clone().into_request()]),
+                        ..Default::default()
+                    },
+                    reply,
+                })
+                .await?;
+            assert_eq!(outcome.await?, TurnSettingsUpdateOutcome::Applied);
             responses::mount_sse_once_match(
                 &server,
                 wiremock::matchers::header("thread-id", id.to_string()),
@@ -197,8 +281,26 @@ async fn idle_eviction_preserves_worker_context_for_followup() -> Result<()> {
     requests
         .sort_by_key(|request| request.header("thread-id").as_deref() != Some(parent_id.as_str()));
     assert_eq!(requests.len(), 10);
+    let temporary_workspaces: Vec<_> = requests
+        .iter()
+        .map(|request| {
+            request
+                .message_input_texts("user")
+                .into_iter()
+                .rev()
+                .find(|text| text.starts_with("<environment_context>"))
+                .expect("environment context for each request")
+                .contains("turn-only-workspace")
+        })
+        .collect();
+    assert_eq!(
+        temporary_workspaces,
+        [
+            false, false, false, false, false, false, false, true, false, true
+        ]
+    );
     let history = context_snapshot::format_request_history_snapshot(
-        "A parent delegates an API migration, queues a note while the worker is idle, and follows up after idle eviction. The same worker resumes with its earlier answer and the unread note. Complete model streams are grouped as parent, then worker.",
+        "A parent with no configured environment delegates an API migration, queues a note while the worker is idle, and follows up after idle eviction. The worker temporarily attaches a workspace, then resumes with no environment, its earlier answer, and the unread note. Complete model streams are grouped as parent, then worker.",
         &requests,
         &ContextSnapshotOptions::default().rewrite_known_segments(),
     );

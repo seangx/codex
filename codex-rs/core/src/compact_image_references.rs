@@ -8,12 +8,10 @@ use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 
-use codex_context_fragments::AnnotatedContent;
 use codex_context_fragments::set_annotated_content;
 use codex_context_fragments::to_annotated_content;
 use codex_protocol::error::Result;
 use codex_protocol::models::ContentItem;
-use codex_protocol::models::ContentItemMetadata;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::ImageReference;
@@ -143,11 +141,7 @@ pub(crate) async fn prepare_history_for_compaction(
                         match image {
                             ImageReference::Inline { image_url } => {
                                 let reference = archive_image(&codex_home, image_url)?;
-                                *item = AnnotatedContent::text(
-                                    reference.body(),
-                                    reference.content_kind(),
-                                    ContentItemMetadata::harness(),
-                                );
+                                *item = reference.render_fragment().into_parts().1;
                             }
                             ImageReference::File { .. } => {
                                 // Provider-backed references remain model-visible so the retained
@@ -193,9 +187,8 @@ pub(crate) async fn prepare_history_for_compaction(
                             {
                                 match image {
                                     ImageReference::Inline { image_url } => {
-                                        *item = FunctionCallOutputContentItem::InputText {
-                                            text: archive_image(&codex_home, image_url)?.body(),
-                                        };
+                                        *item =
+                                            archive_image(&codex_home, image_url)?.body().into();
                                     }
                                     ImageReference::File { .. } => *item = original.clone(),
                                 }
@@ -218,7 +211,7 @@ pub(crate) async fn prepare_history_for_compaction(
                     )?;
                     let prompt = revised_prompt.get_or_insert_default();
                     prompt.push('\n');
-                    prompt.push_str(&reference.body());
+                    prompt.push_str(&reference.body_text());
                 }
                 _ => {}
             }

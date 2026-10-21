@@ -268,6 +268,7 @@ fn startup_waiting_gate_is_only_for_fresh_or_exit_session_selection() {
     assert_eq!(
         App::should_wait_for_initial_session(&SessionSelection::Resume(
             crate::resume_picker::SessionTarget {
+                backend_id: crate::backend_id::BackendId::new(),
                 path: Some(PathBuf::from("/tmp/restore")),
                 thread_id: ThreadId::new(),
                 cwd: None,
@@ -279,6 +280,7 @@ fn startup_waiting_gate_is_only_for_fresh_or_exit_session_selection() {
     assert_eq!(
         App::should_wait_for_initial_session(&SessionSelection::Fork(
             crate::resume_picker::SessionTarget {
+                backend_id: crate::backend_id::BackendId::new(),
                 path: Some(PathBuf::from("/tmp/fork")),
                 thread_id: ThreadId::new(),
                 cwd: None,
@@ -292,12 +294,14 @@ fn startup_waiting_gate_is_only_for_fresh_or_exit_session_selection() {
 #[test]
 fn startup_paused_goal_prompt_gate_is_only_for_quiet_resume() {
     let resume = SessionSelection::Resume(crate::resume_picker::SessionTarget {
+        backend_id: crate::backend_id::BackendId::new(),
         path: Some(PathBuf::from("/tmp/restore")),
         thread_id: ThreadId::new(),
         cwd: None,
         history_mode: None,
     });
     let fork = SessionSelection::Fork(crate::resume_picker::SessionTarget {
+        backend_id: crate::backend_id::BackendId::new(),
         path: Some(PathBuf::from("/tmp/fork")),
         thread_id: ThreadId::new(),
         cwd: None,
@@ -368,6 +372,7 @@ fn startup_waiting_gate_holds_active_thread_events_until_primary_thread_configur
 fn startup_waiting_gate_not_applied_for_resume_or_fork_session_selection() {
     let wait_for_resume = App::should_wait_for_initial_session(&SessionSelection::Resume(
         crate::resume_picker::SessionTarget {
+            backend_id: crate::backend_id::BackendId::new(),
             path: Some(PathBuf::from("/tmp/restore")),
             thread_id: ThreadId::new(),
             cwd: None,
@@ -383,6 +388,7 @@ fn startup_waiting_gate_not_applied_for_resume_or_fork_session_selection() {
     );
     let wait_for_fork = App::should_wait_for_initial_session(&SessionSelection::Fork(
         crate::resume_picker::SessionTarget {
+            backend_id: crate::backend_id::BackendId::new(),
             path: Some(PathBuf::from("/tmp/fork")),
             thread_id: ThreadId::new(),
             cwd: None,
@@ -960,6 +966,7 @@ async fn unattended_modals_survive_unfinished_terminal_input() -> Result<()> {
     app.render_startup_frame(&mut tui, &app_event_rx)?;
     assert!(app.begin_reconnect());
     let connected = super::super::reconnect::reconnect(
+        app_server.backend_id(),
         app.app_server_target.clone(),
         app.config.clone(),
         app.local_settings.clone(),
@@ -1436,6 +1443,7 @@ async fn remote_overview_startup_hides_disabled_older_server_notice() -> Result<
         .await
     });
     let session = AppServerSession::new(
+        crate::backend_id::BackendId::new(),
         crate::connect_remote_app_server(endpoint).await?,
         ThreadParamsMode::Remote,
     );
@@ -1816,6 +1824,7 @@ async fn ignore_same_thread_resume_reports_noop_for_current_thread() {
     while app_event_rx.try_recv().is_ok() {}
 
     let ignored = app.ignore_same_thread_resume(&crate::resume_picker::SessionTarget {
+        backend_id: crate::backend_id::BackendId::new(),
         path: Some(test_path_buf("/tmp/project")),
         thread_id,
         cwd: None,
@@ -1842,6 +1851,7 @@ async fn ignore_same_thread_resume_allows_reattaching_displayed_inactive_thread(
     app.chat_widget.handle_thread_session(session);
 
     let ignored = app.ignore_same_thread_resume(&crate::resume_picker::SessionTarget {
+        backend_id: crate::backend_id::BackendId::new(),
         path: Some(test_path_buf("/tmp/project")),
         thread_id,
         cwd: None,
@@ -1869,6 +1879,7 @@ async fn ignore_same_thread_resume_allows_retrying_read_only_view() -> Result<()
 
     assert!(
         !app.ignore_same_thread_resume(&crate::resume_picker::SessionTarget {
+            backend_id: crate::backend_id::BackendId::new(),
             path: Some(test_path_buf("/tmp/project")),
             thread_id,
             cwd: None,

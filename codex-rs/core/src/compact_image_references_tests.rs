@@ -2,7 +2,6 @@ use super::ARCHIVE_DIRECTORY;
 use super::archive_image;
 use super::load_archived_image;
 use super::prepare_history_for_compaction;
-use crate::context::ContextualUserFragment;
 use crate::context_manager::ContextManager;
 use codex_history::CodexHarnessMetadata;
 use codex_history::ResponseItemEnvelope;
@@ -82,7 +81,7 @@ async fn compaction_snapshot_archives_inline_images_and_preserves_file_reference
             .await?;
     assert_eq!(history.raw_items().cloned().collect::<Vec<_>>(), items);
     let reference = archive_image(home.path(), image)?;
-    let replacement = reference.body();
+    let replacement = reference.body_text();
     let mut expected = serde_json::to_value(items)?;
     expected[0]["content"][1] = json!({"type":"input_text", "text":replacement});
     expected[0]["internal_chat_message_metadata_passthrough"] = json!({

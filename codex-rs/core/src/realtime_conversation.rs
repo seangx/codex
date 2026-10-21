@@ -352,14 +352,14 @@ impl RealtimeStreamedItem {
             if self.buffered_text.is_empty() {
                 return None;
             }
-            let text = self.buffered_text.drain(..).collect::<String>();
+            let text = std::mem::take(&mut self.buffered_text);
             let text = format!("{prefix}{text}");
             self.sent_bytes += text.len();
             return Some(text);
         }
 
-        let head = self.buffered_text.drain(..).collect::<String>();
-        let tail = self.tail_text.drain(..).collect::<String>();
+        let head = std::mem::take(&mut self.buffered_text);
+        let tail = std::mem::take(&mut self.tail_text);
         let text = format!("{prefix}{head}{HANDOFF_STREAM_TRUNCATION_MARKER}{tail}");
         self.sent_bytes += text.len();
         Some(text)
@@ -1922,7 +1922,10 @@ fn wrap_realtime_delegation_input(
     transcript_delta: Option<&str>,
     source: RealtimeDelegationSource,
 ) -> String {
-    RealtimeDelegation::new(input, transcript_delta, source).render()
+    RealtimeDelegation::new(input, transcript_delta, source)
+        .render()
+        .into_text()
+        .unwrap_or_default()
 }
 
 fn realtime_api_key(auth: Option<&CodexAuth>, provider: &ModelProviderInfo) -> CodexResult<String> {

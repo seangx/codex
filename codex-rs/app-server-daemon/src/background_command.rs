@@ -1,66 +1,10 @@
-//! Prepares long-lived daemon commands for background execution and recovers
-//! startup after the launching directory is removed.
+//! Recovers background startup after the launching directory is removed.
+//! Preserve process-scoped paths; retain usable Unix cwd defaults for clients.
 
 use std::path::Path;
 use std::process::Command;
-#[cfg(target_os = "macos")]
-use std::process::Stdio;
-#[cfg(target_os = "macos")]
-use std::time::Duration;
 
 use anyhow::Result;
-
-pub(crate) async fn managed_process(program: &Path) -> std::io::Result<Command> {
-    #[cfg(target_os = "macos")]
-    {
-        let mut probe = tokio::process::Command::new("/usr/sbin/taskpolicy");
-        probe.args(["-b", "/usr/bin/true"]);
-        return managed_process_with_probe(program, probe, Duration::from_secs(5)).await;
-    }
-    #[cfg(not(target_os = "macos"))]
-    Ok(codex_utils_process::background_command(program))
-}
-
-#[cfg(target_os = "macos")]
-async fn managed_process_with_probe(
-    program: &Path,
-    mut probe: tokio::process::Command,
-    timeout: Duration,
-) -> std::io::Result<Command> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let metadata = program.metadata()?;
-    if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "managed Codex path is not executable",
-        ));
-    }
-
-    // Preserve daemon availability when taskpolicy is denied by a restricted
-    // environment such as a test sandbox, or when the probe cannot finish promptly.
-    let available = matches!(
-        tokio::time::timeout(
-            timeout,
-            probe
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .kill_on_drop(true)
-                .status(),
-        )
-        .await,
-        Ok(Ok(status)) if status.success()
-    );
-    if available {
-        // taskpolicy uses POSIX_SPAWN_SETEXEC, so the managed process keeps this PID.
-        let mut command = codex_utils_process::background_command("/usr/sbin/taskpolicy");
-        command.arg("-b").arg(program);
-        return Ok(command);
-    }
-
-    Ok(codex_utils_process::background_command(program))
-}
 
 pub(crate) fn set_working_directory(command: &mut Command, state_dir: &Path) -> Result<()> {
     #[cfg(unix)]
@@ -146,7 +90,3 @@ pub(crate) fn set_working_directory(command: &mut Command, state_dir: &Path) -> 
     command.current_dir(state_dir);
     Ok(())
 }
-
-#[cfg(all(test, target_os = "macos"))]
-#[path = "background_command_tests.rs"]
-mod tests;

@@ -231,6 +231,7 @@ async fn model_default_saves_report_server_outcomes_and_target_server_profile() 
         )
         .await?;
         let mut server = AppServerSession::new(
+            crate::backend_id::BackendId::new(),
             AppServerClient::InProcess(client),
             crate::app_server_session::ThreadParamsMode::Remote,
         );

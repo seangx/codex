@@ -103,6 +103,7 @@ async fn history_fixture(
         .join("\n");
     std::fs::write(&path, format!("{contents}\n"))?;
     let target = SessionTarget {
+        backend_id: crate::backend_id::BackendId::new(),
         path: Some(path),
         thread_id,
         cwd: None,
@@ -332,6 +333,7 @@ async fn run_archived_retry_runtime_settings_case(
         }
     };
     assert!(initial.is_err());
+    target.backend_id = server.backend_id();
     let outcome = complete_session_start(
         &mut server,
         SessionStartConfig {

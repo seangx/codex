@@ -322,6 +322,7 @@ async fn same_thread_retry_keeps_subscription_and_restores_draft() -> Result<()>
         /*failed_thread_name*/ None,
     )
     .await?;
+    let backend_id = app_server.backend_id();
     app.enqueue_primary_thread_session(
         test_thread_session(thread_id, test_path_buf("/tmp/project")),
         Vec::new(),
@@ -343,6 +344,7 @@ async fn same_thread_retry_keeps_subscription_and_restores_draft() -> Result<()>
         &mut tui,
         &mut app_server,
         crate::resume_picker::SessionTarget {
+            backend_id,
             path,
             thread_id,
             cwd: None,
@@ -893,8 +895,12 @@ pub(super) async fn start_recording_app_server_with_realtime_speech(
     .await?;
 
     Ok((
-        AppServerSession::new(app_server, thread_params_mode)
-            .with_local_codex_home(&config.codex_home),
+        AppServerSession::new(
+            crate::backend_id::BackendId::new(),
+            app_server,
+            thread_params_mode,
+        )
+        .with_local_codex_home(&config.codex_home),
         requests,
         proxy,
     ))
@@ -1969,7 +1975,7 @@ async fn older_external_server_starts_without_unsupported_dynamic_tools_or_histo
 
     let starts = recorded_params(&requests, "thread/start");
     assert_eq!(starts.len(), 6);
-    for attempts in starts.chunks_exact(3) {
+    for attempts in starts.as_chunks::<3>().0 {
         assert_eq!(attempts[0]["dynamicTools"][0]["type"], "namespace");
         assert_eq!(attempts[0]["historyMode"], "paginated");
         assert_eq!(attempts[1]["dynamicTools"], serde_json::Value::Null);
@@ -4954,6 +4960,7 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                     Some("Failed Fork"),
                 )
                 .await?;
+                let backend_id = app_server.backend_id();
                 let root = app_server
                     .resume_thread(
                         &app.local_settings,
@@ -5070,6 +5077,7 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                         &mut tui,
                         &mut app_server,
                         crate::resume_picker::SessionTarget {
+                            backend_id,
                             path: Some(root_rollout_path),
                             thread_id: root_thread_id,
                             cwd: None,
@@ -5550,3 +5558,6 @@ async fn command_center_read_only_open_preserves_summary_turns_failure() -> Resu
     )
     .await
 }
+
+#[path = "backend_ownership_tests.rs"]
+mod backend_ownership_tests;

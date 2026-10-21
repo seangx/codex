@@ -93,6 +93,7 @@ async fn stalled_handshake_does_not_delay_other_warm_sockets() -> Result<()> {
             response_headers: Vec::new(),
             accept_delay: Some(Duration::from_secs(/*secs*/ 10)),
             close_after_requests: false,
+            idle_timeout: None,
         },
     ])
     .await;
@@ -146,6 +147,7 @@ async fn replenishes_before_last_idle_socket_is_leased() -> Result<()> {
                     response_headers: Vec::new(),
                     accept_delay: None,
                     close_after_requests: false,
+                    idle_timeout: None,
                 },
             ])
             .await,

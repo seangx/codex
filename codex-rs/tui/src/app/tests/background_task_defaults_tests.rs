@@ -806,6 +806,7 @@ async fn command_center_new_preserves_only_selected_server_profiles() -> Result<
     )
     .await?;
     let mut server = AppServerSession::new(
+        crate::backend_id::BackendId::new(),
         codex_app_server_client::AppServerClient::InProcess(client),
         crate::app_server_session::ThreadParamsMode::Remote,
     );
@@ -1304,7 +1305,7 @@ async fn check_command_center_new_checkout_and_worktree_preserve_source_and_defa
                     return Ok::<_, color_eyre::Report>(());
                 }
             }
-            color_eyre::eyre::bail!("permissions menu event stream closed")
+            color_eyre::eyre::bail!("permissions menu event stream closed");
         })
         .await??;
         app.chat_widget.handle_key_event(KeyCode::Up.into());

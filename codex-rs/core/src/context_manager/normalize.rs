@@ -354,11 +354,8 @@ pub(crate) fn strip_images_when_unsupported(
                     for content_item in content_items.iter() {
                         match content_item {
                             FunctionCallOutputContentItem::InputImage { .. } => {
-                                normalized_content_items.push(
-                                    FunctionCallOutputContentItem::InputText {
-                                        text: UnsupportedMedia::IMAGE.render(),
-                                    },
-                                );
+                                normalized_content_items
+                                    .push(UnsupportedMedia::IMAGE.render().into());
                             }
                             _ => normalized_content_items.push(content_item.clone()),
                         }
@@ -405,9 +402,7 @@ pub(crate) fn strip_audio_when_unsupported(
                             content_item,
                             FunctionCallOutputContentItem::InputAudio { .. }
                         ) {
-                            *content_item = FunctionCallOutputContentItem::InputText {
-                                text: UnsupportedMedia::AUDIO.render(),
-                            };
+                            *content_item = UnsupportedMedia::AUDIO.render().into();
                         }
                     }
                 }
